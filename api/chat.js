@@ -1,0 +1,65 @@
+import fetch from "node-fetch";
+
+function cors(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+}
+
+function buildMessagesFromTranscript(transcript, userMessage, systemPrompt) {
+  const messages = [];
+  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+  if (transcript && transcript.trim()) {
+    const lines = transcript.split("\n").map(s => s.trim()).filter(Boolean);
+    for (const line of lines) {
+      if (/^User:/i.test(line)) messages.push({ role: "user", content: line.replace(/^User:\s*/i, "") });
+      else if (/^Assistant:/i.test(line)) messages.push({ role: "assistant", content: line.replace(/^Assistant:\s*/i, "") });
+    }
+  }
+  if (userMessage) messages.push({ role: "user", content: userMessage });
+  return messages.slice(-20);
+}
+
+export default async function handler(req, res) {
+  cors(res);
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
+  try {
+    const {
+      userMessage,
+      transcript = "",
+      systemPrompt = "You are a helpful, concise assistant."
+    } = await req.json();
+
+    if (!process.env.OPENROUTER_API_KEY) {
+      return res.status(500).json({ error: "Missing OPENROUTER_API_KEY" });
+    }
+
+    // Pick a FREE model from OpenRouter (you can change this in Adalo later)
+    const model = process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free";
+
+    const messages = buildMessagesFromTranscript(transcript, userMessage, systemPrompt);
+
+    const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: 0.2
+      })
+    });
+
+    const data = await r.json();
+
+    const reply = data?.choices?.[0]?.message?.content ?? "(No reply)";
+    return res.status(200).json({ reply });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: String(err?.message || err) });
+  }
+}
