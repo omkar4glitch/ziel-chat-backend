@@ -20,25 +20,36 @@ function buildMessagesFromTranscript(transcript, userMessage, systemPrompt) {
   return messages.slice(-20);
 }
 
+// Node-compatible JSON parser for IncomingMessage
+async function parseJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      if (!body) return resolve({});
+      try {
+        resolve(JSON.parse(body));
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
 export default async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    const {
-      userMessage,
-      transcript = "",
-      systemPrompt = "You are a helpful, concise assistant."
-    } = await req.json();
+    const { userMessage, transcript = "", systemPrompt = "You are a helpful, concise assistant." } = await parseJsonBody(req);
 
     if (!process.env.OPENROUTER_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENROUTER_API_KEY" });
+      return res.status(500).json({ error: "Missing OPENROUTER_API_KEY in environment variables" });
     }
 
-    // Pick a FREE model from OpenRouter (you can change this in Adalo later)
     const model = process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free";
-
     const messages = buildMessagesFromTranscript(transcript, userMessage, systemPrompt);
 
     const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -55,11 +66,10 @@ export default async function handler(req, res) {
     });
 
     const data = await r.json();
-
     const reply = data?.choices?.[0]?.message?.content ?? "(No reply)";
     return res.status(200).json({ reply });
   } catch (err) {
-    console.error(err);
+    console.error("chat handler error:", err);
     return res.status(500).json({ error: String(err?.message || err) });
   }
 }
