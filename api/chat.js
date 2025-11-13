@@ -49,7 +49,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Missing OPENROUTER_API_KEY in environment variables" });
     }
 
-    const model = process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free";
+    const model = process.env.OPENROUTER_MODEL || "deepseek/deepseek-chat-v3.1:free";
     const messages = buildMessagesFromTranscript(transcript, userMessage, systemPrompt);
 
     const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -65,8 +65,22 @@ export default async function handler(req, res) {
       })
     });
 
+    // parse response normally
     const data = await r.json();
-    const reply = data?.choices?.[0]?.message?.content ?? "(No reply)";
+
+    // try known shapes:
+    const reply =
+      data?.choices?.[0]?.message?.content || // OpenRouter typical
+      data?.choices?.[0]?.message?.content?.toString?.() ||
+      (typeof data?.output === "string" ? data.output : null) || // some adapters
+      (Array.isArray(data?.output) && data.output[0]?.content ? data.output[0].content : null) ||
+      null;
+
+    if (!reply) {
+      // return the raw returned object so client sees something useful (but not logging)
+      return res.status(200).json({ reply: "(No reply)", debug: { status: r.status, body: data } });
+    }
+
     return res.status(200).json({ reply });
   } catch (err) {
     console.error("chat handler error:", err);
