@@ -9,7 +9,7 @@ function cors(res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 function safeTruncate(str, max = 12000) {
-  return str.length > max ? str.slice(0, max) + "\n...[truncated]..." : str;
+  return typeof str === "string" && str.length > max ? str.slice(0, max) + "\n...[truncated]..." : str;
 }
 function buildMessagesFromTranscript(transcript, userMessage, systemPrompt) {
   const messages = [];
@@ -25,6 +25,23 @@ function buildMessagesFromTranscript(transcript, userMessage, systemPrompt) {
   return messages.slice(-20);
 }
 
+// Node-compatible JSON parser for IncomingMessage
+async function parseJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      if (!body) return resolve({});
+      try {
+        resolve(JSON.parse(body));
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
 async function readAsText(buffer, contentType, url) {
   try {
     if (!contentType && url) {
@@ -36,22 +53,19 @@ async function readAsText(buffer, contentType, url) {
       else if (lower.endsWith(".txt")) contentType = "text/plain";
     }
 
-    // PDF
-    if (contentType?.includes("pdf")) {
+    if (contentType && contentType.includes("pdf")) {
       const pdfData = await pdfParse(Buffer.from(buffer));
       return pdfData.text || "";
     }
 
-    // CSV
-    if (contentType?.includes("csv")) {
+    if (contentType && contentType.includes("csv")) {
       const text = Buffer.from(buffer).toString("utf8");
       const rows = csvParse(text, { skip_empty_lines: true });
       const preview = rows.slice(0, 200).map(r => r.join(", ")).join("\n");
       return `CSV preview (first ${Math.min(rows.length,200)} rows):\n` + preview;
     }
 
-    // XLSX
-    if (contentType?.includes("sheet") || contentType?.includes("excel")) {
+    if (contentType && (contentType.includes("sheet") || contentType.includes("excel") || url?.toLowerCase().endsWith(".xlsx"))) {
       const wb = XLSX.read(Buffer.from(buffer), { type: "buffer" });
       const firstSheet = wb.SheetNames[0];
       const json = XLSX.utils.sheet_to_json(wb.Sheets[firstSheet], { header: 1 });
@@ -59,15 +73,13 @@ async function readAsText(buffer, contentType, url) {
       return `XLSX '${firstSheet}' preview (first ${Math.min(json.length,200)} rows):\n` + preview;
     }
 
-    // JSON
-    if (contentType?.includes("json")) {
+    if (contentType && contentType.includes("json")) {
       const text = Buffer.from(buffer).toString("utf8");
       const parsed = JSON.parse(text);
-      const pretty = JSON.stringify(parsed, null, 2);
-      return safeTruncate(pretty, 12000);
+      return safeTruncate(JSON.stringify(parsed, null, 2), 12000);
     }
 
-    // TXT or fallback
+    // fallback to text
     const text = Buffer.from(buffer).toString("utf8");
     return safeTruncate(text, 12000);
   } catch (e) {
@@ -87,11 +99,11 @@ export default async function handler(req, res) {
       question = "Please analyze the file.",
       transcript = "",
       systemPrompt = "You are a careful analyst. Use the provided file content to answer accurately. If uncertain, say so."
-    } = await req.json();
+    } = await parseJsonBody(req);
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
     if (!process.env.OPENROUTER_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENROUTER_API_KEY" });
+      return res.status(500).json({ error: "Missing OPENROUTER_API_KEY in environment variables" });
     }
 
     const fr = await fetch(fileUrl);
@@ -141,7 +153,7 @@ export default async function handler(req, res) {
     const reply = data?.choices?.[0]?.message?.content ?? "(No reply)";
     return res.status(200).json({ reply });
   } catch (err) {
-    console.error(err);
+    console.error("analyze-file handler error:", err);
     return res.status(500).json({ error: String(err?.message || err) });
   }
 }
