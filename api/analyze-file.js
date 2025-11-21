@@ -1,159 +1,96 @@
-import fetch from "node-fetch";
-import pdfParse from "pdf-parse";
-import { parse as csvParse } from "csv-parse/sync";
 import XLSX from "xlsx";
 
-function cors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-}
-function safeTruncate(str, max = 12000) {
-  return typeof str === "string" && str.length > max ? str.slice(0, max) + "\n...[truncated]..." : str;
-}
-function buildMessagesFromTranscript(transcript, userMessage, systemPrompt) {
-  const messages = [];
-  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-  if (transcript && transcript.trim()) {
-    const lines = transcript.split("\n").map(s => s.trim()).filter(Boolean);
-    for (const line of lines) {
-      if (/^User:/i.test(line)) messages.push({ role: "user", content: line.replace(/^User:\s*/i, "") });
-      else if (/^Assistant:/i.test(line)) messages.push({ role: "assistant", content: line.replace(/^Assistant:\s*/i, "") });
-    }
-  }
-  if (userMessage) messages.push({ role: "user", content: userMessage });
-  return messages.slice(-20);
-}
-
-// Node-compatible JSON parser for IncomingMessage
-async function parseJsonBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
-      if (!body) return resolve({});
-      try {
-        resolve(JSON.parse(body));
-      } catch (err) {
-        reject(err);
-      }
-    });
-    req.on("error", reject);
-  });
-}
-
-async function readAsText(buffer, contentType, url) {
-  try {
-    if (!contentType && url) {
-      const lower = url.toLowerCase();
-      if (lower.endsWith(".pdf")) contentType = "application/pdf";
-      else if (lower.endsWith(".csv")) contentType = "text/csv";
-      else if (lower.endsWith(".xlsx")) contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-      else if (lower.endsWith(".json")) contentType = "application/json";
-      else if (lower.endsWith(".txt")) contentType = "text/plain";
-    }
-
-    if (contentType && contentType.includes("pdf")) {
-      const pdfData = await pdfParse(Buffer.from(buffer));
-      return pdfData.text || "";
-    }
-
-    if (contentType && contentType.includes("csv")) {
-      const text = Buffer.from(buffer).toString("utf8");
-      const rows = csvParse(text, { skip_empty_lines: true });
-      const preview = rows.slice(0, 200).map(r => r.join(", ")).join("\n");
-      return `CSV preview (first ${Math.min(rows.length,200)} rows):\n` + preview;
-    }
-
-    if (contentType && (contentType.includes("sheet") || contentType.includes("excel") || url?.toLowerCase().endsWith(".xlsx"))) {
-      const wb = XLSX.read(Buffer.from(buffer), { type: "buffer" });
-      const firstSheet = wb.SheetNames[0];
-      const json = XLSX.utils.sheet_to_json(wb.Sheets[firstSheet], { header: 1 });
-      const preview = json.slice(0, 200).map(r => r.join(", ")).join("\n");
-      return `XLSX '${firstSheet}' preview (first ${Math.min(json.length,200)} rows):\n` + preview;
-    }
-
-    if (contentType && contentType.includes("json")) {
-      const text = Buffer.from(buffer).toString("utf8");
-      const parsed = JSON.parse(text);
-      return safeTruncate(JSON.stringify(parsed, null, 2), 12000);
-    }
-
-    // fallback to text
-    const text = Buffer.from(buffer).toString("utf8");
-    return safeTruncate(text, 12000);
-  } catch (e) {
-    return `Could not parse file; returning raw snippet:\n` +
-      safeTruncate(Buffer.from(buffer).toString("utf8"), 8000);
-  }
-}
-
 export default async function handler(req, res) {
-  cors(res);
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-
   try {
-    const {
-      fileUrl,
-      question = "Please analyze the file.",
-      transcript = "",
-      systemPrompt = "You are a careful analyst. Use the provided file content to answer accurately. If uncertain, say so."
-    } = await parseJsonBody(req);
+    const { fileUrl, question } = req.body;
 
-    if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
-    if (!process.env.OPENROUTER_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENROUTER_API_KEY in environment variables" });
+    if (!fileUrl) {
+      return res.status(400).json({ error: "fileUrl missing" });
     }
 
-    const fr = await fetch(fileUrl);
-    if (!fr.ok) return res.status(400).json({ error: `Unable to fetch file: ${fr.status}` });
-    const contentType = fr.headers.get("content-type") || "";
-    const buffer = Buffer.from(await fr.arrayBuffer());
-    const extracted = await readAsText(buffer, contentType, fileUrl);
+    // -------------------------
+    // 1️⃣ Download file correctly as binary
+    // -------------------------
+    const response = await fetch(fileUrl, { redirect: "follow" });
 
-    const model = process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free";
+    const contentType = response.headers.get("content-type") || "";
+    const contentLength = response.headers.get("content-length") || "unknown";
 
-    const contextBlock = [
-      "I will give you extracted file content between <file> tags.",
-      "Use it to answer the user question. Cite rows/fields if relevant.",
-      "If the file seems incomplete, say what’s missing.",
-      "",
-      "<file>",
-      safeTruncate(extracted, 12000),
-      "</file>"
-    ].join("\n");
+    const arrayBuf = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuf);
 
-    const userMessage = [
-      `Question: ${question}`,
-      "",
-      "Work from the <file> content above."
-    ].join("\n");
-
-    const messages = buildMessagesFromTranscript(
-      transcript + `\nAssistant: [File content received]\n`,
-      `${contextBlock}\n\n${userMessage}`,
-      systemPrompt
-    );
-
-    const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: 0.2
-      })
+    console.log("DOWNLOADED FILE:", {
+      url: fileUrl,
+      status: response.status,
+      contentType,
+      contentLength,
+      bytesReceived: buffer.length,
     });
 
-    const data = await r.json();
-    const reply = data?.choices?.[0]?.message?.content ?? "(No reply)";
-    return res.status(200).json({ reply });
+    // -------------------------
+    // 2️⃣ Handle CSV files
+    // -------------------------
+    if (
+      contentType.includes("csv") ||
+      fileUrl.toLowerCase().endsWith(".csv")
+    ) {
+      const csvText = buffer.toString("utf8");
+
+      // Optional trimming of huge csv
+      const trimmed = csvText.slice(0, 50_000);
+
+      return res.json({
+        ok: true,
+        type: "csv",
+        textContent: trimmed,
+      });
+    }
+
+    // -------------------------
+    // 3️⃣ Handle XLSX / Excel files
+    // -------------------------
+    const isZipXlsx =
+      buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03;
+
+    if (isZipXlsx) {
+      let workbook;
+      try {
+        workbook = XLSX.read(buffer, { type: "buffer" });
+      } catch (e) {
+        return res.status(500).json({
+          error: "Excel parse failed",
+          details: e.toString(),
+        });
+      }
+
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+      // Convert first 500 rows → text for LLM
+      const textData = rows
+        .slice(0, 500)
+        .map((r) => r.join(","))
+        .join("\n");
+
+      return res.json({
+        ok: true,
+        type: "xlsx",
+        textContent: textData,
+      });
+    }
+
+    // -------------------------
+    // 4️⃣ Unknown format
+    // -------------------------
+    return res.json({
+      ok: false,
+      error: "Unknown file type",
+      contentType,
+      bytesReceived: buffer.length,
+    });
   } catch (err) {
-    console.error("analyze-file handler error:", err);
-    return res.status(500).json({ error: String(err?.message || err) });
+    console.error("ANALYZE-FILE ERROR", err);
+    return res.status(500).json({ error: err.toString() });
   }
 }
