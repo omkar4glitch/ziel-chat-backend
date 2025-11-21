@@ -25,7 +25,7 @@ async function callModel(prompt) {
     body: JSON.stringify({
       model: OPENROUTER_MODEL,
       messages: [
-        { role: "system", content: "You are an accurate finance analyst. Answer concisely and use the provided table excerpt. If numbers are present, show calculations." },
+        { role: "system", content: "You are an accurate finance analyst. Answer concisely and use the provided table excerpt." },
         { role: "user", content: prompt }
       ],
       temperature: 0.2
