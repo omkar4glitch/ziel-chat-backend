@@ -2,7 +2,7 @@
 import XLSX from "xlsx";
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free";
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "deepseek/deepseek-r1-distill-llama-70b:free";
 
 function looksLikeCsvText(buffer) {
   const sample = buffer.slice(0, 8192).toString("utf8");
