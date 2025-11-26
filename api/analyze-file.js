@@ -80,10 +80,10 @@ export default async function handler(req, res) {
       }
     }
 
-  // Build prompt for LLM: include question and excerpt
+// Build prompt for LLM: include question and excerpt
 const prompt = `
-You are a senior financial data analyst. Analyze the content of the provided file excerpt exactly as given. 
-Do NOT guess or invent numbers. If information is missing, say so.
+You are a senior financial data analyst. Analyze the provided file excerpt exactly as given. 
+Do NOT guess or invent numbers. If any information is missing, state it clearly.
 
 Your responsibilities:
 1. Identify what type of data the user uploaded:
@@ -91,40 +91,57 @@ Your responsibilities:
    - Balance Sheet
    - Cash Flow Statement
    - General accounting table
-   - Generic CSV/Excel table
-   - Something else (state what it appears to be)
+   - Generic CSV/Excel data
+   - Or something else (describe what it looks like)
 
-2. Extract key metrics ONLY if present in the excerpt.
+2. Extract key metrics ONLY if they exist in the excerpt.
    Examples:
-   - For P&L: Revenue, COGS, Gross Profit, Operating Expenses, Net Income
-   - For Balance Sheet: Assets, Liabilities, Equity
-   - For Cash Flow: Operating / Investing / Financing cash flows
-   - For generic data: Summaries, trends, structure, notable values
+   - P&L: Revenue, COGS, Gross Profit, OpEx, EBITDA, Net Income, Margins
+   - Balance Sheet: Total Assets, Liabilities, Equity
+   - Cash Flow: Operating / Investing / Financing cash flows
+   - Generic data: Row count, column names, summary stats
 
-3. Answer the user's question using ONLY the visible data. 
-   Never infer or fabricate missing values. If the answer cannot be determined, say so.
+3. Answer the user's question using ONLY the visible excerpt.
 
-4. Provide useful analysis such as:
-   - Trends (if multiple periods exist)
-   - Variances (if applicable)
-   - Ratios (if calculable)
-   - Comments and insights relevant to the user's query
+4. DO NOT make up numbers or assumptions. 
+   If a calculation cannot be performed, say “Data not available in excerpt.”
 
-5. If the file is incomplete or truncated, mention what additional data is needed.
+5. FORMAT your response EXACTLY like this:
 
-Format your output:
-- **Detected File Type**
-- **Key Figures / KPIs**
-- **Insights & Commentary**
-- **Answer to User Question**
-- **Notes on Missing or Incomplete Data**
+=====================
+📊 **Summary Table**
+(Provide a clean small table — 2 to 8 rows — showing the key metrics you can extract from the excerpt)
+
+Example format:
+| Metric | Value |
+|--------|--------|
+| Revenue | $1,240,000 |
+| Net Income | $320,000 |
+| Gross Margin | 34% |
+
+If a metric cannot be calculated, write “N/A”.
+
+=====================
+💡 **Insights & Commentary**
+- Clear trends
+- Variances (if multiple periods)
+- Expense or revenue patterns
+- Anomalies or risks
+- What is missing or incomplete in the file
+
+=====================
+📝 **Answer to the User Question**
+(Directly answer the user's question using only the provided data)
+
+=====================
 
 FILE EXCERPT:
 ${excerpt}
 
 USER QUESTION:
-${question || "Please analyze this file and summarize key insights."}
+${question || "Please analyze this file and summarize the key insights."}
 `;
+
 
     // Call model to get final reply
     const { data: modelData, reply } = await callModel(prompt);
