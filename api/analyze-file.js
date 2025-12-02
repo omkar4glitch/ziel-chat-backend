@@ -14,131 +14,154 @@ function cors(res) {
 /**
  * Simple body parser (like we used in /api/chat)
  */
+// ---------- tolerant body parser (keeps a small log) ----------
 async function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
-      if (!body) return resolve({});
+      if (!body) {
+        console.log("analyze-file: empty body");
+        return resolve({});
+      }
       const contentType =
         (req.headers && (req.headers["content-type"] || req.headers["Content-Type"])) ||
         "";
-
+      // Try JSON
       if (contentType.includes("application/json")) {
         try {
-          return resolve(JSON.parse(body));
+          const parsed = JSON.parse(body);
+          console.log("analyze-file: parsed JSON body keys:", Object.keys(parsed));
+          return resolve(parsed);
         } catch (err) {
-          return resolve({});
+          console.warn("analyze-file: JSON parse failed, falling back to raw text");
+          return resolve({ userMessage: body });
         }
       }
-
-      // fallback – nothing fancy, just ignore for now
+      // Try form/urlencoded
+      if (contentType.includes("application/x-www-form-urlencoded")) {
+        try {
+          const params = new URLSearchParams(body);
+          const obj = {};
+          for (const [k, v] of params) obj[k] = v;
+          console.log("analyze-file: parsed form body keys:", Object.keys(obj));
+          return resolve(obj);
+        } catch (err) {
+          return resolve({ userMessage: body });
+        }
+      }
+      // fallback: treat as JSON if possible, else as raw
       try {
         const parsed = JSON.parse(body);
+        console.log("analyze-file: parsed fallback JSON keys:", Object.keys(parsed));
         return resolve(parsed);
       } catch {
-        return resolve({});
+        console.log("analyze-file: using raw body as userMessage (length:", body.length, ")");
+        return resolve({ userMessage: body });
       }
     });
     req.on("error", reject);
   });
 }
 
-/**
- * Download remote file into Buffer (with a hard max size)
- */
-async function downloadFileToBuffer(url, maxBytes = 2 * 1024 * 1024) {
-  const r = await fetch(url);
+// ---------- download with timeout + maxBytes ----------
+async function downloadFileToBuffer(url, maxBytes = 10 * 1024 * 1024, timeoutMs = 20000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let r;
+  try {
+    r = await fetch(url, { signal: controller.signal });
+  } catch (err) {
+    clearTimeout(timer);
+    throw new Error(`Download failed or timed out: ${err.message || err}`);
+  }
+  clearTimeout(timer);
+
   if (!r.ok) throw new Error(`Failed to download file: ${r.status} ${r.statusText}`);
 
   const contentType = r.headers.get("content-type") || "";
   const chunks = [];
   let total = 0;
-  for await (const chunk of r.body) {
-    total += chunk.length;
-    if (total > maxBytes) {
-      // stop reading after maxBytes
-      chunks.push(chunk.slice(0, maxBytes - (total - chunk.length)));
-      break;
+
+  try {
+    for await (const chunk of r.body) {
+      total += chunk.length;
+      if (total > maxBytes) {
+        // push only up to maxBytes then stop reading
+        const allowed = maxBytes - (total - chunk.length);
+        if (allowed > 0) chunks.push(chunk.slice(0, allowed));
+        break;
+      } else {
+        chunks.push(chunk);
+      }
     }
-    chunks.push(chunk);
+  } catch (err) {
+    // network stream errors
+    throw new Error(`Error reading download stream: ${err.message || err}`);
   }
-  const buffer = Buffer.concat(chunks);
-  return { buffer, contentType };
+
+  return { buffer: Buffer.concat(chunks), contentType, bytesReceived: total };
 }
 
-/**
- * Rough file-type detection
- */
-function detectFileType(fileUrl, contentType) {
+// ---------- improved detection using file signature ----------
+function detectFileType(fileUrl, contentType, buffer) {
   const lowerUrl = (fileUrl || "").toLowerCase();
   const lowerType = (contentType || "").toLowerCase();
 
-  if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) {
-    return "pdf";
+  // If buffer is present, inspect magic bytes
+  if (buffer && buffer.length >= 4) {
+    // XLSX files are ZIPs (first bytes: PK\x03\x04)
+    if (buffer[0] === 0x50 && buffer[1] === 0x4b && (buffer[2] === 0x03 || buffer[2] === 0x05 || buffer[2] === 0x07)) {
+      return "xlsx";
+    }
+    // PDF starts with %PDF
+    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) {
+      return "pdf";
+    }
   }
-  if (
-    lowerUrl.endsWith(".xlsx") ||
-    lowerType.includes(
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-  ) {
-    return "xlsx";
-  }
-  if (
-    lowerUrl.endsWith(".csv") ||
-    lowerType.includes("text/csv") ||
-    lowerType.includes("text/plain") ||
-    lowerType.includes("application/octet-stream")
-  ) {
-    return "csv";
-  }
-  // fallback: assume text/csv-ish
+
+  // fallbacks based on content-type and url
+  if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) return "pdf";
+  if (lowerUrl.endsWith(".xlsx") || lowerType.includes("spreadsheet") || lowerType.includes("sheet")) return "xlsx";
+  if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv") || lowerType.includes("text/plain")) return "csv";
+
+  // last fallback
   return "csv";
 }
 
-/**
- * Buffer → text (UTF-8, with BOM handling)
- */
-function bufferToText(buffer) {
-  if (!buffer) return "";
-  let text = buffer.toString("utf8");
-  // strip BOM if present
-  if (text.charCodeAt(0) === 0xfeff) {
-    text = text.slice(1);
-  }
-  return text;
-}
-
-/**
- * Extract text/content from CSV
- */
-function extractCsv(buffer) {
-  const text = bufferToText(buffer);
-  return { type: "csv", textContent: text };
-}
-
-/**
- * Extract text from XLSX (convert first sheet to CSV)
- */
+// ---------- robust XLSX extractor (safe try/catch) ----------
 function extractXlsx(buffer) {
-  const workbook = XLSX.read(buffer, { type: "buffer" });
-  const sheetName = workbook.SheetNames[0];
-  if (!sheetName) {
-    return { type: "xlsx", textContent: "" };
+  try {
+    // Use xlsx library but guard it: if it's too large this can still take time.
+    const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true, cellNF: false, cellText: false });
+    const sheetName = workbook.SheetNames[0];
+    if (!sheetName) return { type: "xlsx", textContent: "" };
+    const sheet = workbook.Sheets[sheetName];
+    const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+    return { type: "xlsx", textContent: csv };
+  } catch (err) {
+    console.error("extractXlsx failed:", err?.message || err);
+    // Provide a clearer error so the job won't hang
+    return { type: "xlsx", textContent: "", error: String(err?.message || err) };
   }
-  const sheet = workbook.Sheets[sheetName];
-  const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
-  return { type: "xlsx", textContent: csv };
 }
 
-/**
- * Extract text from PDF
- */
+// ---------- robust PDF extraction with scanned detection ----------
 async function extractPdf(buffer) {
-  const data = await pdf(buffer);
-  const text = data.text || "";
-  return { type: "pdf", textContent: text };
+  try {
+    const data = await pdf(buffer);
+    const text = (data && data.text) ? data.text.trim() : "";
+
+    // If pdf-parse returned no text or extremely short text, treat as scanned/needs OCR
+    if (!text || text.length < 50) {
+      return { type: "pdf", textContent: "", ocrNeeded: true };
+    }
+    return { type: "pdf", textContent: text, ocrNeeded: false };
+  } catch (err) {
+    console.error("extractPdf failed:", err?.message || err);
+    return { type: "pdf", textContent: "", error: String(err?.message || err) };
+  }
 }
 
 /**
