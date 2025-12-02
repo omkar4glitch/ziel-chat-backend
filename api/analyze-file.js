@@ -1,160 +1,292 @@
-// api/analyze-file.js
-import XLSX from "xlsx";
+import fetch from "node-fetch";
+import pdf from "pdf-parse";
+import * as XLSX from "xlsx";
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free";
-
-function looksLikeCsvText(buffer) {
-  const sample = buffer.slice(0, 8192).toString("utf8");
-  const printableRatio = (sample.replace(/[ -~\r\n\t]/g, "").length) / Math.max(1, sample.length);
-  const hasComma = sample.indexOf(",") !== -1;
-  const hasNewline = sample.indexOf("\n") !== -1;
-  return printableRatio < 0.2 && (hasComma || hasNewline);
+/**
+ * CORS helper
+ */
+function cors(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-async function callModel(prompt) {
-  if (!OPENROUTER_API_KEY) {
-    return { error: "Missing OPENROUTER_API_KEY", reply: null };
+/**
+ * Simple body parser (like we used in /api/chat)
+ */
+async function parseJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      if (!body) return resolve({});
+      const contentType =
+        (req.headers && (req.headers["content-type"] || req.headers["Content-Type"])) ||
+        "";
+
+      if (contentType.includes("application/json")) {
+        try {
+          return resolve(JSON.parse(body));
+        } catch (err) {
+          return resolve({});
+        }
+      }
+
+      // fallback – nothing fancy, just ignore for now
+      try {
+        const parsed = JSON.parse(body);
+        return resolve(parsed);
+      } catch {
+        return resolve({});
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+/**
+ * Download remote file into Buffer (with a hard max size)
+ */
+async function downloadFileToBuffer(url, maxBytes = 2 * 1024 * 1024) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Failed to download file: ${r.status} ${r.statusText}`);
+
+  const contentType = r.headers.get("content-type") || "";
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of r.body) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      // stop reading after maxBytes
+      chunks.push(chunk.slice(0, maxBytes - (total - chunk.length)));
+      break;
+    }
+    chunks.push(chunk);
   }
+  const buffer = Buffer.concat(chunks);
+  return { buffer, contentType };
+}
+
+/**
+ * Rough file-type detection
+ */
+function detectFileType(fileUrl, contentType) {
+  const lowerUrl = (fileUrl || "").toLowerCase();
+  const lowerType = (contentType || "").toLowerCase();
+
+  if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) {
+    return "pdf";
+  }
+  if (
+    lowerUrl.endsWith(".xlsx") ||
+    lowerType.includes(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+  ) {
+    return "xlsx";
+  }
+  if (
+    lowerUrl.endsWith(".csv") ||
+    lowerType.includes("text/csv") ||
+    lowerType.includes("text/plain") ||
+    lowerType.includes("application/octet-stream")
+  ) {
+    return "csv";
+  }
+  // fallback: assume text/csv-ish
+  return "csv";
+}
+
+/**
+ * Buffer → text (UTF-8, with BOM handling)
+ */
+function bufferToText(buffer) {
+  if (!buffer) return "";
+  let text = buffer.toString("utf8");
+  // strip BOM if present
+  if (text.charCodeAt(0) === 0xfeff) {
+    text = text.slice(1);
+  }
+  return text;
+}
+
+/**
+ * Extract text/content from CSV
+ */
+function extractCsv(buffer) {
+  const text = bufferToText(buffer);
+  return { type: "csv", textContent: text };
+}
+
+/**
+ * Extract text from XLSX (convert first sheet to CSV)
+ */
+function extractXlsx(buffer) {
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) {
+    return { type: "xlsx", textContent: "" };
+  }
+  const sheet = workbook.Sheets[sheetName];
+  const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+  return { type: "xlsx", textContent: csv };
+}
+
+/**
+ * Extract text from PDF
+ */
+async function extractPdf(buffer) {
+  const data = await pdf(buffer);
+  const text = data.text || "";
+  return { type: "pdf", textContent: text };
+}
+
+/**
+ * Call OpenRouter model (same pattern as /api/chat)
+ */
+async function callModel({ model, systemPrompt, fileType, textContent, question }) {
+  const trimmed = textContent.length > 30000
+    ? textContent.slice(0, 30000) + "\n\n[Content truncated for analysis]"
+    : textContent;
+
+  const messages = [
+    {
+      role: "system",
+      content:
+        systemPrompt ||
+        "You are an expert accounting and financial analysis assistant. " +
+          "You analyze uploaded financial files (CSVs, Excel, PDFs, GL exports, P&Ls, etc.) " +
+          "and answer the user's question clearly and concisely. Use markdown tables where helpful. " +
+          "If information is missing, clearly say what is missing instead of guessing.",
+    },
+    {
+      role: "user",
+      content:
+        `File type: ${fileType}\n` +
+        `Below is the extracted content from the file (may be truncated):\n\n` +
+        trimmed,
+    },
+    {
+      role: "user",
+      content:
+        question ||
+        "Please review this file and provide key observations, risks, and recommendations.",
+    },
+  ];
+
   const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENROUTER_API_KEY}`
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
     },
     body: JSON.stringify({
-      model: OPENROUTER_MODEL,
-      messages: [
-        { role: "system", content: "You are an accurate finance analyst. Answer concisely and use the provided table excerpt." },
-        { role: "user", content: prompt }
-      ],
-      temperature: 0.2
-    })
+      model: model || process.env.OPENROUTER_MODEL || "x-ai/grok-4.1-fast:free",
+      messages,
+      temperature: 0.2,
+    }),
   });
+
   const data = await r.json().catch(() => ({}));
-  const reply = data?.choices?.[0]?.message?.content ?? null;
-  return { data, reply };
+
+  const reply =
+    data?.choices?.[0]?.message?.content ||
+    data?.choices?.[0]?.message?.content?.toString?.() ||
+    data?.reply ||
+    (typeof data?.output === "string" ? data.output : null) ||
+    (Array.isArray(data?.output) && data.output[0]?.content
+      ? data.output[0].content
+      : null) ||
+    null;
+
+  return { reply, raw: data, httpStatus: r.status };
 }
 
+/**
+ * MAIN HANDLER /api/analyze-file
+ *
+ * Expects body: { fileUrl, question, transcript? }
+ * Returns: { ok, type, reply, textContent, debug? }
+ */
 export default async function handler(req, res) {
+  cors(res);
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST")
+    return res.status(405).json({ error: "Method not allowed" });
+
   try {
-    const { fileUrl, question } = req.body || {};
-    if (!fileUrl) return res.status(400).json({ error: "fileUrl missing" });
-
-    const response = await fetch(fileUrl, { redirect: "follow" });
-    const contentType = (response.headers.get("content-type") || "").toLowerCase();
-    const arrayBuf = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuf);
-
-    // Debug info (keeps helpful info for logs)
-    const debug = {
-      url: fileUrl,
-      status: response.status,
-      contentType,
-      bytesReceived: buffer.length
-    };
-
-    // XLSX detection
-    const isZip = buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04;
-    let excerpt = "";
-
-    if (isZip) {
-      try {
-        const wb = XLSX.read(buffer, { type: "buffer" });
-        const sheetName = wb.SheetNames[0];
-        const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1 });
-        excerpt = rows.slice(0, 500).map(r => r.join(",")).join("\n");
-      } catch (e) {
-        return res.status(500).json({ ok: false, error: "XLSX parse failed", details: e.toString(), debug });
-      }
-    } else {
-      const looksLikeCsv = contentType.includes("csv") || fileUrl.toLowerCase().endsWith(".csv") || looksLikeCsvText(buffer);
-      if (looksLikeCsv) {
-        const text = buffer.toString("utf8");
-        excerpt = text.slice(0, 200000); // limit
-      } else if (contentType.includes("pdf") || fileUrl.toLowerCase().endsWith(".pdf")) {
-        // If you have PDF parsing, do it here. For now return informative error.
-        return res.status(200).json({ ok: false, error: "PDF handling not implemented in this endpoint", debug });
-      } else {
-        return res.status(200).json({ ok: false, error: "Unknown file type", debug });
-      }
+    if (!process.env.OPENROUTER_API_KEY) {
+      return res
+        .status(500)
+        .json({ error: "Missing OPENROUTER_API_KEY in environment variables" });
     }
 
-// Build prompt for LLM: include question and excerpt
-const prompt = `
-You are a senior financial data analyst. Analyze the provided file excerpt exactly as given. 
-Do NOT guess or invent numbers. If any information is missing, state it clearly.
+    const body = await parseJsonBody(req);
+    const { fileUrl, question = "", transcript = "" } = body || {};
 
-Your responsibilities:
-1. Identify what type of data the user uploaded:
-   - P&L / Income Statement
-   - Balance Sheet
-   - Cash Flow Statement
-   - General accounting table
-   - Generic CSV/Excel data
-   - Or something else (describe what it looks like)
+    if (!fileUrl) {
+      return res.status(400).json({ error: "fileUrl is required" });
+    }
 
-2. Extract key metrics ONLY if they exist in the excerpt.
-   Examples:
-   - P&L: Revenue, COGS, Gross Profit, OpEx, EBITDA, Net Income, Margins
-   - Balance Sheet: Total Assets, Liabilities, Equity
-   - Cash Flow: Operating / Investing / Financing cash flows
-   - Generic data: Row count, column names, summary stats
+    // 1) Download file (up to 2MB for now; we'll optimize large files in next steps)
+    const { buffer, contentType } = await downloadFileToBuffer(fileUrl);
+    const detectedType = detectFileType(fileUrl, contentType);
 
-3. Answer the user's question using ONLY the visible excerpt.
+    // 2) Extract text depending on type
+    let extracted = { type: detectedType, textContent: "" };
+    if (detectedType === "pdf") {
+      extracted = await extractPdf(buffer);
+    } else if (detectedType === "xlsx") {
+      extracted = extractXlsx(buffer);
+    } else {
+      // csv or unknown -> treat as text/csv
+      extracted = extractCsv(buffer);
+    }
 
-4. DO NOT make up numbers or assumptions. 
-   If a calculation cannot be performed, say “Data not available in excerpt.”
+    const { type, textContent } = extracted;
 
-5. FORMAT your response EXACTLY like this:
+    if (!textContent || !textContent.trim()) {
+      return res.status(200).json({
+        ok: false,
+        type,
+        reply:
+          "I couldn't read any meaningful text from this file. It may be empty, purely binary, or scanned without OCR.",
+        textContent: "",
+        debug: { contentType, bytes: buffer.length },
+      });
+    }
 
-=====================
-📊 **Summary Table**
-(Provide a clean small table — 2 to 8 rows — showing the key metrics you can extract from the excerpt)
-
-Example format:
-| Metric | Value |
-|--------|--------|
-| Revenue | $1,240,000 |
-| Net Income | $320,000 |
-| Gross Margin | 34% |
-
-If a metric cannot be calculated, write “N/A”.
-
-=====================
-💡 **Insights & Commentary**
-- Clear trends
-- Variances (if multiple periods)
-- Expense or revenue patterns
-- Anomalies or risks
-- What is missing or incomplete in the file
-
-=====================
-📝 **Answer to the User Question**
-(Directly answer the user's question using only the provided data)
-
-=====================
-
-FILE EXCERPT:
-${excerpt}
-
-USER QUESTION:
-${question || "Please analyze this file and summarize the key insights."}
-`;
-
-
-    // Call model to get final reply
-    const { data: modelData, reply } = await callModel(prompt);
+    // 3) Call model with extracted text
+    const { reply, raw, httpStatus } = await callModel({
+      fileType: type,
+      textContent,
+      question,
+    });
 
     if (!reply) {
-      // Return the extracted text so worker can still decide to proceed or retry
-      return res.json({ ok: true, type: isZip ? "xlsx" : "csv", textContent: excerpt, debug, rawModel: modelData, reply: null });
+      return res.status(200).json({
+        ok: false,
+        type,
+        reply: "(No reply)",
+        textContent: textContent.slice(0, 5000),
+        debug: { status: httpStatus, body: raw },
+      });
     }
 
-    // Success: return reply + raw model response
-    return res.json({ ok: true, type: isZip ? "xlsx" : "csv", textContent: excerpt, reply, raw: modelData, debug });
+    // 4) Normal success response (compatible with Supabase process-jobs logic)
+    return res.status(200).json({
+      ok: true,
+      type,
+      reply,
+      textContent: textContent.slice(0, 20000), // don’t explode payload
+      debug: {
+        contentType,
+        bytes: buffer.length,
+        status: httpStatus,
+      },
+    });
   } catch (err) {
     console.error("analyze-file error:", err);
-    return res.status(500).json({ ok: false, error: String(err) });
+    return res.status(500).json({ error: String(err?.message || err) });
   }
 }
