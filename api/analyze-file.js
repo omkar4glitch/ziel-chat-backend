@@ -376,16 +376,108 @@ export default async function handler(req, res) {
     }
 
     // success: include structured if present
-    if (structured) {
-      return res.status(200).json({
-        ok: true,
-        type: extracted.type,
-        reply,
-        structured,
-        textContent: textContent.slice(0, 20000),
-        debug: { contentType, bytesReceived, status: httpStatus }
-      });
+// If we got structured JSON, generate a clean Markdown table & reply for the UI
+if (structured) {
+  // helper to format numbers with commas and optionally currency
+  const fmt = (v) => {
+    if (v === null || v === undefined) return "MISSING";
+    // if already a number
+    if (typeof v === "number" && Number.isFinite(v)) {
+      return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(v);
     }
+    // try to parse numeric-like strings (strip commas)
+    const n = parseFloat(String(v).replace(/,/g, "").replace(/[$]/g, ""));
+    if (!isNaN(n)) return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(n);
+    return String(v);
+  };
+
+  // Build Markdown table from structured.summary_table
+  let mdTable = "";
+  try {
+    const table = structured.summary_table || { headers: [], rows: [] };
+    const headers = table.headers && table.headers.length ? table.headers : ["Metric", "Value"];
+    const rows = Array.isArray(table.rows) ? table.rows : [];
+
+    // header row
+    mdTable += `| ${headers.join(" | ")} |\n`;
+    mdTable += `| ${headers.map(() => "---").join(" | ")} |\n`;
+
+    // rows
+    for (const r of rows) {
+      // ensure r is an array with same columns as headers
+      const cells = Array.isArray(r) ? r : [r];
+      const out = cells.map((c) => {
+        // if numeric-like, format
+        const cleaned = fmt(c);
+        // add dollar sign if header suggests currency (Net Sales / Net Profit)
+        return cleaned;
+      });
+      mdTable += `| ${out.join(" | ")} |\n`;
+    }
+  } catch (e) {
+    mdTable = ""; // fallback
+  }
+
+  // Build observations + recommendations markdown
+  const obs = Array.isArray(structured.observations) ? structured.observations : [];
+  const recs = Array.isArray(structured.recommendations) ? structured.recommendations : [];
+
+  let md = "";
+
+  // header
+  md += `**Summary Table**\n\n`;
+  md += mdTable ? `${mdTable}\n` : "_No summary table available_\n\n";
+
+  // Key metrics (if present)
+  if (structured.key_metrics && Object.keys(structured.key_metrics).length) {
+    md += `**Key Metrics**\n\n`;
+    for (const [k, v] of Object.entries(structured.key_metrics)) {
+      md += `- **${k.replace(/_/g, " ").replace(/\b\w/g, (s) => s.toUpperCase())}**: ${fmt(v)}\n`;
+    }
+    md += `\n`;
+  }
+
+  // Observations
+  md += `**Observations**\n\n`;
+  if (obs.length) {
+    for (const o of obs) md += `- ${o}\n`;
+  } else {
+    md += `- None\n`;
+  }
+  md += `\n`;
+
+  // Recommendations
+  md += `**Recommendations**\n\n`;
+  if (recs.length) {
+    let i = 1;
+    for (const r of recs) {
+      md += `${i}. ${r}\n`;
+      i++;
+    }
+  } else {
+    md += `- None\n`;
+  }
+
+  // Include a short extracted_text_sample for traceability
+  if (structured.extracted_text_sample) {
+    const sample = String(structured.extracted_text_sample).slice(0, 400).replace(/\n/g, " ");
+    md += `\n**Extracted sample**: \`${sample}...\`\n`;
+  }
+
+  // Return both structured JSON and the cleaned markdown (reply_markdown).
+  // For compatibility with existing client code that reads "reply", we put the clean markdown into "reply" too.
+  return res.status(200).json({
+    ok: true,
+    type: extracted.type,
+    // prefer the clean markdown for UI rendering
+    reply: md,
+    reply_markdown: md,
+    structured,
+    textContent: textContent.slice(0, 20000),
+    debug: { contentType, bytesReceived, status: httpStatus }
+  });
+}
+
 
     // fallback
     return res.status(200).json({
