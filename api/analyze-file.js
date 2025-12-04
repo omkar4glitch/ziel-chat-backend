@@ -4,17 +4,26 @@ import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 
 /**
- * CORS helper
+ * NOTE:
+ * - Required env vars:
+ *   OPENROUTER_API_KEY  (required)
+ *   OPENROUTER_MODEL    (optional; default used if missing)
+ *   OCR_SPACE_API_KEY   (optional; only used for scanned PDFs when set)
+ *
+ * - Dependencies (package.json):
+ *   "node-fetch": "^2.6.7" or compatible,
+ *   "pdf-parse": "^1.1.1",
+ *   "xlsx": "^0.18.5"
  */
+
+/* ---------- Helpers ---------- */
+
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-/**
- * Tolerant body parser with lightweight logs
- */
 async function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -24,41 +33,23 @@ async function parseJsonBody(req) {
       const contentType = (req.headers && (req.headers["content-type"] || req.headers["Content-Type"])) || "";
       if (contentType.includes("application/json")) {
         try {
-          const parsed = JSON.parse(body);
-          console.log("analyze-file: parsed JSON body keys:", Object.keys(parsed));
-          return resolve(parsed);
+          return resolve(JSON.parse(body));
         } catch (err) {
-          console.warn("analyze-file: JSON parse failed, falling back to raw text");
-          return resolve({ userMessage: body });
+          console.warn("parseJsonBody: JSON parse failed, returning raw text");
+          return resolve({ raw: body });
         }
       }
-      if (contentType.includes("application/x-www-form-urlencoded")) {
-        try {
-          const params = new URLSearchParams(body);
-          const obj = {};
-          for (const [k, v] of params) obj[k] = v;
-          console.log("analyze-file: parsed form body keys:", Object.keys(obj));
-          return resolve(obj);
-        } catch (err) {
-          return resolve({ userMessage: body });
-        }
-      }
+      // fallback: try parse JSON anyway
       try {
-        const parsed = JSON.parse(body);
-        console.log("analyze-file: parsed fallback JSON keys:", Object.keys(parsed));
-        return resolve(parsed);
+        return resolve(JSON.parse(body));
       } catch {
-        console.log("analyze-file: using raw body as userMessage (len=", body.length, ")");
-        return resolve({ userMessage: body });
+        return resolve({ raw: body });
       }
     });
     req.on("error", reject);
   });
 }
 
-/**
- * Download remote file into Buffer (with a timeout + maxBytes)
- */
 async function downloadFileToBuffer(url, maxBytes = 10 * 1024 * 1024, timeoutMs = 20000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -79,10 +70,10 @@ async function downloadFileToBuffer(url, maxBytes = 10 * 1024 * 1024, timeoutMs 
   let total = 0;
 
   try {
+    // r.body is a stream; iterate and accumulate up to maxBytes
     for await (const chunk of r.body) {
       total += chunk.length;
       if (total > maxBytes) {
-        // store only up to maxBytes then stop reading
         const allowed = maxBytes - (total - chunk.length);
         if (allowed > 0) chunks.push(chunk.slice(0, allowed));
         break;
@@ -97,31 +88,21 @@ async function downloadFileToBuffer(url, maxBytes = 10 * 1024 * 1024, timeoutMs 
   return { buffer: Buffer.concat(chunks), contentType, bytesReceived: total };
 }
 
-/**
- * Detect type by inspecting buffer signature first, then fallback to URL/contentType
- */
 function detectFileType(fileUrl, contentType, buffer) {
   const lowerUrl = (fileUrl || "").toLowerCase();
   const lowerType = (contentType || "").toLowerCase();
 
   if (buffer && buffer.length >= 4) {
-    // XLSX is a ZIP (PK..)
-    if (buffer[0] === 0x50 && buffer[1] === 0x4b) return "xlsx";
-    // PDF starts with %PDF
-    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) return "pdf";
+    if (buffer[0] === 0x50 && buffer[1] === 0x4b) return "xlsx"; // PK.. -> zip -> xlsx
+    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) return "pdf"; // %PDF
   }
 
   if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) return "pdf";
   if (lowerUrl.endsWith(".xlsx") || lowerType.includes("spreadsheet") || lowerType.includes("sheet")) return "xlsx";
   if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv") || lowerType.includes("text/plain") || lowerType.includes("octet-stream")) return "csv";
-
-  // fallback
   return "csv";
 }
 
-/**
- * Convert buffer to UTF-8 text (strip BOM)
- */
 function bufferToText(buffer) {
   if (!buffer) return "";
   let text = buffer.toString("utf8");
@@ -129,17 +110,12 @@ function bufferToText(buffer) {
   return text;
 }
 
-/**
- * Extract CSV (simple)
- */
+/* ---------- Extractors ---------- */
+
 function extractCsv(buffer) {
-  const text = bufferToText(buffer);
-  return { type: "csv", textContent: text };
+  return { type: "csv", textContent: bufferToText(buffer) };
 }
 
-/**
- * Extract XLSX: first sheet -> CSV text. Returns error field if parsing fails.
- */
 function extractXlsx(buffer) {
   try {
     const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true, cellNF: false, cellText: false });
@@ -154,15 +130,12 @@ function extractXlsx(buffer) {
   }
 }
 
-/**
- * Extract PDF text. If text is absent/too-short we mark ocrNeeded:true
- */
 async function extractPdf(buffer) {
   try {
     const data = await pdf(buffer);
     const text = (data && data.text) ? data.text.trim() : "";
     if (!text || text.length < 50) {
-      // consider it scanned or no text
+      // scanned/no-text
       return { type: "pdf", textContent: "", ocrNeeded: true };
     }
     return { type: "pdf", textContent: text, ocrNeeded: false };
@@ -172,40 +145,54 @@ async function extractPdf(buffer) {
   }
 }
 
-/**
- * Model call (OpenRouter / configured provider) - trimmed input safety
- */
-// ---------- REPLACE callModel with this ----------
+/* ---------- OCR.space helper (optional) ---------- */
+
+async function runOcrSpaceOnUrl(fileUrl) {
+  const apiKey = process.env.OCR_SPACE_API_KEY;
+  if (!apiKey) throw new Error("Missing OCR_SPACE_API_KEY");
+  // OCR.space supports GET with image url (parse/imageurl). Use engine 2 for better results.
+  const endpoint = `https://api.ocr.space/parse/imageurl?apikey=${encodeURIComponent(apiKey)}&url=${encodeURIComponent(fileUrl)}&language=eng&isOverlayRequired=false&OCREngine=2`;
+  const r = await fetch(endpoint, { method: "GET" });
+  const data = await r.json();
+  if (!data || !data.ParsedResults || !data.ParsedResults[0]) {
+    throw new Error("OCR.space returned unexpected result");
+  }
+  const parsedText = data.ParsedResults[0].ParsedText || "";
+  return { text: parsedText, raw: data };
+}
+
+/* ---------- Model call (structured output) ---------- */
+
 async function callModel({ model, systemPrompt, fileType, textContent, question }) {
-  // stronger system prompt to force structured output
+  // Strong system prompt to enforce structured output and JSON markers
   const strongSystem = systemPrompt || `
 You are an expert accounting & financial analysis assistant. When given extracted file text and a user question, follow these rules exactly:
 
-1) Output must contain a top-level JSON block (only valid JSON) labelled EXACTLY as "STRUCTURED_JSON_START" then the JSON, then "STRUCTURED_JSON_END". The JSON must have this schema:
-{
-  "summary_table": { "headers": ["Metric","Value"], "rows": [["Net Sales","41234"], ...] },
-  "key_metrics": { "net_sales": 41234, "net_profit": -4002, "gross_margin_pct": 73.6 },
-  "observations": ["bullet 1", "bullet 2"],
-  "recommendations": ["rec 1", "rec 2"],
-  "extracted_text_sample": "first 200 characters of extracted text for traceability"
-}
+1) Output MUST contain a top-level JSON block between EXACT markers:
+   STRUCTURED_JSON_START
+   <valid JSON object>
+   STRUCTURED_JSON_END
 
-2) After the JSON block, include a human-friendly analysis in Markdown. This must include:
-   - A compact Markdown table for the top metrics (Net Sales, Net Profit, Gross Profit, Prime Cost %)
-   - Bulleted Observations
-   - Bulleted Recommendations
-   - Short explanation of any data assumptions or missing fields
+   The JSON must follow this schema:
+   {
+     "summary_table": { "headers": ["Metric","Value"], "rows": [["Net Sales","41234"], ...] },
+     "key_metrics": { "net_sales": 41234, "net_profit": -4002, "gross_margin_pct": 73.6 },
+     "observations": ["bullet 1", "bullet 2"],
+     "recommendations": ["rec 1", "rec 2"],
+     "extracted_text_sample": "first 200 characters of extracted text for traceability"
+   }
 
-3) If any numeric value is not present in the text, set it to null in the JSON and mention "MISSING DATA" in the human analysis.
+2) After the JSON block, include a short human-friendly analysis in Markdown.
+   - Include a compact Markdown table for top metrics (Net Sales, Net Profit, Gross Profit, Prime Cost %).
+   - Include bulleted Observations and Recommendations.
+   - Mention any missing data as 'MISSING DATA'.
 
-4) Avoid long narratives. Be concise, precise, and use numeric values verbatim from the file when possible.
+3) Be concise. Use numeric values from the file. If a numeric value is not found, set it to null in JSON.
 
-5) If you cannot find financial numbers, return the JSON with empty table and observations explaining missing data.
-
-Now analyze the file text (which follows) and answer the user's question. Be careful to emit EXACT marker tokens: STRUCTURED_JSON_START and STRUCTURED_JSON_END so the caller can locate the JSON block.
+4) Emit EXACT markers: STRUCTURED_JSON_START and STRUCTURED_JSON_END (these are REQUIRED).
 `;
 
-  // keep prompt size manageable
+  // keep content trimmed to reasonable size for the model
   const trimmed = textContent.length > 30000 ? textContent.slice(0, 30000) + "\n\n[Content truncated]" : textContent;
 
   const messages = [
@@ -214,30 +201,32 @@ Now analyze the file text (which follows) and answer the user's question. Be car
     { role: "user", content: question || "Please analyze and summarize with the structure requested." }
   ];
 
+  const modelToCall = model || process.env.OPENROUTER_MODEL || "tngtech/deepseek-r1t2-chimera:free";
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY in environment variables");
+
   const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`
+      Authorization: `Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: model || process.env.OPENROUTER_MODEL || "x-ai/grok-4.1-fast:free",
+      model: modelToCall,
       messages,
       temperature: 0.0,
-      max_tokens: 1500
+      max_tokens: 2000
     })
   });
 
-  // parse response safely
   let data;
   try {
     data = await r.json();
   } catch (err) {
     const raw = await r.text().catch(() => "");
-    return { reply: null, raw: raw.slice ? raw.slice(0, 2000) : raw, httpStatus: r.status };
+    return { reply: null, structured: null, raw: raw.slice ? raw.slice(0, 2000) : raw, httpStatus: r.status };
   }
 
-  // try to extract text reply (many adapters)
   const textReply =
     data?.choices?.[0]?.message?.content ||
     data?.reply ||
@@ -245,33 +234,33 @@ Now analyze the file text (which follows) and answer the user's question. Be car
     (Array.isArray(data?.output) && data.output[0]?.content ? data.output[0].content : null) ||
     null;
 
-  if (!textReply) return { reply: null, raw: data, httpStatus: r.status };
+  if (!textReply) return { reply: null, structured: null, raw: data, httpStatus: r.status };
 
-  // try to extract JSON between the exact markers
+  // Attempt to extract JSON between markers
   let structured = null;
   try {
-    const start = textReply.indexOf("STRUCTURED_JSON_START");
-    const end = textReply.indexOf("STRUCTURED_JSON_END");
+    const startToken = "STRUCTURED_JSON_START";
+    const endToken = "STRUCTURED_JSON_END";
+    const start = textReply.indexOf(startToken);
+    const end = textReply.indexOf(endToken);
     if (start !== -1 && end !== -1 && end > start) {
-      const jsonText = textReply.slice(start + "STRUCTURED_JSON_START".length, end).trim();
+      const jsonText = textReply.slice(start + startToken.length, end).trim();
       structured = JSON.parse(jsonText);
     } else {
-      // fallback: try to find first JSON object substring
+      // fallback: try to find the first JSON object in the reply
       const match = textReply.match(/\{[\s\S]*\}/);
       if (match) structured = JSON.parse(match[0]);
     }
   } catch (err) {
-    // parsing failed — we will still return the raw reply and debug info
+    // parsing failed -> structured stays null; keep raw reply for debugging
     structured = null;
   }
 
   return { reply: textReply, structured, raw: data, httpStatus: r.status };
 }
 
-/**
- * MAIN handler
- * expects { fileUrl, question, transcript? }
- */
+/* ---------- Main handler ---------- */
+
 export default async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -287,13 +276,18 @@ export default async function handler(req, res) {
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
-    // Download file (with timeout and max size)
-    const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
+    // download
+    let download;
+    try {
+      download = await downloadFileToBuffer(fileUrl, 20 * 1024 * 1024, 30000); // 20MB / 30s
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: "download_failed", message: String(err?.message || err) });
+    }
 
-    // detect type (inspect bytes)
+    const { buffer, contentType, bytesReceived } = download;
     const detectedType = detectFileType(fileUrl, contentType, buffer);
 
-    // parse accordingly
+    // extract
     let extracted = { type: detectedType, textContent: "" };
     if (detectedType === "pdf") {
       extracted = await extractPdf(buffer);
@@ -303,9 +297,8 @@ export default async function handler(req, res) {
       extracted = extractCsv(buffer);
     }
 
-    // Handle errors or OCR-needed cases
+    // handle parse errors
     if (extracted.error) {
-      // XLSX parse error or PDF parse error
       return res.status(200).json({
         ok: false,
         type: extracted.type,
@@ -314,59 +307,96 @@ export default async function handler(req, res) {
       });
     }
 
+    // OCR path for scanned PDFs
     if (extracted.ocrNeeded) {
-      // scanned PDF — do not attempt heavy OCR here by default
-      return res.status(200).json({
-        ok: false,
-        type: "pdf",
-        reply:
-          "This PDF appears to be scanned or contains no embedded text. To extract text please run OCR. " +
-          "Recommended: use an OCR API (OCR.space or Google Vision). If you want I can add an OCR step that calls OCR.space when you provide an API key.",
-        debug: { ocrNeeded: true, contentType, bytesReceived }
-      });
+      if (process.env.OCR_SPACE_API_KEY) {
+        try {
+          const ocrRes = await runOcrSpaceOnUrl(fileUrl);
+          const ocrText = ocrRes.text || "";
+          if (!ocrText || !ocrText.trim()) {
+            return res.status(200).json({
+              ok: false,
+              type: "pdf",
+              reply: "OCR completed but no text extracted. Document may be too low-quality.",
+              debug: { ocr: ocrRes.raw }
+            });
+          }
+          // proceed with OCR text
+          extracted = { type: "pdf", textContent: ocrText };
+        } catch (err) {
+          return res.status(200).json({
+            ok: false,
+            type: "pdf",
+            reply: `OCR attempt failed: ${String(err?.message || err)}`,
+            debug: { ocrError: String(err?.message || err) }
+          });
+        }
+      } else {
+        return res.status(200).json({
+          ok: false,
+          type: "pdf",
+          reply:
+            "This PDF appears to be scanned or contains no embedded text. To auto-extract text, set OCR_SPACE_API_KEY in Vercel and re-run, or upload a searchable PDF.",
+          debug: { ocrNeeded: true, contentType, bytesReceived }
+        });
+      }
     }
 
-    const textContent = extracted.textContent || "";
-
-    if (!textContent || !textContent.trim()) {
+    const textContent = (extracted.textContent || "").trim();
+    if (!textContent) {
       return res.status(200).json({
         ok: false,
         type: extracted.type,
-        reply: "I couldn't extract any text from this file. It may be empty or corrupted.",
+        reply: "No text could be extracted from the file (empty or corrupt).",
         debug: { contentType, bytesReceived }
       });
     }
 
-    // call model with extracted content
-// after calling callModel:
-const { reply, structured, raw, httpStatus } = await callModel({ fileType: extracted.type, textContent, question });
+    // call model
+    let modelRes;
+    try {
+      modelRes = await callModel({
+        fileType: extracted.type,
+        textContent,
+        question
+      });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: "model_call_failed", message: String(err?.message || err) });
+    }
 
-if (!reply) {
-  return res.status(200).json({
-    ok: false,
-    type: extracted.type,
-    reply: "(No reply from model)",
-    debug: { status: httpStatus, body: raw }
-  });
+    const { reply, structured, raw, httpStatus } = modelRes;
+
+    if (!reply) {
+      return res.status(200).json({
+        ok: false,
+        type: extracted.type,
+        reply: "(No reply from model)",
+        debug: { status: httpStatus, body: raw, contentType, bytesReceived }
+      });
+    }
+
+    // success: include structured if present
+    if (structured) {
+      return res.status(200).json({
+        ok: true,
+        type: extracted.type,
+        reply,
+        structured,
+        textContent: textContent.slice(0, 20000),
+        debug: { contentType, bytesReceived, status: httpStatus }
+      });
+    }
+
+    // fallback
+    return res.status(200).json({
+      ok: true,
+      type: extracted.type,
+      reply,
+      textContent: textContent.slice(0, 20000),
+      debug: { contentType, bytesReceived, status: httpStatus, raw }
+    });
+  } catch (err) {
+    console.error("analyze-file fatal:", err);
+    return res.status(500).json({ error: String(err?.message || err) });
+  }
 }
-
-// If structured JSON available, return it separately
-if (structured) {
-  return res.status(200).json({
-    ok: true,
-    type: extracted.type,
-    reply,               // full text (json + markdown)
-    structured,          // parsed structured JSON (ready for UI)
-    textContent: textContent.slice(0, 20000),
-    debug: { status: httpStatus }
-  });
-}
-
-// fallback - reply only
-return res.status(200).json({
-  ok: true,
-  type: extracted.type,
-  reply,
-  textContent: textContent.slice(0, 20000),
-  debug: { status: httpStatus }
-});
