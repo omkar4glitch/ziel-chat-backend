@@ -338,31 +338,35 @@ export default async function handler(req, res) {
     }
 
     // call model with extracted content
-    const { reply, raw, httpStatus } = await callModel({
-      fileType: extracted.type,
-      textContent,
-      question
-    });
+// after calling callModel:
+const { reply, structured, raw, httpStatus } = await callModel({ fileType: extracted.type, textContent, question });
 
-    if (!reply) {
-      return res.status(200).json({
-        ok: false,
-        type: extracted.type,
-        reply: "(No reply from model)",
-        debug: { status: httpStatus, body: raw, contentType, bytesReceived }
-      });
-    }
-
-    // success
-    return res.status(200).json({
-      ok: true,
-      type: extracted.type,
-      reply,
-      textContent: textContent.slice(0, 20000),
-      debug: { contentType, bytesReceived, status: httpStatus }
-    });
-  } catch (err) {
-    console.error("analyze-file error:", err);
-    return res.status(500).json({ error: String(err?.message || err) });
-  }
+if (!reply) {
+  return res.status(200).json({
+    ok: false,
+    type: extracted.type,
+    reply: "(No reply from model)",
+    debug: { status: httpStatus, body: raw }
+  });
 }
+
+// If structured JSON available, return it separately
+if (structured) {
+  return res.status(200).json({
+    ok: true,
+    type: extracted.type,
+    reply,               // full text (json + markdown)
+    structured,          // parsed structured JSON (ready for UI)
+    textContent: textContent.slice(0, 20000),
+    debug: { status: httpStatus }
+  });
+}
+
+// fallback - reply only
+return res.status(200).json({
+  ok: true,
+  type: extracted.type,
+  reply,
+  textContent: textContent.slice(0, 20000),
+  debug: { status: httpStatus }
+});
