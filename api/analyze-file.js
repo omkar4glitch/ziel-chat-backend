@@ -175,21 +175,43 @@ async function extractPdf(buffer) {
 /**
  * Model call (OpenRouter / configured provider) - trimmed input safety
  */
+// ---------- REPLACE callModel with this ----------
 async function callModel({ model, systemPrompt, fileType, textContent, question }) {
+  // stronger system prompt to force structured output
+  const strongSystem = systemPrompt || `
+You are an expert accounting & financial analysis assistant. When given extracted file text and a user question, follow these rules exactly:
+
+1) Output must contain a top-level JSON block (only valid JSON) labelled EXACTLY as "STRUCTURED_JSON_START" then the JSON, then "STRUCTURED_JSON_END". The JSON must have this schema:
+{
+  "summary_table": { "headers": ["Metric","Value"], "rows": [["Net Sales","41234"], ...] },
+  "key_metrics": { "net_sales": 41234, "net_profit": -4002, "gross_margin_pct": 73.6 },
+  "observations": ["bullet 1", "bullet 2"],
+  "recommendations": ["rec 1", "rec 2"],
+  "extracted_text_sample": "first 200 characters of extracted text for traceability"
+}
+
+2) After the JSON block, include a human-friendly analysis in Markdown. This must include:
+   - A compact Markdown table for the top metrics (Net Sales, Net Profit, Gross Profit, Prime Cost %)
+   - Bulleted Observations
+   - Bulleted Recommendations
+   - Short explanation of any data assumptions or missing fields
+
+3) If any numeric value is not present in the text, set it to null in the JSON and mention "MISSING DATA" in the human analysis.
+
+4) Avoid long narratives. Be concise, precise, and use numeric values verbatim from the file when possible.
+
+5) If you cannot find financial numbers, return the JSON with empty table and observations explaining missing data.
+
+Now analyze the file text (which follows) and answer the user's question. Be careful to emit EXACT marker tokens: STRUCTURED_JSON_START and STRUCTURED_JSON_END so the caller can locate the JSON block.
+`;
+
+  // keep prompt size manageable
   const trimmed = textContent.length > 30000 ? textContent.slice(0, 30000) + "\n\n[Content truncated]" : textContent;
+
   const messages = [
-    {
-      role: "system",
-      content: systemPrompt || "You are an expert accounting assistant. Analyze uploaded financial files and answer user questions concisely."
-    },
-    {
-      role: "user",
-      content: `File type: ${fileType}\nExtracted content (may be truncated):\n\n${trimmed}`
-    },
-    {
-      role: "user",
-      content: question || "Please analyze the file and provide key insights."
-    }
+    { role: "system", content: strongSystem },
+    { role: "user", content: `File type: ${fileType}\n\nExtracted content (may be truncated):\n\n${trimmed}` },
+    { role: "user", content: question || "Please analyze and summarize with the structure requested." }
   ];
 
   const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -201,28 +223,49 @@ async function callModel({ model, systemPrompt, fileType, textContent, question 
     body: JSON.stringify({
       model: model || process.env.OPENROUTER_MODEL || "x-ai/grok-4.1-fast:free",
       messages,
-      temperature: 0.2
+      temperature: 0.0,
+      max_tokens: 1500
     })
   });
 
-  // safely parse JSON
+  // parse response safely
   let data;
   try {
     data = await r.json();
   } catch (err) {
     const raw = await r.text().catch(() => "");
-    console.error("Model returned non-JSON:", raw.slice ? raw.slice(0, 1000) : raw);
     return { reply: null, raw: raw.slice ? raw.slice(0, 2000) : raw, httpStatus: r.status };
   }
 
-  const reply =
+  // try to extract text reply (many adapters)
+  const textReply =
     data?.choices?.[0]?.message?.content ||
     data?.reply ||
     (typeof data?.output === "string" ? data.output : null) ||
     (Array.isArray(data?.output) && data.output[0]?.content ? data.output[0].content : null) ||
     null;
 
-  return { reply, raw: data, httpStatus: r.status };
+  if (!textReply) return { reply: null, raw: data, httpStatus: r.status };
+
+  // try to extract JSON between the exact markers
+  let structured = null;
+  try {
+    const start = textReply.indexOf("STRUCTURED_JSON_START");
+    const end = textReply.indexOf("STRUCTURED_JSON_END");
+    if (start !== -1 && end !== -1 && end > start) {
+      const jsonText = textReply.slice(start + "STRUCTURED_JSON_START".length, end).trim();
+      structured = JSON.parse(jsonText);
+    } else {
+      // fallback: try to find first JSON object substring
+      const match = textReply.match(/\{[\s\S]*\}/);
+      if (match) structured = JSON.parse(match[0]);
+    }
+  } catch (err) {
+    // parsing failed — we will still return the raw reply and debug info
+    structured = null;
+  }
+
+  return { reply: textReply, structured, raw: data, httpStatus: r.status };
 }
 
 /**
