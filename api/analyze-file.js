@@ -508,16 +508,42 @@ if (structured) {
 
   // Return both structured JSON and the cleaned markdown (reply_markdown).
   // Also put the clean markdown into "reply" for compatibility.
+  // Return both structured JSON and the cleaned markdown (reply_markdown).
+  // Put the clean markdown into "reply" for compatibility.
+  // Trim long debug/textContent and avoid including extracted sample.
+  const safeTextSample = textContent ? String(textContent).slice(0, 4000) : "";
+
+  // If the structured.summary_table has a lot of rows, keep only the first N for markdown.
+  // (still return full structured JSON so consumers can inspect full data programmatically)
+  const MAX_TABLE_ROWS_FOR_MARKDOWN = 40;
+  const limitedStructured = JSON.parse(JSON.stringify(structured || {}));
+  if (limitedStructured.summary_table && Array.isArray(limitedStructured.summary_table.rows)) {
+    if (limitedStructured.summary_table.rows.length > MAX_TABLE_ROWS_FOR_MARKDOWN) {
+      limitedStructured.summary_table = {
+        ...limitedStructured.summary_table,
+        rows: limitedStructured.summary_table.rows.slice(0, MAX_TABLE_ROWS_FOR_MARKDOWN)
+      };
+      // add a note for client if they want the full table
+      md += `\n_Note: summary table truncated in display (first ${MAX_TABLE_ROWS_FOR_MARKDOWN} rows). Use structured JSON for the full table._\n`;
+    }
+  }
+
   return res.status(200).json({
     ok: true,
-    type: extracted.type,
+    type: extracted?.type || null,
     reply: md,
     reply_markdown: md,
+    // return full structured payload for programmatic UI rendering if app wants to build a real table
     structured,
-    textContent: textContent ? String(textContent).slice(0, 20000) : "",
-    debug: { contentType, bytesReceived, status: httpStatus }
+    // short debug snippet only (no massive extracted sample)
+    debug: {
+      contentType,
+      bytesReceived,
+      httpStatus,
+      textSnippet: safeTextSample
+    }
   });
-}
+
 
 
     // fallback
