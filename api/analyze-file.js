@@ -377,19 +377,34 @@ export default async function handler(req, res) {
 
     // success: include structured if present
 // If we got structured JSON, generate a clean Markdown table & reply for the UI
+// If we got structured JSON, generate a clean Markdown table & reply for the UI
 if (structured) {
-  // helper to format numbers with commas and optionally currency
-  const fmt = (v) => {
-    if (v === null || v === undefined) return "MISSING";
-    // if already a number
+  // helper to format numbers with commas and optionally currency/percent
+  const fmtNumber = (v, opts = {}) => {
+    if (v === null || v === undefined || v === "") return "MISSING";
+    // if already number
     if (typeof v === "number" && Number.isFinite(v)) {
+      if (opts.decimals !== undefined) {
+        return new Intl.NumberFormat("en-US", { minimumFractionDigits: opts.decimals, maximumFractionDigits: opts.decimals }).format(v);
+      }
       return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(v);
     }
-    // try to parse numeric-like strings (strip commas)
-    const n = parseFloat(String(v).replace(/,/g, "").replace(/[$]/g, ""));
-    if (!isNaN(n)) return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(n);
-    return String(v);
+    // string -> try parse
+    const cleaned = String(v).replace(/[, ]+/g, "").replace(/[$]/g, "");
+    const n = parseFloat(cleaned);
+    if (!isNaN(n)) {
+      if (opts.decimals !== undefined) {
+        return new Intl.NumberFormat("en-US", { minimumFractionDigits: opts.decimals, maximumFractionDigits: opts.decimals }).format(n);
+      }
+      return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(n);
+    }
+    // fallback: return trimmed string
+    return String(v).trim();
   };
+
+  // heuristics to decide currency or percent
+  const looksLikePercent = (metricName) => /\b(pct|percent|%|margin)\b/i.test(metricName);
+  const looksLikeMoney = (metricName) => /\b(net sales|net profit|gross profit|sales|revenue|income|profit|amount|total)\b/i.test(metricName);
 
   // Build Markdown table from structured.summary_table
   let mdTable = "";
@@ -398,24 +413,42 @@ if (structured) {
     const headers = table.headers && table.headers.length ? table.headers : ["Metric", "Value"];
     const rows = Array.isArray(table.rows) ? table.rows : [];
 
-    // header row
+    // ensure header row and separator: proper markdown table
     mdTable += `| ${headers.join(" | ")} |\n`;
-    mdTable += `| ${headers.map(() => "---").join(" | ")} |\n`;
+    mdTable += `| ${headers.map(() => '---').join(" | ")} |\n`;
 
     // rows
     for (const r of rows) {
-      // ensure r is an array with same columns as headers
       const cells = Array.isArray(r) ? r : [r];
-      const out = cells.map((c) => {
-        // if numeric-like, format
-        const cleaned = fmt(c);
-        // add dollar sign if header suggests currency (Net Sales / Net Profit)
-        return cleaned;
-      });
-      mdTable += `| ${out.join(" | ")} |\n`;
+      // First cell is metric name; second cell is value (if exists)
+      const metricName = cells[0] !== undefined ? String(cells[0]) : "";
+      const rawVal = cells[1] !== undefined ? cells[1] : "";
+      let formattedVal = "";
+
+      if (looksLikePercent(metricName)) {
+        // maybe a percent number
+        // remove stray % or commas then format
+        const n = parseFloat(String(rawVal).toString().replace(/[%,$]/g, "").replace(/,/g, ""));
+        if (!isNaN(n)) formattedVal = `${fmtNumber(n, { decimals: 2 })}%`;
+        else formattedVal = String(rawVal);
+      } else if (looksLikeMoney(metricName)) {
+        // treat as dollars
+        formattedVal = `$${fmtNumber(rawVal, { decimals: 2 })}`;
+      } else {
+        // generic formatting
+        // if numeric
+        const n = parseFloat(String(rawVal).toString().replace(/,/g, "").replace(/[$%]/g, ""));
+        if (!isNaN(n)) {
+          formattedVal = fmtNumber(n, { decimals: 2 });
+        } else {
+          formattedVal = String(rawVal);
+        }
+      }
+
+      mdTable += `| ${metricName} | ${formattedVal} |\n`;
     }
   } catch (e) {
-    mdTable = ""; // fallback
+    mdTable = "_(unable to format summary table)_\n";
   }
 
   // Build observations + recommendations markdown
@@ -424,21 +457,30 @@ if (structured) {
 
   let md = "";
 
-  // header
-  md += `**Summary Table**\n\n`;
+  // Header (plain text headings so UI shows clean text if markdown not rendered)
+  md += `Summary Table\n\n`;
   md += mdTable ? `${mdTable}\n` : "_No summary table available_\n\n";
 
   // Key metrics (if present)
   if (structured.key_metrics && Object.keys(structured.key_metrics).length) {
-    md += `**Key Metrics**\n\n`;
+    md += `Key Metrics\n\n`;
     for (const [k, v] of Object.entries(structured.key_metrics)) {
-      md += `- **${k.replace(/_/g, " ").replace(/\b\w/g, (s) => s.toUpperCase())}**: ${fmt(v)}\n`;
+      // k like "net_sales" -> "Net Sales"
+      const displayKey = k.replace(/_/g, " ").replace(/\b\w/g, (s) => s.toUpperCase());
+      // decide formatting
+      if (looksLikePercent(displayKey) || /_pct$/.test(k) || /percent/i.test(k)) {
+        md += `- ${displayKey}: ${fmtNumber(v, { decimals: 2 })}%\n`;
+      } else if (looksLikeMoney(displayKey) || /net|sales|profit|income|revenue/i.test(k)) {
+        md += `- ${displayKey}: $${fmtNumber(v, { decimals: 2 })}\n`;
+      } else {
+        md += `- ${displayKey}: ${fmtNumber(v, { decimals: 2 })}\n`;
+      }
     }
     md += `\n`;
   }
 
   // Observations
-  md += `**Observations**\n\n`;
+  md += `Observations\n\n`;
   if (obs.length) {
     for (const o of obs) md += `- ${o}\n`;
   } else {
@@ -447,7 +489,7 @@ if (structured) {
   md += `\n`;
 
   // Recommendations
-  md += `**Recommendations**\n\n`;
+  md += `Recommendations\n\n`;
   if (recs.length) {
     let i = 1;
     for (const r of recs) {
@@ -458,22 +500,21 @@ if (structured) {
     md += `- None\n`;
   }
 
-  // Include a short extracted_text_sample for traceability
+  // Include a short extracted_text_sample for traceability (if available)
   if (structured.extracted_text_sample) {
     const sample = String(structured.extracted_text_sample).slice(0, 400).replace(/\n/g, " ");
-    md += `\n**Extracted sample**: \`${sample}...\`\n`;
+    md += `\nExtracted sample: \`${sample}...\`\n`;
   }
 
   // Return both structured JSON and the cleaned markdown (reply_markdown).
-  // For compatibility with existing client code that reads "reply", we put the clean markdown into "reply" too.
+  // Also put the clean markdown into "reply" for compatibility.
   return res.status(200).json({
     ok: true,
     type: extracted.type,
-    // prefer the clean markdown for UI rendering
     reply: md,
     reply_markdown: md,
     structured,
-    textContent: textContent.slice(0, 20000),
+    textContent: textContent ? String(textContent).slice(0, 20000) : "",
     debug: { contentType, bytesReceived, status: httpStatus }
   });
 }
