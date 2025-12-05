@@ -5,7 +5,7 @@ const XLSX = require("xlsx");
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "tngtech/deepseek-r1t2-chimera:free";
-const MAX_EXTRACT_CHARS = parseInt(process.env.MAX_EXTRACT_CHARS || "20000", 10);
+
 
 // fetch file as buffer
 async function fetchFileBuffer(url) {
