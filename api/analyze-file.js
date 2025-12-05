@@ -70,7 +70,7 @@ function buildModelPrompt({ extractedTextSample, fileType, userQuestion }) {
   const instructions = [
     "You are a financial-analysis assistant.",
     "Produce TWO things in one response:",
-    // fixed: closed the string properly and gave an explicit example so the literal is well-formed
+    // closed string and added example
     "1) VALID JSON only, between markers: STRUCTURED_JSON_START and STRUCTURED_JSON_END. The JSON must have keys: summary_table, key_metrics, observations, recommendations. Example: summary_table: { headers: [[\"Col1\",\"Col2\"]], rows: [[\"r1c1\",\"r1c2\"]] }.",
     "2) After the JSON, a human-readable MARKDOWN summary that includes a properly formatted markdown table for the summary_table and bullets for observations/recommendations.",
     "Do NOT include any extra JSON outside the markers. Keep JSON strictly parseable.",
@@ -233,7 +233,22 @@ module.exports = async (req, res) => {
 
     const prompt = buildModelPrompt({ extractedTextSample: textSample, fileType: extracted.type, userQuestion: question });
 
-    const modelResp = await callModel(prompt);
+    const modelResp = await callModel(prompt).catch(e => {
+      // log and rethrow so our top-level catch can pick it up
+      console.error("callModel failed:", e);
+      throw e;
+    });
+
+    // If model returned nothing useful, return details right away (helps debug service issues)
+    if (!modelResp || (!(modelResp.textReply && modelResp.textReply.trim()) && !(modelResp.raw && modelResp.raw.trim()))) {
+      console.error("callModel returned empty reply", { modelRespStatus: modelResp?.status, rawHead: (modelResp?.raw||"").slice(0,500) });
+      return res.status(500).json({
+        error: "model_no_reply",
+        message: "analyze-file failed or returned no reply from model",
+        raw_model_response_status: modelResp?.status,
+        raw_model_response_text_head: (modelResp?.raw || "").slice(0, 2000)
+      });
+    }
 
     // try to extract structured JSON
     const struct = extractStructuredJsonFromReply(modelResp.textReply || modelResp.raw || "");
@@ -289,7 +304,13 @@ module.exports = async (req, res) => {
     return res.status(200).json(responsePayload);
 
   } catch (err) {
-    console.error("analyze-file error:", err);
-    return res.status(500).json({ error: String(err?.message || err) });
+    // More explicit logging and safe trimmed stack for debugging
+    console.error("analyze-file error:", err && (err.stack || err.message || err));
+    return res.status(500).json({
+      error: "analyze-file exception",
+      message: String(err?.message || err),
+      // truncated stack is helpful; remove in prod if it leaks anything sensitive
+      stack: (err && err.stack) ? String(err.stack).split("\n").slice(0, 10).join("\n") : undefined
+    });
   }
 };
