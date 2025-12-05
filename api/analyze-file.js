@@ -93,6 +93,9 @@ function extractStructuredJsonFromReply(text) {
   const si = text.indexOf(startMarker);
   const ei = text.indexOf(endMarker);
 
+  // helper: detect obvious server/error messages in text
+  const serverErrPattern = /server error|internal server error|502|503|bad gateway|service unavailable/i;
+
   if (si !== -1 && ei !== -1 && ei > si) {
     const block = text.slice(si + startMarker.length, ei).trim();
     // find first { and last }
@@ -100,6 +103,17 @@ function extractStructuredJsonFromReply(text) {
     const lastB = block.lastIndexOf("}");
     if (firstB !== -1 && lastB !== -1 && lastB > firstB) {
       const candidate = block.slice(firstB, lastB + 1).trim();
+
+      // quick heuristics to avoid trying to parse human/server error text that happens to be wrapped in braces
+      if (serverErrPattern.test(candidate)) {
+        return { ok: false, error: "model_server_error_detected", raw: candidate.slice(0, 2000) };
+      }
+      // after the opening brace the next non-space character should commonly be " (string) or { or [ or - or digit
+      const afterBrace = candidate.slice(1).trimStart();
+      if (!afterBrace.startsWith('"') && !afterBrace.startsWith("'") && !afterBrace.startsWith("{") && !afterBrace.startsWith("[") && !/^[\d\-]/.test(afterBrace)) {
+        return { ok: false, error: "JSON candidate doesn't start with a valid JSON token", raw: candidate.slice(0, 2000) };
+      }
+
       if (candidate.startsWith("{")) {
         try {
           const parsed = JSON.parse(candidate);
@@ -120,12 +134,23 @@ function extractStructuredJsonFromReply(text) {
   const last = text.lastIndexOf("}");
   if (first !== -1 && last !== -1 && last > first) {
     const candidate = text.slice(first, last + 1).trim();
+
+    if (serverErrPattern.test(candidate) || serverErrPattern.test(text)) {
+      return { ok: false, error: "model_server_error_detected", raw: (candidate || text).slice(0, 2000) };
+    }
+
+    // sanity check before attempting parse
+    const afterBrace = candidate.slice(1).trimStart();
+    if (!afterBrace.startsWith('"') && !afterBrace.startsWith("'") && !afterBrace.startsWith("{") && !afterBrace.startsWith("[") && !/^[\d\-]/.test(afterBrace)) {
+      return { ok: false, error: "JSON candidate doesn't start with a valid JSON token", raw: candidate.slice(0, 2000) };
+    }
+
     if (candidate.startsWith("{")) {
       try {
         const parsed = JSON.parse(candidate);
         return { ok: true, parsed, jsonText: candidate };
       } catch (err) {
-        return { ok: false, error: "JSON parse failed on candidate", raw: candidate.slice(0, 500) };
+        return { ok: false, error: "JSON parse failed on candidate: " + String(err.message || err), raw: candidate.slice(0, 2000) };
       }
     }
   }
