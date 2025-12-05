@@ -1,28 +1,23 @@
+// api/analyze-file.js
+// ESM-style file (same pattern as your old working file)
 import fetch from "node-fetch";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "x-ai/grok-4. 1-fast:free";
-
-/**
- * CORS helper
- */
+/* ---------- CORS helper ---------- */
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res. setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-/**
- * Tolerant body parser with lightweight logs
- */
+/* ---------- tolerant body parser (same as your old file) ---------- */
 async function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
-    req. on("end", () => {
-      if (! body) return resolve({});
+    req.on("end", () => {
+      if (!body) return resolve({});
       const contentType = (req.headers && (req.headers["content-type"] || req.headers["Content-Type"])) || "";
       if (contentType.includes("application/json")) {
         try {
@@ -58,10 +53,8 @@ async function parseJsonBody(req) {
   });
 }
 
-/**
- * Download remote file into Buffer (with a timeout + maxBytes)
- */
-async function downloadFileToBuffer(url, maxBytes = 10 * 1024 * 1024, timeoutMs = 20000) {
+/* ---------- download with stream + maxBytes ---------- */
+async function downloadFileToBuffer(url, maxBytes = 25 * 1024 * 1024, timeoutMs = 25000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -74,17 +67,17 @@ async function downloadFileToBuffer(url, maxBytes = 10 * 1024 * 1024, timeoutMs 
   }
   clearTimeout(timer);
 
-  if (! r.ok) throw new Error(`Failed to download file: ${r.status} ${r.statusText}`);
+  if (!r.ok) throw new Error(`Failed to download file: ${r.status} ${r.statusText}`);
 
   const contentType = r.headers.get("content-type") || "";
   const chunks = [];
   let total = 0;
 
   try {
+    // for-await-of on r.body (node-fetch body is async iterable)
     for await (const chunk of r.body) {
       total += chunk.length;
       if (total > maxBytes) {
-        // store only up to maxBytes then stop reading
         const allowed = maxBytes - (total - chunk.length);
         if (allowed > 0) chunks.push(chunk.slice(0, allowed));
         break;
@@ -99,179 +92,218 @@ async function downloadFileToBuffer(url, maxBytes = 10 * 1024 * 1024, timeoutMs 
   return { buffer: Buffer.concat(chunks), contentType, bytesReceived: total };
 }
 
-/**
- * Detect type by inspecting buffer signature first, then fallback to URL/contentType
- */
+/* ---------- detect file type by magic bytes, fallback to url/contentType ---------- */
 function detectFileType(fileUrl, contentType, buffer) {
   const lowerUrl = (fileUrl || "").toLowerCase();
   const lowerType = (contentType || "").toLowerCase();
 
   if (buffer && buffer.length >= 4) {
-    // XLSX is a ZIP (PK. .)
-    if (buffer[0] === 0x50 && buffer[1] === 0x4b) return "xlsx";
-    // PDF starts with %PDF
-    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) return "pdf";
+    if (buffer[0] === 0x50 && buffer[1] === 0x4b) return "xlsx"; // PK.. zip => xlsx
+    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) return "pdf"; // %PDF
   }
 
   if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) return "pdf";
   if (lowerUrl.endsWith(".xlsx") || lowerType.includes("spreadsheet") || lowerType.includes("sheet")) return "xlsx";
-  if (lowerUrl.endsWith(". csv") || lowerType.includes("text/csv") || lowerType.includes("text/plain") || lowerType.includes("octet-stream")) return "csv";
+  if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv") || lowerType.includes("text/plain") || lowerType.includes("octet-stream")) return "csv";
 
   // fallback
   return "csv";
 }
 
-/**
- * Convert buffer to UTF-8 text (strip BOM)
- */
+/* ---------- helper to convert buffer to text (strip BOM) ---------- */
 function bufferToText(buffer) {
-  if (! buffer) return "";
+  if (!buffer) return "";
   let text = buffer.toString("utf8");
-  if (text.charCodeAt(0) === 0xfeff) text = text. slice(1);
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   return text;
 }
 
-/**
- * Extract CSV (simple)
- */
+/* ---------- extractors: csv / xlsx / pdf ---------- */
 function extractCsv(buffer) {
   const text = bufferToText(buffer);
   return { type: "csv", textContent: text };
 }
 
-/**
- * Extract XLSX: first sheet -> CSV text.  Returns error field if parsing fails.
- */
 function extractXlsx(buffer) {
   try {
     const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true, cellNF: false, cellText: false });
     const sheetName = workbook.SheetNames[0];
-    if (! sheetName) return { type: "xlsx", textContent: "" };
+    if (!sheetName) return { type: "xlsx", textContent: "" };
     const sheet = workbook.Sheets[sheetName];
     const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
     return { type: "xlsx", textContent: csv };
   } catch (err) {
-    console.error("extractXlsx failed:", err?. message || err);
-    return { type: "xlsx", textContent: "", error: String(err?. message || err) };
+    console.error("extractXlsx failed:", err?.message || err);
+    return { type: "xlsx", textContent: "", error: String(err?.message || err) };
   }
 }
 
-/**
- * Extract PDF text.  If text is absent/too-short we mark ocrNeeded:true
- */
 async function extractPdf(buffer) {
   try {
     const data = await pdf(buffer);
-    const text = (data && data.text) ?  data.text. trim() : "";
-    if (! text || text.length < 50) {
-      // consider it scanned or no text
+    const text = (data && data.text) ? data.text.trim() : "";
+    if (!text || text.length < 50) {
+      // scanned PDF or very little embedded text
       return { type: "pdf", textContent: "", ocrNeeded: true };
     }
     return { type: "pdf", textContent: text, ocrNeeded: false };
   } catch (err) {
-    console.error("extractPdf failed:", err?. message || err);
+    console.error("extractPdf failed:", err?.message || err);
     return { type: "pdf", textContent: "", error: String(err?.message || err) };
   }
 }
 
-/**
- * Model call (OpenRouter / configured provider)
- * Uses AbortController for reliable timeout + robust JSON parsing
- */
-async function callModel(prompt) {
-  if (! OPENROUTER_API_KEY) throw new Error("Missing OPENROUTER_API_KEY");
+/* ---------- model call (keeps the simple reliable style you had) ---------- */
+async function callModel({ model, systemPrompt, fileType, textContent, question }) {
+  const MAX_CONTENT = 28000; // safe trim for long extracts
+  const trimmed = (textContent || "");
+  const payloadContent = trimmed.length > MAX_CONTENT ? trimmed.slice(0, MAX_CONTENT) + "\n\n[Content truncated]" : trimmed;
 
-  // use AbortController for timeout (works consistently across node-fetch versions)
-  const controller = new AbortController();
-  const timeoutMs = 120000;
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const messages = [
+    {
+      role: "system",
+      content: systemPrompt || "You are an expert accounting assistant. Analyze uploaded financial files and answer user questions concisely."
+    },
+    {
+      role: "user",
+      content: `File type: ${fileType}\n\nExtracted content (may be truncated):\n\n${payloadContent}`
+    },
+    {
+      role: "user",
+      content: question || "Please analyze the file and provide key insights, a short summary, and a small bullet list of recommendations."
+    }
+  ];
 
-  const body = {
-    model: OPENROUTER_MODEL,
-    // send a system role plus the user prompt — matches older working behaviour
-    messages: [
-      { role: "system", content: "You are an expert accounting assistant. Be concise and analyze financial documents." },
-      { role: "user", content: prompt }
-    ],
-    temperature: 0.1,
-    max_tokens: 2000
-  };
+  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: model || process.env.OPENROUTER_MODEL || "tngtech/deepseek-r1t2-chimera:free",
+      messages,
+      temperature: 0.2,
+      max_tokens: 2500
+    })
+  });
 
-  let r;
+  // attempt to parse response JSON safely
+  let data;
   try {
-    r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${OPENROUTER_API_KEY}`
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
+    data = await r.json();
   } catch (err) {
-    clearTimeout(timer);
-    // network or timeout error — return helpful wrapper
-    console.error("callModel fetch error:", err?. message || err);
-    return { status: 0, raw: String(err. message || err), parsed: null, textReply: null };
-  } finally {
-    clearTimeout(timer);
+    const raw = await r.text().catch(() => "");
+    console.error("Model returned non-JSON (head):", raw.slice(0, 500));
+    return { reply: null, raw: raw.slice ? raw.slice(0, 2000) : raw, httpStatus: r.status };
   }
 
-  const status = r.status;
-  // Prefer trying to parse JSON, but if it fails keep the raw text for diagnostics
-  let rawText = "";
-  let parsed = null;
-  try {
-    // r.json() may throw if body isn't valid JSON
-    parsed = await r. json();
-    rawText = JSON.stringify(parsed). slice(0, 2000);
-  } catch (e) {
-    // fallback to raw text (HTML or plain text error)
-    rawText = await r.text(). catch(() => "");
-    rawText = rawText.slice(0, 2000);
-    parsed = null;
-    console.warn("callModel: response was not valid JSON, status:", status, "raw head:", rawText);
-  }
+  const reply =
+    data?.choices?.[0]?.message?.content ||
+    data?.reply ||
+    (typeof data?.output === "string" ? data.output : null) ||
+    (Array.isArray(data?.output) && data.output[0]?.content ? data.output[0].content : null) ||
+    null;
 
-  // Extract content if available
-  let textReply = null;
-  if (parsed && parsed.choices && parsed.choices[0] && parsed.choices[0]. message) {
-    textReply = parsed.choices[0].message.content;
-  } else if (parsed && parsed.reply) {
-    textReply = parsed.reply;
-  } else {
-    textReply = rawText;
-  }
-
-  return { status, raw: rawText, parsed, textReply };
+  return { reply, raw: data, httpStatus: r.status };
 }
 
-/**
- * Build prompt for model
- */
-function buildPrompt(fileType, textContent, question) {
-  return `File type: ${fileType}
-
-Extracted content (may be truncated):
-${textContent}
-
-User question:
-${question || "Please analyze the file and provide key insights."}
-
-Please provide a clear, structured analysis.`;
+/* ---------- robust JSON extraction from model reply ---------- */
+function findFirstJsonSubstring(text) {
+  if (!text) return null;
+  const starts = ['{', '['];
+  for (const startChar of starts) {
+    let start = text.indexOf(startChar);
+    while (start !== -1) {
+      const stack = [];
+      let inString = false;
+      let escape = false;
+      for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (inString) {
+          if (escape) escape = false;
+          else if (ch === "\\") escape = true;
+          else if (ch === '"') inString = false;
+          continue;
+        } else {
+          if (ch === '"') { inString = true; continue; }
+          if (ch === '{' || ch === '[') stack.push(ch);
+          else if (ch === '}' || ch === ']') {
+            stack.pop();
+            if (stack.length === 0) {
+              const candidate = text.slice(start, i + 1);
+              if (candidate.length > 10) return candidate;
+              break;
+            }
+          }
+        }
+      }
+      start = text.indexOf(startChar, start + 1);
+    }
+  }
+  return null;
 }
 
-/**
- * MAIN handler
- * expects { fileUrl, question, transcript?  }
- */
+function extractStructuredJsonFromReply(text) {
+  const startMarker = "STRUCTURED_JSON_START";
+  const endMarker = "STRUCTURED_JSON_END";
+  if (!text || typeof text !== "string") return { ok: false, error: "no-reply-text" };
+
+  // 1) markers
+  const si = text.indexOf(startMarker);
+  const ei = text.indexOf(endMarker);
+  if (si !== -1 && ei !== -1 && ei > si) {
+    const block = text.slice(si + startMarker.length, ei).trim();
+    const codeMatch = block.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    const candidateText = codeMatch ? codeMatch[1] : block;
+    const firstB = candidateText.indexOf("{");
+    const lastB = candidateText.lastIndexOf("}");
+    if (firstB !== -1 && lastB !== -1 && lastB > firstB) {
+      const jsonText = candidateText.slice(firstB, lastB + 1).trim();
+      try {
+        const parsed = JSON.parse(jsonText);
+        return { ok: true, parsed, jsonText };
+      } catch (err) {
+        return { ok: false, error: "JSON parse failed inside markers: " + String(err.message || err), raw: jsonText.slice(0, 1000) };
+      }
+    } else {
+      return { ok: false, error: "no-json-object-in-markers", raw: candidateText.slice(0, 1000) };
+    }
+  }
+
+  // 2) fenced json block
+  const fenced = text.match(/```(?:json)?\s*({[\s\S]*?})\s*```/i);
+  if (fenced && fenced[1]) {
+    try {
+      const parsed = JSON.parse(fenced[1]);
+      return { ok: true, parsed, jsonText: fenced[1] };
+    } catch (err) {
+      return { ok: false, error: "JSON parse failed fenced: " + String(err.message || err), raw: fenced[1].slice(0, 1000) };
+    }
+  }
+
+  // 3) balanced substring
+  const candidate = findFirstJsonSubstring(text);
+  if (candidate) {
+    try {
+      const parsed = JSON.parse(candidate);
+      return { ok: true, parsed, jsonText: candidate };
+    } catch (err) {
+      return { ok: false, error: "JSON parse failed on candidate substring: " + String(err.message || err), raw: candidate.slice(0, 1000) };
+    }
+  }
+
+  return { ok: false, error: "no-structured-json-found", raw: text.slice(0, 1000) };
+}
+
+/* ---------- MAIN handler (same signature as your old file) ---------- */
 export default async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    if (! OPENROUTER_API_KEY) {
+    if (!process.env.OPENROUTER_API_KEY) {
       return res.status(500).json({ error: "Missing OPENROUTER_API_KEY in environment variables" });
     }
 
@@ -280,13 +312,13 @@ export default async function handler(req, res) {
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
-    // Download file (with timeout and max size)
+    // Download
     const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
 
-    // detect type (inspect bytes)
+    // detect
     const detectedType = detectFileType(fileUrl, contentType, buffer);
 
-    // parse accordingly
+    // extract
     let extracted = { type: detectedType, textContent: "" };
     if (detectedType === "pdf") {
       extracted = await extractPdf(buffer);
@@ -296,9 +328,8 @@ export default async function handler(req, res) {
       extracted = extractCsv(buffer);
     }
 
-    // Handle errors or OCR-needed cases
+    // errors / ocr
     if (extracted.error) {
-      // XLSX parse error or PDF parse error
       return res.status(200).json({
         ok: false,
         type: extracted.type,
@@ -306,22 +337,19 @@ export default async function handler(req, res) {
         debug: { contentType, bytesReceived }
       });
     }
-
     if (extracted.ocrNeeded) {
-      // scanned PDF — do not attempt heavy OCR here by default
       return res.status(200).json({
         ok: false,
         type: "pdf",
         reply:
-          "This PDF appears to be scanned or contains no embedded text. To extract text please run OCR.  " +
-          "Recommended: use an OCR API (OCR.space or Google Vision).  If you want I can add an OCR step that calls OCR.space when you provide an API key.",
+          "This PDF appears to be scanned or contains no embedded text. To extract text please run OCR. " +
+          "Recommended: use an OCR API (OCR.space or Google Vision). If you want I can add an OCR step that calls OCR.space when you provide an API key.",
         debug: { ocrNeeded: true, contentType, bytesReceived }
       });
     }
 
     const textContent = extracted.textContent || "";
-
-    if (! textContent || ! textContent.trim()) {
+    if (!textContent || !textContent.trim()) {
       return res.status(200).json({
         ok: false,
         type: extracted.type,
@@ -330,29 +358,62 @@ export default async function handler(req, res) {
       });
     }
 
-    // build prompt and call model
-    const prompt = buildPrompt(extracted.type, textContent, question);
-    const { reply, raw, status: modelStatus } = await callModel(prompt);
+    // model call
+    const { reply, raw, httpStatus } = await callModel({
+      fileType: extracted.type,
+      textContent,
+      question
+    });
 
-    if (! reply) {
+    if (!reply) {
       return res.status(200).json({
         ok: false,
         type: extracted.type,
         reply: "(No reply from model)",
-        debug: { modelStatus, modelRawResponse: raw, contentType, bytesReceived }
+        debug: { status: httpStatus, body: raw, contentType, bytesReceived }
       });
     }
 
-    // success
+    // attempt to parse structured JSON inside reply (if user or system expects that)
+    const parsedStructured = extractStructuredJsonFromReply(typeof reply === "string" ? reply : (JSON.stringify(reply)));
+
+    let formattedMarkdown = null;
+    if (parsedStructured.ok) {
+      // if structured JSON exists, create a clean markdown table
+      const s = parsedStructured.parsed;
+      if (s && s.summary_table && Array.isArray(s.summary_table.headers)) {
+        const hdrs = s.summary_table.headers;
+        const rows = s.summary_table.rows || [];
+        let mdTable = `| ${hdrs.join(" | ")} |\n| ${hdrs.map(_ => '---').join(" | ")} |\n`;
+        for (const r of rows) mdTable += `| ${r.map(c => String(c).replace(/\|/g, "\\|")).join(" | ")} |\n`;
+        formattedMarkdown = `**Summary Table**\n\n${mdTable}\n`;
+        if (s.observations && s.observations.length) {
+          formattedMarkdown += `\n**Observations**\n\n`;
+          for (const o of s.observations) formattedMarkdown += `- ${o}\n`;
+        }
+        if (s.recommendations && s.recommendations.length) {
+          formattedMarkdown += `\n**Recommendations**\n\n`;
+          let i = 1;
+          for (const r of s.recommendations) { formattedMarkdown += `${i}. ${r}\n`; i++; }
+        }
+      } else {
+        formattedMarkdown = JSON.stringify(parsedStructured.parsed, null, 2);
+      }
+    }
+
     return res.status(200).json({
       ok: true,
       type: extracted.type,
-      reply,
-      textContent: textContent. slice(0, 20000),
-      debug: { contentType, bytesReceived, modelStatus }
+      reply: reply,
+      structured: parsedStructured.ok ? parsedStructured.parsed : null,
+      reply_markdown: formattedMarkdown || null,
+      textContent: textContent.slice(0, 20000),
+      debug: { contentType, bytesReceived, status: httpStatus, rawModelHead: (typeof raw === "string" ? raw : JSON.stringify(raw)).slice(0, 3000) },
+      parseDebug: parsedStructured.ok ? null : { parseError: parsedStructured.error, parseRawSample: parsedStructured.raw }
     });
+
   } catch (err) {
     console.error("analyze-file error:", err);
-    return res.status(500).json({ error: String(err?. message || err) });
+    return res.status(500).json({ error: String(err?.message || err) });
   }
 }
