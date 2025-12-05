@@ -1,4 +1,4 @@
-// api/analyze-file.js (fixed, copy-paste)
+// api/analyze-file.js
 const fetch = require("node-fetch");
 const pdfParse = require("pdf-parse");
 const XLSX = require("xlsx");
@@ -11,7 +11,7 @@ const MAX_EXTRACT_CHARS = parseInt(process.env.MAX_EXTRACT_CHARS || "20000", 10)
 async function fetchFileBuffer(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`Failed to fetch file: ${r.status} ${r.statusText}`);
-  const contentType = (r.headers.get("content-type") || "").toLowerCase();
+  const contentType = r.headers.get("content-type") || "";
   const arrayBuffer = await r.arrayBuffer();
   return { buf: Buffer.from(arrayBuffer), contentType, status: r.status };
 }
@@ -65,142 +65,13 @@ async function extractTextFromBuffer(buf, contentType, url) {
   }
 }
 
-/* ---------- robust model call & parsing helpers ---------- */
-
-async function callModelSafe({ messages }) {
-  if (!OPENROUTER_API_KEY) throw new Error("Missing OPENROUTER_API_KEY");
-  const body = {
-    model: OPENROUTER_MODEL,
-    messages,
-    temperature: 0.0,
-    max_tokens: 5000
-  };
-  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${OPENROUTER_API_KEY}`
-    },
-    body: JSON.stringify(body),
-    // no timeout param here; Vercel will handle
-  });
-
-  const status = r.status;
-  const raw = await r.text(); // raw provider response as text
-  let parsed = null;
-  try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
-
-  // preferred: get choices[0].message.content if available
-  let textReply = null;
-  if (parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].message) {
-    textReply = parsed.choices[0].message.content;
-  } else {
-    // fallback: try to extract some content-like field from raw if possible later
-    textReply = raw;
-  }
-
-  return { status, raw, parsed, textReply };
-}
-
-// find first balanced JSON substring (object or array). returns substring or null
-function findFirstJsonSubstring(text) {
-  if (!text) return null;
-  const starts = ['{', '['];
-  for (const startChar of starts) {
-    let start = text.indexOf(startChar);
-    while (start !== -1) {
-      const stack = [];
-      let inString = false;
-      let escape = false;
-      for (let i = start; i < text.length; i++) {
-        const ch = text[i];
-        if (inString) {
-          if (escape) escape = false;
-          else if (ch === "\\") escape = true;
-          else if (ch === '"') inString = false;
-          continue;
-        } else {
-          if (ch === '"') { inString = true; continue; }
-          if (ch === '{' || ch === '[') stack.push(ch);
-          else if (ch === '}' || ch === ']') {
-            stack.pop();
-            if (stack.length === 0) {
-              const candidate = text.slice(start, i + 1);
-              if (candidate.length > 10) return candidate;
-              break;
-            }
-          }
-        }
-      }
-      // try next occurrence of startChar
-      start = text.indexOf(startChar, start + 1);
-    }
-  }
-  return null;
-}
-
-function extractStructuredJsonFromReply(text) {
-  const startMarker = "STRUCTURED_JSON_START";
-  const endMarker = "STRUCTURED_JSON_END";
-  if (!text || typeof text !== "string") return { ok: false, error: "no-reply-text" };
-
-  // 1) exact marker extraction
-  const si = text.indexOf(startMarker);
-  const ei = text.indexOf(endMarker);
-  if (si !== -1 && ei !== -1 && ei > si) {
-    const block = text.slice(si + startMarker.length, ei).trim();
-    // remove fenced code block if present
-    const codeMatch = block.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-    const candidate = codeMatch ? codeMatch[1] : block;
-    // find first '{' inside candidate
-    const firstB = candidate.indexOf("{");
-    const lastB = candidate.lastIndexOf("}");
-    if (firstB !== -1 && lastB !== -1 && lastB > firstB) {
-      const jsonText = candidate.slice(firstB, lastB + 1).trim();
-      try {
-        const parsed = JSON.parse(jsonText);
-        return { ok: true, parsed, jsonText };
-      } catch (err) {
-        return { ok: false, error: "JSON parse failed inside markers: " + String(err.message || err), raw: jsonText.slice(0, 1000) };
-      }
-    } else {
-      return { ok: false, error: "no-json-object-in-markers", raw: candidate.slice(0, 1000) };
-    }
-  }
-
-  // 2) look for fenced json codeblock anywhere
-  const fenced = text.match(/```(?:json)?\s*({[\s\S]*?})\s*```/i);
-  if (fenced && fenced[1]) {
-    try {
-      const parsed = JSON.parse(fenced[1]);
-      return { ok: true, parsed, jsonText: fenced[1] };
-    } catch (err) {
-      return { ok: false, error: "JSON parse failed in fenced block: " + String(err.message || err), raw: fenced[1].slice(0, 1000) };
-    }
-  }
-
-  // 3) robust balanced bracket detection
-  const candidate = findFirstJsonSubstring(text);
-  if (candidate) {
-    try {
-      const parsed = JSON.parse(candidate);
-      return { ok: true, parsed, jsonText: candidate };
-    } catch (err) {
-      return { ok: false, error: "JSON parse failed on candidate substring: " + String(err.message || err), raw: candidate.slice(0, 1000) };
-    }
-  }
-
-  // nothing found
-  return { ok: false, error: "no-structured-json-found", raw: text.slice(0, 1000) };
-}
-
-/* ---------- build prompt ---------- */
-
+// Build the model prompt asking for structured JSON + markdown
 function buildModelPrompt({ extractedTextSample, fileType, userQuestion }) {
   const instructions = [
     "You are a financial-analysis assistant.",
     "Produce TWO things in one response:",
-    "1) VALID JSON only, between markers: STRUCTURED_JSON_START and STRUCTURED_JSON_END. The JSON must have keys: summary_table, key_metrics, observations, recommendations. summary_table: { headers: [...], rows: [[...],[...]] }. key_metrics: numbers. observations: [string]. recommendations: [string].",
+    // fixed: closed the string properly and gave an explicit example so the literal is well-formed
+    "1) VALID JSON only, between markers: STRUCTURED_JSON_START and STRUCTURED_JSON_END. The JSON must have keys: summary_table, key_metrics, observations, recommendations. Example: summary_table: { headers: [[\"Col1\",\"Col2\"]], rows: [[\"r1c1\",\"r1c2\"]] }.",
     "2) After the JSON, a human-readable MARKDOWN summary that includes a properly formatted markdown table for the summary_table and bullets for observations/recommendations.",
     "Do NOT include any extra JSON outside the markers. Keep JSON strictly parseable.",
     `File type: ${fileType}`,
@@ -213,8 +84,87 @@ function buildModelPrompt({ extractedTextSample, fileType, userQuestion }) {
   return instructions.join("\n");
 }
 
-/* ---------- Vercel handler (CommonJS) ---------- */
+// Extract JSON block robustly, but only parse if candidate begins with '{'
+function extractStructuredJsonFromReply(text) {
+  const startMarker = "STRUCTURED_JSON_START";
+  const endMarker = "STRUCTURED_JSON_END";
+  if (!text || typeof text !== "string") return { ok: false, error: "no-reply-text" };
 
+  const si = text.indexOf(startMarker);
+  const ei = text.indexOf(endMarker);
+
+  if (si !== -1 && ei !== -1 && ei > si) {
+    const block = text.slice(si + startMarker.length, ei).trim();
+    // find first { and last }
+    const firstB = block.indexOf("{");
+    const lastB = block.lastIndexOf("}");
+    if (firstB !== -1 && lastB !== -1 && lastB > firstB) {
+      const candidate = block.slice(firstB, lastB + 1).trim();
+      if (candidate.startsWith("{")) {
+        try {
+          const parsed = JSON.parse(candidate);
+          return { ok: true, parsed, jsonText: candidate };
+        } catch (err) {
+          return { ok: false, error: "JSON parse failed inside markers: " + String(err.message || err), raw: candidate };
+        }
+      } else {
+        return { ok: false, error: "no-json-object-start-in-markers", raw: block.slice(0, 500) };
+      }
+    } else {
+      return { ok: false, error: "no-braces-in-markers", raw: block.slice(0, 500) };
+    }
+  }
+
+  // No markers: try to find a JSON object in the whole reply safely
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first !== -1 && last !== -1 && last > first) {
+    const candidate = text.slice(first, last + 1).trim();
+    if (candidate.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(candidate);
+        return { ok: true, parsed, jsonText: candidate };
+      } catch (err) {
+        return { ok: false, error: "JSON parse failed on candidate", raw: candidate.slice(0, 500) };
+      }
+    }
+  }
+
+  return { ok: false, error: "no-structured-json-found", raw: text.slice(0, 500) };
+}
+
+// call model via openrouter
+async function callModel(prompt) {
+  if (!OPENROUTER_API_KEY) throw new Error("Missing OPENROUTER_API_KEY");
+  const body = {
+    model: OPENROUTER_MODEL,
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0.1,
+    max_tokens: 2000
+  };
+  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${OPENROUTER_API_KEY}`
+    },
+    body: JSON.stringify(body),
+    timeout: 120000
+  });
+  const status = r.status;
+  const raw = await r.text();
+  let parsed = null;
+  try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
+  let textReply = null;
+  if (parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].message) {
+    textReply = parsed.choices[0].message.content;
+  } else {
+    textReply = raw;
+  }
+  return { status, raw, parsed, textReply };
+}
+
+// Vercel handler (CommonJS)
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -252,13 +202,13 @@ module.exports = async (req, res) => {
       });
     }
 
-    // Truncated sample:
+    // Create truncated sample to send to model (still used internally),
     const textFull = extracted.text || "";
     const textSample = textFull.length > MAX_EXTRACT_CHARS ? (textFull.slice(0, MAX_EXTRACT_CHARS) + "\n\n...[truncated]...") : textFull;
 
     const prompt = buildModelPrompt({ extractedTextSample: textSample, fileType: extracted.type, userQuestion: question });
 
-    const modelResp = await callModelSafe({ messages: [{ role: "system", content: "You are a helpful assistant." }, { role: "user", content: prompt }] });
+    const modelResp = await callModel(prompt);
 
     // try to extract structured JSON
     const struct = extractStructuredJsonFromReply(modelResp.textReply || modelResp.raw || "");
@@ -276,7 +226,7 @@ module.exports = async (req, res) => {
         const hdrs = s.summary_table.headers;
         const rows = s.summary_table.rows || [];
         let mdTable = `| ${hdrs.join(" | ")} |\n| ${hdrs.map(_ => '---').join(" | ")} |\n`;
-        for (const r of rows) mdTable += `| ${r.map(c=>String(c).replace(/\|/g,"\\|")).join(" | ")} |\n`;
+        for (const r of rows) mdTable += `| ${r.join(" | ")} |\n`;
         markdown = `**Summary Table**\n\n${mdTable}\n`;
       } else {
         markdown = JSON.stringify(struct.parsed, null, 2);
@@ -287,8 +237,7 @@ module.exports = async (req, res) => {
       }
       if (s.recommendations && s.recommendations.length) {
         markdown += `\n**Recommendations**\n\n`;
-        let i = 1;
-        for (const r of s.recommendations) { markdown += `${i}. ${r}\n`; i++; }
+        for (const r of s.recommendations) markdown += `1. ${r}\n`;
       }
     }
 
@@ -298,7 +247,7 @@ module.exports = async (req, res) => {
       structured: struct.ok === true ? struct.parsed : null,
       reply_markdown: markdown || (modelResp.textReply || modelResp.raw || ""),
       raw_model_response_status: modelResp.status,
-      raw_model_response_text_head: (modelResp.raw || "").slice(0, 3000),
+      raw_model_response_text_head: (modelResp.raw || "").slice(0, 2000),
       debug: {
         extraction_debug: extracted.debug || {},
         bytesReceived: buf.length,
@@ -311,6 +260,7 @@ module.exports = async (req, res) => {
       responsePayload.parseRawSample = (struct.raw || "").slice(0, 1000);
     }
 
+    // IMPORTANT: we no longer include the extractedTextSample in the response to the client
     return res.status(200).json(responsePayload);
 
   } catch (err) {
