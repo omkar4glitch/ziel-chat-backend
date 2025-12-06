@@ -74,7 +74,6 @@ async function downloadFileToBuffer(url, maxBytes = 25 * 1024 * 1024, timeoutMs 
   let total = 0;
 
   try {
-    // for-await-of on r.body (node-fetch body is async iterable)
     for await (const chunk of r.body) {
       total += chunk.length;
       if (total > maxBytes) {
@@ -153,16 +152,82 @@ async function extractPdf(buffer) {
   }
 }
 
+/* ---------- OCR integration (OCR.space) ---------- */
+// Uses env OCR_SPACE_API_KEY
+async function runOcrOnPdf(buffer) {
+  const apiKey = process.env.OCR_SPACE_API_KEY;
+  if (!apiKey) {
+    return { text: "", error: "OCR_SPACE_API_KEY not set; OCR not configured" };
+  }
+
+  const base64 = buffer.toString("base64");
+  const params = new URLSearchParams();
+  params.append("apikey", apiKey);
+  params.append("base64Image", `data:application/pdf;base64,${base64}`);
+  params.append("language", "eng");
+  params.append("isTable", "true");
+  params.append("isOverlayRequired", "false");
+
+  let r;
+  try {
+    r = await fetch("https://api.ocr.space/parse/image", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: params.toString()
+    });
+  } catch (err) {
+    return { text: "", error: "OCR request failed: " + String(err?.message || err) };
+  }
+
+  let data;
+  try {
+    data = await r.json();
+  } catch (err) {
+    const raw = await r.text().catch(() => "");
+    return { text: "", error: "OCR response not JSON: " + raw.slice(0, 300) };
+  }
+
+  if (!data || data.IsErroredOnProcessing) {
+    const msg =
+      data && data.ErrorMessage
+        ? Array.isArray(data.ErrorMessage)
+          ? data.ErrorMessage.join("; ")
+          : String(data.ErrorMessage)
+        : "Unknown OCR error";
+    return { text: "", error: "OCR processing error: " + msg };
+  }
+
+  if (!data.ParsedResults || !data.ParsedResults.length) {
+    return { text: "", error: "OCR returned no ParsedResults" };
+  }
+
+  const text = data.ParsedResults.map((p) => p.ParsedText || "").join("\n");
+  return { text };
+}
+
 /* ---------- model call (keeps the simple reliable style you had) ---------- */
 async function callModel({ model, systemPrompt, fileType, textContent, question }) {
-  const MAX_CONTENT = 28000; // safe trim for long extracts
-  const trimmed = (textContent || "");
-  const payloadContent = trimmed.length > MAX_CONTENT ? trimmed.slice(0, MAX_CONTENT) + "\n\n[Content truncated]" : trimmed;
+  const MAX_CONTENT = 32000; // total characters to send
+
+  let payloadContent = textContent || "";
+
+  // Better handling for long data:
+  // keep HEAD + TAIL so GL totals & summaries at bottom are still visible
+  if (payloadContent.length > MAX_CONTENT) {
+    const half = Math.floor(MAX_CONTENT / 2);
+    const head = payloadContent.slice(0, half);
+    const tail = payloadContent.slice(-half);
+    payloadContent = `${head}\n\n[... middle of file truncated for length ...]\n\n${tail}`;
+  }
 
   const messages = [
     {
       role: "system",
-      content: systemPrompt || "You are an expert accounting assistant. Analyze uploaded financial files and answer user questions concisely."
+      content:
+        systemPrompt ||
+        "You are an expert accounting assistant. Analyze uploaded financial files and answer user questions concisely. Use clear markdown tables and bullet points when helpful."
     },
     {
       role: "user",
@@ -170,7 +235,9 @@ async function callModel({ model, systemPrompt, fileType, textContent, question 
     },
     {
       role: "user",
-      content: question || "Please analyze the file and provide key insights, a short summary, and a small bullet list of recommendations."
+      content:
+        question ||
+        "Please analyze the file and provide: (1) a short summary, (2) a clear markdown summary table of key metrics, and (3) bullet-point recommendations."
     }
   ];
 
@@ -211,7 +278,7 @@ async function callModel({ model, systemPrompt, fileType, textContent, question 
 /* ---------- robust JSON extraction from model reply ---------- */
 function findFirstJsonSubstring(text) {
   if (!text) return null;
-  const starts = ['{', '['];
+  const starts = ["{", "["];
   for (const startChar of starts) {
     let start = text.indexOf(startChar);
     while (start !== -1) {
@@ -226,9 +293,12 @@ function findFirstJsonSubstring(text) {
           else if (ch === '"') inString = false;
           continue;
         } else {
-          if (ch === '"') { inString = true; continue; }
-          if (ch === '{' || ch === '[') stack.push(ch);
-          else if (ch === '}' || ch === ']') {
+          if (ch === '"') {
+            inString = true;
+            continue;
+          }
+          if (ch === "{" || ch === "[") stack.push(ch);
+          else if (ch === "}" || ch === "]") {
             stack.pop();
             if (stack.length === 0) {
               const candidate = text.slice(start, i + 1);
@@ -264,7 +334,11 @@ function extractStructuredJsonFromReply(text) {
         const parsed = JSON.parse(jsonText);
         return { ok: true, parsed, jsonText };
       } catch (err) {
-        return { ok: false, error: "JSON parse failed inside markers: " + String(err.message || err), raw: jsonText.slice(0, 1000) };
+        return {
+          ok: false,
+          error: "JSON parse failed inside markers: " + String(err.message || err),
+          raw: jsonText.slice(0, 1000)
+        };
       }
     } else {
       return { ok: false, error: "no-json-object-in-markers", raw: candidateText.slice(0, 1000) };
@@ -289,7 +363,11 @@ function extractStructuredJsonFromReply(text) {
       const parsed = JSON.parse(candidate);
       return { ok: true, parsed, jsonText: candidate };
     } catch (err) {
-      return { ok: false, error: "JSON parse failed on candidate substring: " + String(err.message || err), raw: candidate.slice(0, 1000) };
+      return {
+        ok: false,
+        error: "JSON parse failed on candidate substring: " + String(err.message || err),
+        raw: candidate.slice(0, 1000)
+      };
     }
   }
 
@@ -328,23 +406,31 @@ export default async function handler(req, res) {
       extracted = extractCsv(buffer);
     }
 
-    // errors / ocr
+    // If PDF and OCR is needed, try OCR
+    if (extracted.ocrNeeded) {
+      const ocrResult = await runOcrOnPdf(buffer);
+      if (ocrResult.error) {
+        return res.status(200).json({
+          ok: false,
+          type: "pdf",
+          reply:
+            "This PDF appears to be scanned (no embedded text), and OCR failed or is not configured.\n" +
+            "Details: " +
+            ocrResult.error,
+          debug: { ocrNeeded: true, contentType, bytesReceived }
+        });
+      }
+      extracted.textContent = ocrResult.text || "";
+      extracted.ocrUsed = true;
+    }
+
+    // Handle parsing errors
     if (extracted.error) {
       return res.status(200).json({
         ok: false,
         type: extracted.type,
         reply: `Failed to parse ${extracted.type} file: ${extracted.error}`,
         debug: { contentType, bytesReceived }
-      });
-    }
-    if (extracted.ocrNeeded) {
-      return res.status(200).json({
-        ok: false,
-        type: "pdf",
-        reply:
-          "This PDF appears to be scanned or contains no embedded text. To extract text please run OCR. " +
-          "Recommended: use an OCR API (OCR.space or Google Vision). If you want I can add an OCR step that calls OCR.space when you provide an API key.",
-        debug: { ocrNeeded: true, contentType, bytesReceived }
       });
     }
 
@@ -374,18 +460,21 @@ export default async function handler(req, res) {
       });
     }
 
-    // attempt to parse structured JSON inside reply (if user or system expects that)
-    const parsedStructured = extractStructuredJsonFromReply(typeof reply === "string" ? reply : (JSON.stringify(reply)));
+    // try structured JSON (optional)
+    const parsedStructured = extractStructuredJsonFromReply(
+      typeof reply === "string" ? reply : JSON.stringify(reply)
+    );
 
     let formattedMarkdown = null;
     if (parsedStructured.ok) {
-      // if structured JSON exists, create a clean markdown table
       const s = parsedStructured.parsed;
       if (s && s.summary_table && Array.isArray(s.summary_table.headers)) {
         const hdrs = s.summary_table.headers;
         const rows = s.summary_table.rows || [];
-        let mdTable = `| ${hdrs.join(" | ")} |\n| ${hdrs.map(_ => '---').join(" | ")} |\n`;
-        for (const r of rows) mdTable += `| ${r.map(c => String(c).replace(/\|/g, "\\|")).join(" | ")} |\n`;
+        let mdTable = `| ${hdrs.join(" | ")} |\n| ${hdrs.map(() => "---").join(" | ")} |\n`;
+        for (const r of rows) {
+          mdTable += `| ${r.map((c) => String(c).replace(/\|/g, "\\|")).join(" | ")} |\n`;
+        }
         formattedMarkdown = `**Summary Table**\n\n${mdTable}\n`;
         if (s.observations && s.observations.length) {
           formattedMarkdown += `\n**Observations**\n\n`;
@@ -394,7 +483,10 @@ export default async function handler(req, res) {
         if (s.recommendations && s.recommendations.length) {
           formattedMarkdown += `\n**Recommendations**\n\n`;
           let i = 1;
-          for (const r of s.recommendations) { formattedMarkdown += `${i}. ${r}\n`; i++; }
+          for (const rText of s.recommendations) {
+            formattedMarkdown += `${i}. ${rText}\n`;
+            i++;
+          }
         }
       } else {
         formattedMarkdown = JSON.stringify(parsedStructured.parsed, null, 2);
@@ -404,14 +496,22 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       type: extracted.type,
-      reply: reply,
+      reply: reply, // raw model text (good for debugging & Adalo markdown)
       structured: parsedStructured.ok ? parsedStructured.parsed : null,
-      reply_markdown: formattedMarkdown || null,
+      reply_markdown: formattedMarkdown || null, // if you want to switch Adalo to this later
       textContent: textContent.slice(0, 20000),
-      debug: { contentType, bytesReceived, status: httpStatus, rawModelHead: (typeof raw === "string" ? raw : JSON.stringify(raw)).slice(0, 3000) },
-      parseDebug: parsedStructured.ok ? null : { parseError: parsedStructured.error, parseRawSample: parsedStructured.raw }
+      debug: {
+        contentType,
+        bytesReceived,
+        status: httpStatus,
+        ocrUsed: !!extracted.ocrUsed,
+        rawModelHead:
+          typeof raw === "string" ? raw.slice(0, 3000) : JSON.stringify(raw).slice(0, 3000)
+      },
+      parseDebug: parsedStructured.ok
+        ? null
+        : { parseError: parsedStructured.error, parseRawSample: parsedStructured.raw }
     });
-
   } catch (err) {
     console.error("analyze-file error:", err);
     return res.status(500).json({ error: String(err?.message || err) });
