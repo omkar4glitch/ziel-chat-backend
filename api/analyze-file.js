@@ -209,7 +209,7 @@ async function runOcrOnPdf(buffer) {
 
 /* ---------- model call (keeps the simple reliable style you had) ---------- */
 async function callModel({ model, systemPrompt, fileType, textContent, question }) {
-  const MAX_CONTENT = 32000; // total characters to send
+  const MAX_CONTENT = 80000; // total characters to send
 
   let payloadContent = textContent || "";
 
