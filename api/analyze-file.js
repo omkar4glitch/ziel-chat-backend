@@ -159,9 +159,7 @@ function extractCsv(buffer) {
 }
 
 /**
- * Extract XLSX:
- * - textContent: CSV of first sheet (old behaviour, unchanged for caller)
- * - rows: structured rows via sheet_to_json (NEW, for GL summarisation)
+ * Extract XLSX: first sheet -> CSV text. Returns error field if parsing fails.
  */
 function extractXlsx(buffer) {
   try {
@@ -172,19 +170,13 @@ function extractXlsx(buffer) {
       cellText: false
     });
     const sheetName = workbook.SheetNames[0];
-    if (!sheetName) return { type: "xlsx", textContent: "", rows: [] };
+    if (!sheetName) return { type: "xlsx", textContent: "" };
     const sheet = workbook.Sheets[sheetName];
     const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
-    const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
-    return { type: "xlsx", textContent: csv, rows };
+    return { type: "xlsx", textContent: csv };
   } catch (err) {
     console.error("extractXlsx failed:", err?.message || err);
-    return {
-      type: "xlsx",
-      textContent: "",
-      rows: [],
-      error: String(err?.message || err)
-    };
+    return { type: "xlsx", textContent: "", error: String(err?.message || err) };
   }
 }
 
@@ -194,7 +186,7 @@ function extractXlsx(buffer) {
 async function extractPdf(buffer) {
   try {
     const data = await pdf(buffer);
-    const text = data && data.text ? data.text.trim() : "";
+    const text = (data && data.text) ? data.text.trim() : "";
     if (!text || text.length < 50) {
       // consider it scanned or no text
       return { type: "pdf", textContent: "", ocrNeeded: true };
@@ -207,136 +199,13 @@ async function extractPdf(buffer) {
 }
 
 /**
- * NEW: build a precomputed GL summary from XLSX rows (for big ledgers)
- * - We detect likely amount, account, period/date columns.
- * - We compute net amounts by account & by period.
- * - Returned as a text block that will be PREPENDED to textContent for the model.
- */
-function buildGlPreSummaryFromRows(rows) {
-  if (!Array.isArray(rows) || rows.length === 0) return null;
-
-  const first = rows[0] || {};
-  const keys = Object.keys(first);
-  if (!keys.length) return null;
-
-  const lower = (s) => String(s || "").toLowerCase();
-
-  // detect columns
-  const amountCandidates = keys.filter((k) =>
-    /amount|debit|credit|net|balance|value/.test(lower(k))
-  );
-  if (!amountCandidates.length) return null;
-
-  const debitKey = amountCandidates.find((k) => /debit/.test(lower(k))) || null;
-  const creditKey = amountCandidates.find((k) => /credit/.test(lower(k))) || null;
-  const amountKey =
-    amountCandidates.find((k) => /amount|net|balance|value/.test(lower(k))) ||
-    debitKey ||
-    creditKey;
-
-  const accountKey = keys.find((k) => /account|gl ?code|ledger/i.test(k)) || null;
-  const dateKey = keys.find((k) => /date/.test(lower(k))) || null;
-  const periodKey = keys.find((k) => /period|month/.test(lower(k))) || null;
-
-  if (!amountKey && !(debitKey && creditKey)) return null;
-
-  const num = (v) => {
-    if (v === null || v === undefined || v === "") return 0;
-    if (typeof v === "number") return v;
-    let s = String(v).trim();
-    // remove currency symbols and commas
-    s = s.replace(/[$₹€,]/g, "");
-    const n = parseFloat(s);
-    return Number.isFinite(n) ? n : 0;
-  };
-
-  const totalsByAccount = {};
-  const totalsByPeriod = {};
-
-  for (const row of rows) {
-    if (!row || typeof row !== "object") continue;
-
-    const d = debitKey ? num(row[debitKey]) : 0;
-    const c = creditKey ? num(row[creditKey]) : 0;
-    let baseAmt = amountKey ? num(row[amountKey]) : 0;
-
-    // if we have both debit & credit columns, net = debit - credit
-    const net = debitKey && creditKey ? d - c : baseAmt;
-
-    const acc =
-      (accountKey && row[accountKey] && String(row[accountKey]).trim()) || "Unknown";
-    let per = "Unknown";
-
-    if (periodKey && row[periodKey]) {
-      per = String(row[periodKey]).trim();
-    } else if (dateKey && row[dateKey]) {
-      const rawDate = row[dateKey];
-      let dt = null;
-      if (rawDate instanceof Date) dt = rawDate;
-      else {
-        const candidate = new Date(rawDate);
-        if (!isNaN(candidate.getTime())) dt = candidate;
-      }
-      if (dt) {
-        const y = dt.getFullYear();
-        const m = String(dt.getMonth() + 1).padStart(2, "0");
-        per = `${y}-${m}`;
-      }
-    }
-
-    totalsByAccount[acc] = (totalsByAccount[acc] || 0) + net;
-    totalsByPeriod[per] = (totalsByPeriod[per] || 0) + net;
-  }
-
-  const fmt = (n) => Number(n || 0).toFixed(2);
-
-  const topAccounts = Object.entries(totalsByAccount)
-    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-    .slice(0, 15);
-
-  const periodEntries = Object.entries(totalsByPeriod).sort((a, b) =>
-    String(a[0]).localeCompare(String(b[0]))
-  );
-
-  // If everything is zero, skip
-  const sumAbs = (arr) => arr.reduce((acc, [, v]) => acc + Math.abs(v || 0), 0);
-  if (sumAbs(topAccounts) === 0 && sumAbs(periodEntries) === 0) return null;
-
-  let out = "PRECOMPUTED_GL_SUMMARY_START\n";
-  out +=
-    "The following section was computed by the backend from the GL rows and is numerically accurate.\n";
-  out += "Use these numbers for calculations instead of re-adding raw rows.\n\n";
-
-  if (topAccounts.length) {
-    out += "Totals by Account (net = debit - credit, or amount where applicable):\n";
-    out += "Account | NetAmount\n";
-    for (const [acc, val] of topAccounts) {
-      out += `${acc} | ${fmt(val)}\n`;
-    }
-    out += "\n";
-  }
-
-  if (periodEntries.length) {
-    out += "Totals by Period (derived from Period/Month/Date columns):\n";
-    out += "Period | NetAmount\n";
-    for (const [per, val] of periodEntries) {
-      out += `${per} | ${fmt(val)}\n`;
-    }
-    out += "\n";
-  }
-
-  out += "PRECOMPUTED_GL_SUMMARY_END\n";
-  return out;
-}
-
-/**
  * Model call (OpenRouter / configured provider) - trimmed input safety
  */
 async function callModel({ model, systemPrompt, fileType, textContent, question }) {
-  // keep a reasonable safety limit – but we now prepend a compact GL summary first
+  // limit how much raw text we send into the model (to avoid context issues)
   const trimmed =
-    textContent.length > 30000
-      ? textContent.slice(0, 30000) + "\n\n[Content truncated]"
+    textContent.length > 60000
+      ? textContent.slice(0, 60000) + "\n\n[Content truncated]"
       : textContent;
 
   const messages = [
@@ -344,7 +213,20 @@ async function callModel({ model, systemPrompt, fileType, textContent, question 
       role: "system",
       content:
         systemPrompt ||
-        "You are an expert accounting assistant. Analyze uploaded financial files and answer user questions concisely and accurately. When a precomputed GL summary is present, rely on those numbers for calculations."
+        [
+          "You are an expert accounting & FP&A assistant.",
+          "You receive exports such as GL dumps, P&L statements, sales reports, etc.",
+          "Very important:",
+          "- When totals (e.g. Net Sales, Net Profit, Unit EBITDA, Total Expenses, etc.) already exist in the file, USE those numbers instead of recomputing them.",
+          "- If multiple periods exist (e.g. Period 1–12), respect the table structure and use the values from the correct period columns.",
+          "",
+          "Your response format:",
+          "1. Start with a short title line like: **Period X Financial Summary**",
+          "2. Then a clear markdown table summarising key metrics (Net Sales, Gross Profit, Prime Cost %, Net Profit, etc.).",
+          "3. Then bullet-point observations (use '-' bullets).",
+          "4. Then bullet-point recommendations (use numbered list '1.', '2.', etc.).",
+          "Do not output JSON. Respond only in human-readable markdown."
+        ].join("\n")
     },
     {
       role: "user",
@@ -352,7 +234,9 @@ async function callModel({ model, systemPrompt, fileType, textContent, question 
     },
     {
       role: "user",
-      content: question || "Please analyze the file and provide key insights."
+      content:
+        question ||
+        "Please analyze the file and provide key metrics, a markdown summary table, and observations & recommendations."
     }
   ];
 
@@ -363,7 +247,7 @@ async function callModel({ model, systemPrompt, fileType, textContent, question 
       Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`
     },
     body: JSON.stringify({
-      model: model || process.env.OPENROUTER_MODEL || "x-ai/grok-4.1-fast:free",
+      model: model || process.env.OPENROUTER_MODEL || "tngtech/deepseek-r1t2-chimera:free",
       messages,
       temperature: 0.2
     })
@@ -436,7 +320,7 @@ export default async function handler(req, res) {
     }
 
     if (extracted.ocrNeeded) {
-      // scanned PDF — still same behaviour as before (no OCR yet)
+      // scanned PDF — do not attempt heavy OCR here by default
       return res.status(200).json({
         ok: false,
         type: "pdf",
@@ -458,20 +342,10 @@ export default async function handler(req, res) {
       });
     }
 
-    // NEW: if this is XLSX with structured rows, build a precomputed GL summary
-    // and prepend it to the text that goes to the model.
-    let finalTextForModel = textContent;
-    if (extracted.type === "xlsx" && Array.isArray(extracted.rows) && extracted.rows.length) {
-      const glSummary = buildGlPreSummaryFromRows(extracted.rows);
-      if (glSummary) {
-        finalTextForModel = `${glSummary}\n\n${textContent}`;
-      }
-    }
-
-    // call model with extracted content (possibly with GL summary prepended)
+    // call model with extracted content
     const { reply, raw, httpStatus } = await callModel({
       fileType: extracted.type,
-      textContent: finalTextForModel,
+      textContent,
       question
     });
 
@@ -484,11 +358,12 @@ export default async function handler(req, res) {
       });
     }
 
-    // success — output shape is unchanged
+    // success
     return res.status(200).json({
       ok: true,
       type: extracted.type,
-      reply,
+      reply, // <- single markdown string for Adalo markdown component
+      // keep a trimmed version of textContent just for debugging if needed
       textContent: textContent.slice(0, 20000),
       debug: { contentType, bytesReceived, status: httpStatus }
     });
