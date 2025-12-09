@@ -91,7 +91,6 @@ async function downloadFileToBuffer(
     for await (const chunk of r.body) {
       total += chunk.length;
       if (total > maxBytes) {
-        // store only up to maxBytes then stop reading
         const allowed = maxBytes - (total - chunk.length);
         if (allowed > 0) chunks.push(chunk.slice(0, allowed));
         break;
@@ -114,9 +113,7 @@ function detectFileType(fileUrl, contentType, buffer) {
   const lowerType = (contentType || "").toLowerCase();
 
   if (buffer && buffer.length >= 4) {
-    // XLSX is a ZIP (PK..)
     if (buffer[0] === 0x50 && buffer[1] === 0x4b) return "xlsx";
-    // PDF starts with %PDF
     if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46)
       return "pdf";
   }
@@ -136,7 +133,6 @@ function detectFileType(fileUrl, contentType, buffer) {
   )
     return "csv";
 
-  // fallback
   return "csv";
 }
 
@@ -188,7 +184,6 @@ async function extractPdf(buffer) {
     const data = await pdf(buffer);
     const text = (data && data.text) ? data.text.trim() : "";
     if (!text || text.length < 50) {
-      // consider it scanned or no text
       return { type: "pdf", textContent: "", ocrNeeded: true };
     }
     return { type: "pdf", textContent: text, ocrNeeded: false };
@@ -199,44 +194,225 @@ async function extractPdf(buffer) {
 }
 
 /**
- * Model call (OpenRouter / configured provider) - trimmed input safety
+ * Detect document category based on content
  */
-async function callModel({ model, systemPrompt, fileType, textContent, question }) {
-  // limit how much raw text we send into the model (to avoid context issues)
+function detectDocumentCategory(textContent) {
+  const lower = textContent.toLowerCase();
+  const lines = textContent.split('\n').slice(0, 50); // Check first 50 lines
+  
+  // GL Entry indicators
+  const glIndicators = [
+    'journal entry', 'journal entries', 'gl entry', 'gl entries',
+    'debit', 'credit', 'account code', 'account number',
+    'transaction date', 'posting date', 'entry number'
+  ];
+  
+  // P&L indicators
+  const plIndicators = [
+    'profit and loss', 'p&l', 'income statement',
+    'revenue', 'net sales', 'gross profit', 'operating income',
+    'net income', 'net profit', 'ebitda', 'operating expenses'
+  ];
+  
+  // Balance Sheet indicators
+  const bsIndicators = [
+    'balance sheet', 'assets', 'liabilities', 'equity',
+    'current assets', 'fixed assets', 'current liabilities'
+  ];
+  
+  // Trial Balance indicators
+  const tbIndicators = [
+    'trial balance', 'account balances', 'opening balance', 'closing balance'
+  ];
+  
+  // Count matches
+  let glScore = 0;
+  let plScore = 0;
+  let bsScore = 0;
+  let tbScore = 0;
+  
+  glIndicators.forEach(term => {
+    if (lower.includes(term)) glScore += 2;
+  });
+  
+  plIndicators.forEach(term => {
+    if (lower.includes(term)) plScore += 2;
+  });
+  
+  bsIndicators.forEach(term => {
+    if (lower.includes(term)) bsScore += 2;
+  });
+  
+  tbIndicators.forEach(term => {
+    if (lower.includes(term)) tbScore += 2;
+  });
+  
+  // Check for debit/credit columns (strong GL indicator)
+  const hasDebitCredit = lines.some(line => {
+    const l = line.toLowerCase();
+    return (l.includes('debit') && l.includes('credit')) ||
+           (l.includes('dr') && l.includes('cr'));
+  });
+  
+  if (hasDebitCredit) glScore += 5;
+  
+  // Determine category
+  const scores = { gl: glScore, pl: plScore, bs: bsScore, tb: tbScore };
+  const maxScore = Math.max(glScore, plScore, bsScore, tbScore);
+  
+  if (maxScore === 0) return 'general'; // Unknown
+  if (glScore === maxScore) return 'gl';
+  if (plScore === maxScore) return 'pl';
+  if (bsScore === maxScore) return 'bs';
+  if (tbScore === maxScore) return 'tb';
+  
+  return 'general';
+}
+
+/**
+ * Get system prompt based on document category
+ */
+function getSystemPrompt(category) {
+  const prompts = {
+    gl: `You are an expert accounting assistant specializing in General Ledger (GL) analysis.
+
+When analyzing GL entries, follow these steps:
+
+1. **Identify Structure**: Recognize columns for Date, Account Code/Number, Account Name, Description, Debit, Credit, Reference/Entry Number.
+
+2. **Perform Calculations**:
+   - Group entries by Account Code or Account Name
+   - Sum Debits and Credits for each account
+   - Calculate net balance for each account (Debits - Credits or Credits - Debits depending on account type)
+   - Verify that total Debits = total Credits (fundamental accounting equation)
+
+3. **Classify Accounts**: Categorize accounts into:
+   - Assets (usually debit balance)
+   - Liabilities (usually credit balance)
+   - Equity (usually credit balance)
+   - Revenue (credit balance)
+   - Expenses (debit balance)
+
+4. **Output Format**:
+   - Start with: "**General Ledger Analysis**"
+   - Create a summary table with: Account Name, Account Type, Total Debits, Total Credits, Net Balance
+   - Verify: "Total Debits: X | Total Credits: Y | Balanced: Yes/No"
+   - List key observations (largest expenses, revenue accounts, unusual entries)
+   - Provide recommendations (account reconciliation needs, potential errors, compliance checks)
+
+5. **Important Rules**:
+   - DO NOT make up numbers - only use data from the file
+   - If debits don't equal credits, flag this as a critical issue
+   - For date ranges, note the period covered
+   - Identify any missing or incomplete entries
+
+Respond ONLY in markdown format. Do not output JSON.`,
+
+    pl: `You are an expert accounting & FP&A assistant specializing in Profit & Loss statements.
+
+When analyzing P&L statements:
+
+1. **Use Existing Totals**: When totals (Net Sales, Gross Profit, Operating Income, Net Profit, etc.) already exist in the file, USE those numbers instead of recomputing them.
+
+2. **Respect Multiple Periods**: If multiple periods exist (Period 1-12, Q1-Q4, etc.), respect the table structure and use values from the correct period columns.
+
+3. **Output Format**:
+   - Start with: "**[Period] Financial Summary**"
+   - Create a markdown table with key metrics: Revenue, COGS, Gross Profit, Operating Expenses, Operating Income, Net Profit, and relevant %
+   - Add bullet-point observations about trends, margins, cost structure
+   - Add numbered recommendations for improvement
+
+4. **Key Metrics to Calculate** (if not provided):
+   - Gross Profit Margin % = (Gross Profit / Revenue) × 100
+   - Operating Margin % = (Operating Income / Revenue) × 100
+   - Net Profit Margin % = (Net Profit / Revenue) × 100
+
+Respond ONLY in markdown format. Do not output JSON.`,
+
+    bs: `You are an expert accounting assistant specializing in Balance Sheet analysis.
+
+When analyzing Balance Sheets:
+
+1. **Verify the Accounting Equation**: Assets = Liabilities + Equity
+
+2. **Analyze Components**:
+   - Current Assets & Current Liabilities (calculate working capital)
+   - Fixed/Non-current Assets
+   - Long-term Liabilities
+   - Equity components
+
+3. **Calculate Key Ratios**:
+   - Current Ratio = Current Assets / Current Liabilities
+   - Debt-to-Equity = Total Liabilities / Total Equity
+   - Working Capital = Current Assets - Current Liabilities
+
+4. **Output Format**:
+   - Start with: "**Balance Sheet Analysis**"
+   - Summary table with Assets, Liabilities, Equity totals
+   - Key ratios and liquidity metrics
+   - Observations about financial position
+   - Recommendations for financial health improvement
+
+Respond ONLY in markdown format.`,
+
+    tb: `You are an expert accounting assistant specializing in Trial Balance analysis.
+
+When analyzing Trial Balances:
+
+1. **Verify Balance**: Total Debits MUST equal Total Credits
+
+2. **Account Classification**: Group accounts by type (Assets, Liabilities, Equity, Revenue, Expenses)
+
+3. **Output Format**:
+   - Start with: "**Trial Balance Summary**"
+   - Summary by account category with totals
+   - Verification: "Total Debits = Total Credits: [Amount]"
+   - Flag any imbalances as CRITICAL ERRORS
+   - Note any unusual account balances
+   - Recommendations for account reconciliation
+
+Respond ONLY in markdown format.`,
+
+    general: `You are an expert accounting assistant.
+
+Analyze the provided financial document and:
+1. Identify what type of document it is
+2. Extract and summarize key financial information
+3. Present findings in clear markdown tables
+4. Provide relevant observations and recommendations
+
+Respond ONLY in markdown format. Do not output JSON.`
+  };
+
+  return prompts[category] || prompts.general;
+}
+
+/**
+ * Model call with adaptive prompting
+ */
+async function callModel({ fileType, textContent, question, category }) {
+  // Limit input size
   const trimmed =
     textContent.length > 60000
-      ? textContent.slice(0, 60000) + "\n\n[Content truncated]"
+      ? textContent.slice(0, 60000) + "\n\n[Content truncated due to length]"
       : textContent;
+
+  const systemPrompt = getSystemPrompt(category);
 
   const messages = [
     {
       role: "system",
-      content:
-        systemPrompt ||
-        [
-          "You are an expert accounting & FP&A assistant.",
-          "You receive exports such as GL dumps, P&L statements, sales reports, etc.",
-          "Very important:",
-          "- When totals (e.g. Net Sales, Net Profit, Unit EBITDA, Total Expenses, etc.) already exist in the file, USE those numbers instead of recomputing them.",
-          "- If multiple periods exist (e.g. Period 1–12), respect the table structure and use the values from the correct period columns.",
-          "",
-          "Your response format:",
-          "1. Start with a short title line like: **Period X Financial Summary**",
-          "2. Then a clear markdown table summarising key metrics (Net Sales, Gross Profit, Prime Cost %, Net Profit, etc.).",
-          "3. Then bullet-point observations (use '-' bullets).",
-          "4. Then bullet-point recommendations (use numbered list '1.', '2.', etc.).",
-          "Do not output JSON. Respond only in human-readable markdown."
-        ].join("\n")
+      content: systemPrompt
     },
     {
       role: "user",
-      content: `File type: ${fileType}\nExtracted content (may be truncated):\n\n${trimmed}`
+      content: `File type: ${fileType}\nDocument category: ${category.toUpperCase()}\n\nExtracted content:\n\n${trimmed}`
     },
     {
       role: "user",
       content:
         question ||
-        "Please analyze the file and provide key metrics, a markdown summary table, and observations & recommendations."
+        "Please analyze this file thoroughly. Provide accurate calculations, key metrics in a markdown table, and relevant observations & recommendations."
     }
   ];
 
@@ -247,13 +423,13 @@ async function callModel({ model, systemPrompt, fileType, textContent, question 
       Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`
     },
     body: JSON.stringify({
-      model: model || process.env.OPENROUTER_MODEL || "tngtech/deepseek-r1t2-chimera:free",
+      model: process.env.OPENROUTER_MODEL || "tngtech/deepseek-r1t2-chimera:free",
       messages,
-      temperature: 0.2
+      temperature: 0.2,
+      max_tokens: 4000
     })
   });
 
-  // safely parse JSON
   let data;
   try {
     data = await r.json();
@@ -275,7 +451,7 @@ async function callModel({ model, systemPrompt, fileType, textContent, question 
 
 /**
  * MAIN handler
- * expects { fileUrl, question, transcript? }
+ * expects { fileUrl, question }
  */
 export default async function handler(req, res) {
   cors(res);
@@ -288,17 +464,17 @@ export default async function handler(req, res) {
     }
 
     const body = await parseJsonBody(req);
-    const { fileUrl, question = "", transcript = "" } = body || {};
+    const { fileUrl, question = "" } = body || {};
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
-    // Download file (with timeout and max size)
+    // Download file
     const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
 
-    // detect type (inspect bytes)
+    // Detect file type
     const detectedType = detectFileType(fileUrl, contentType, buffer);
 
-    // parse accordingly
+    // Parse file
     let extracted = { type: detectedType, textContent: "" };
     if (detectedType === "pdf") {
       extracted = await extractPdf(buffer);
@@ -308,9 +484,8 @@ export default async function handler(req, res) {
       extracted = extractCsv(buffer);
     }
 
-    // Handle errors or OCR-needed cases
+    // Handle errors
     if (extracted.error) {
-      // XLSX parse error or PDF parse error
       return res.status(200).json({
         ok: false,
         type: extracted.type,
@@ -320,13 +495,12 @@ export default async function handler(req, res) {
     }
 
     if (extracted.ocrNeeded) {
-      // scanned PDF — do not attempt heavy OCR here by default
       return res.status(200).json({
         ok: false,
         type: "pdf",
         reply:
-          "This PDF appears to be scanned or contains no embedded text. To extract text please run OCR. " +
-          "Recommended: use an OCR API (OCR.space or Google Vision). If you want I can add an OCR step when you provide an OCR API key.",
+          "This PDF appears to be scanned or contains no embedded text. OCR is required to extract text. " +
+          "Recommended: use an OCR API (OCR.space or Google Vision).",
         debug: { ocrNeeded: true, contentType, bytesReceived }
       });
     }
@@ -342,11 +516,16 @@ export default async function handler(req, res) {
       });
     }
 
-    // call model with extracted content
+    // Detect document category
+    const category = detectDocumentCategory(textContent);
+    console.log(`Detected document category: ${category}`);
+
+    // Call model with adaptive prompt
     const { reply, raw, httpStatus } = await callModel({
       fileType: extracted.type,
       textContent,
-      question
+      question,
+      category
     });
 
     if (!reply) {
@@ -354,18 +533,18 @@ export default async function handler(req, res) {
         ok: false,
         type: extracted.type,
         reply: "(No reply from model)",
-        debug: { status: httpStatus, body: raw, contentType, bytesReceived }
+        debug: { status: httpStatus, body: raw, contentType, bytesReceived, category }
       });
     }
 
-    // success
+    // Success
     return res.status(200).json({
       ok: true,
       type: extracted.type,
-      reply, // <- single markdown string for Adalo markdown component
-      // keep a trimmed version of textContent just for debugging if needed
+      category,
+      reply,
       textContent: textContent.slice(0, 20000),
-      debug: { contentType, bytesReceived, status: httpStatus }
+      debug: { contentType, bytesReceived, status: httpStatus, category }
     });
   } catch (err) {
     console.error("analyze-file error:", err);
