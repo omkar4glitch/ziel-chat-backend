@@ -3,18 +3,14 @@ import fetch from "node-fetch";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 
-/**
- * CORS helper
- */
+/* ---------- CORS helper ---------- */
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-/**
- * Tolerant body parser with lightweight logs
- */
+/* ---------- tolerant body parser ---------- */
 async function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -23,37 +19,16 @@ async function parseJsonBody(req) {
       if (!body) return resolve({});
       const contentType =
         (req.headers && (req.headers["content-type"] || req.headers["Content-Type"])) || "";
-      if (contentType.includes("application/json")) {
-        try {
-          const parsed = JSON.parse(body);
-          console.log("analyze-file: parsed JSON body keys:", Object.keys(parsed));
-          return resolve(parsed);
-        } catch (err) {
-          console.warn("analyze-file: JSON parse failed, falling back to raw text");
-          return resolve({ userMessage: body });
-        }
-      }
-      if (contentType.includes("application/x-www-form-urlencoded")) {
-        try {
+      try {
+        if (contentType.includes("application/json")) return resolve(JSON.parse(body));
+        if (contentType.includes("application/x-www-form-urlencoded")) {
           const params = new URLSearchParams(body);
           const obj = {};
           for (const [k, v] of params) obj[k] = v;
-          console.log("analyze-file: parsed form body keys:", Object.keys(obj));
           return resolve(obj);
-        } catch (err) {
-          return resolve({ userMessage: body });
         }
-      }
-      try {
-        const parsed = JSON.parse(body);
-        console.log("analyze-file: parsed fallback JSON keys:", Object.keys(parsed));
-        return resolve(parsed);
+        return resolve({ userMessage: body });
       } catch {
-        console.log(
-          "analyze-file: using raw body as userMessage (len=",
-          body.length,
-          ")"
-        );
         return resolve({ userMessage: body });
       }
     });
@@ -61,88 +36,52 @@ async function parseJsonBody(req) {
   });
 }
 
-/**
- * Download remote file into Buffer (with a timeout + maxBytes)
- */
-async function downloadFileToBuffer(
-  url,
-  maxBytes = 10 * 1024 * 1024,
-  timeoutMs = 20000
-) {
+/* ---------- download file ---------- */
+async function downloadFileToBuffer(url, maxBytes = 50 * 1024 * 1024, timeoutMs = 30000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-
   let r;
   try {
     r = await fetch(url, { signal: controller.signal });
   } catch (err) {
     clearTimeout(timer);
-    throw new Error(`Download failed or timed out: ${err.message || err}`);
+    throw new Error(`Download failed or timed out: ${err.message}`);
   }
   clearTimeout(timer);
 
   if (!r.ok) throw new Error(`Failed to download file: ${r.status} ${r.statusText}`);
 
-  const contentType = r.headers.get("content-type") || "";
   const chunks = [];
   let total = 0;
-
-  try {
-    for await (const chunk of r.body) {
-      total += chunk.length;
-      if (total > maxBytes) {
-        // store only up to maxBytes then stop reading
-        const allowed = maxBytes - (total - chunk.length);
-        if (allowed > 0) chunks.push(chunk.slice(0, allowed));
-        break;
-      } else {
-        chunks.push(chunk);
-      }
-    }
-  } catch (err) {
-    throw new Error(`Error reading download stream: ${err.message || err}`);
+  for await (const chunk of r.body) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      const allowed = maxBytes - (total - chunk.length);
+      if (allowed > 0) chunks.push(chunk.slice(0, allowed));
+      break;
+    } else chunks.push(chunk);
   }
-
-  return { buffer: Buffer.concat(chunks), contentType, bytesReceived: total };
+  return { buffer: Buffer.concat(chunks), contentType: r.headers.get("content-type") || "", bytesReceived: total };
 }
 
-/**
- * Detect type by inspecting buffer signature first, then fallback to URL/contentType
- */
+/* ---------- detect file type ---------- */
 function detectFileType(fileUrl, contentType, buffer) {
   const lowerUrl = (fileUrl || "").toLowerCase();
   const lowerType = (contentType || "").toLowerCase();
 
   if (buffer && buffer.length >= 4) {
-    // XLSX is a ZIP (PK..)
-    if (buffer[0] === 0x50 && buffer[1] === 0x4b) return "xlsx";
-    // PDF starts with %PDF
-    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46)
-      return "pdf";
+    if (buffer[0] === 0x50 && buffer[1] === 0x4b) return "xlsx"; // PK.. => xlsx
+    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) return "pdf"; // %PDF
   }
 
   if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) return "pdf";
-  if (
-    lowerUrl.endsWith(".xlsx") ||
-    lowerType.includes("spreadsheet") ||
-    lowerType.includes("sheet")
-  )
-    return "xlsx";
-  if (
-    lowerUrl.endsWith(".csv") ||
-    lowerType.includes("text/csv") ||
-    lowerType.includes("text/plain") ||
-    lowerType.includes("octet-stream")
-  )
-    return "csv";
+  if (lowerUrl.endsWith(".xlsx") || lowerType.includes("spreadsheet") || lowerType.includes("sheet")) return "xlsx";
+  if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv") || lowerType.includes("text/plain") || lowerType.includes("octet-stream")) return "csv";
 
-  // fallback
   return "csv";
 }
 
-/**
- * Convert buffer to UTF-8 text (strip BOM)
- */
+/* ---------- buffer to text ---------- */
 function bufferToText(buffer) {
   if (!buffer) return "";
   let text = buffer.toString("utf8");
@@ -150,210 +89,75 @@ function bufferToText(buffer) {
   return text;
 }
 
-/**
- * Extract CSV (simple)
- */
+/* ---------- extract CSV/XLSX/PDF ---------- */
 function extractCsv(buffer) {
-  const text = bufferToText(buffer);
-  return { type: "csv", textContent: text };
+  return { type: "csv", textContent: bufferToText(buffer) };
 }
 
-/**
- * Extract XLSX:
- * - textContent: CSV of first sheet (old behaviour, unchanged for caller)
- * - rows: structured rows via sheet_to_json (NEW, for GL summarisation)
- */
 function extractXlsx(buffer) {
   try {
-    const workbook = XLSX.read(buffer, {
-      type: "buffer",
-      cellDates: true,
-      cellNF: false,
-      cellText: false
-    });
+    const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true, cellNF: false, cellText: false });
     const sheetName = workbook.SheetNames[0];
-    if (!sheetName) return { type: "xlsx", textContent: "", rows: [] };
+    if (!sheetName) return { type: "xlsx", textContent: "" };
     const sheet = workbook.Sheets[sheetName];
-    const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
-    const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
-    return { type: "xlsx", textContent: csv, rows };
+    return { type: "xlsx", textContent: XLSX.utils.sheet_to_csv(sheet, { blankrows: false }) };
   } catch (err) {
-    console.error("extractXlsx failed:", err?.message || err);
-    return {
-      type: "xlsx",
-      textContent: "",
-      rows: [],
-      error: String(err?.message || err)
-    };
+    return { type: "xlsx", textContent: "", error: String(err?.message || err) };
   }
 }
 
-/**
- * Extract PDF text. If text is absent/too-short we mark ocrNeeded:true
- */
 async function extractPdf(buffer) {
   try {
     const data = await pdf(buffer);
-    const text = data && data.text ? data.text.trim() : "";
-    if (!text || text.length < 50) {
-      // consider it scanned or no text
-      return { type: "pdf", textContent: "", ocrNeeded: true };
-    }
+    const text = (data && data.text) ? data.text.trim() : "";
+    if (!text || text.length < 50) return { type: "pdf", textContent: "", ocrNeeded: true };
     return { type: "pdf", textContent: text, ocrNeeded: false };
   } catch (err) {
-    console.error("extractPdf failed:", err?.message || err);
     return { type: "pdf", textContent: "", error: String(err?.message || err) };
   }
 }
 
-/**
- * NEW: build a precomputed GL summary from XLSX rows (for big ledgers)
- * - We detect likely amount, account, period/date columns.
- * - We compute net amounts by account & by period.
- * - Returned as a text block that will be PREPENDED to textContent for the model.
- */
-function buildGlPreSummaryFromRows(rows) {
-  if (!Array.isArray(rows) || rows.length === 0) return null;
+/* ---------- OCR ---------- */
+async function runOcrOnPdf(buffer) {
+  const apiKey = process.env.OCR_SPACE_API_KEY;
+  if (!apiKey) return { text: "", error: "OCR_SPACE_API_KEY not set" };
 
-  const first = rows[0] || {};
-  const keys = Object.keys(first);
-  if (!keys.length) return null;
+  const params = new URLSearchParams();
+  params.append("apikey", apiKey);
+  params.append("base64Image", `data:application/pdf;base64,${buffer.toString("base64")}`);
+  params.append("language", "eng");
+  params.append("isTable", "true");
 
-  const lower = (s) => String(s || "").toLowerCase();
+  const r = await fetch("https://api.ocr.space/parse/image", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString()
+  });
 
-  // detect columns
-  const amountCandidates = keys.filter((k) =>
-    /amount|debit|credit|net|balance|value/.test(lower(k))
-  );
-  if (!amountCandidates.length) return null;
-
-  const debitKey = amountCandidates.find((k) => /debit/.test(lower(k))) || null;
-  const creditKey = amountCandidates.find((k) => /credit/.test(lower(k))) || null;
-  const amountKey =
-    amountCandidates.find((k) => /amount|net|balance|value/.test(lower(k))) ||
-    debitKey ||
-    creditKey;
-
-  const accountKey = keys.find((k) => /account|gl ?code|ledger/i.test(k)) || null;
-  const dateKey = keys.find((k) => /date/.test(lower(k))) || null;
-  const periodKey = keys.find((k) => /period|month/.test(lower(k))) || null;
-
-  if (!amountKey && !(debitKey && creditKey)) return null;
-
-  const num = (v) => {
-    if (v === null || v === undefined || v === "") return 0;
-    if (typeof v === "number") return v;
-    let s = String(v).trim();
-    // remove currency symbols and commas
-    s = s.replace(/[$₹€,]/g, "");
-    const n = parseFloat(s);
-    return Number.isFinite(n) ? n : 0;
-  };
-
-  const totalsByAccount = {};
-  const totalsByPeriod = {};
-
-  for (const row of rows) {
-    if (!row || typeof row !== "object") continue;
-
-    const d = debitKey ? num(row[debitKey]) : 0;
-    const c = creditKey ? num(row[creditKey]) : 0;
-    let baseAmt = amountKey ? num(row[amountKey]) : 0;
-
-    // if we have both debit & credit columns, net = debit - credit
-    const net = debitKey && creditKey ? d - c : baseAmt;
-
-    const acc =
-      (accountKey && row[accountKey] && String(row[accountKey]).trim()) || "Unknown";
-    let per = "Unknown";
-
-    if (periodKey && row[periodKey]) {
-      per = String(row[periodKey]).trim();
-    } else if (dateKey && row[dateKey]) {
-      const rawDate = row[dateKey];
-      let dt = null;
-      if (rawDate instanceof Date) dt = rawDate;
-      else {
-        const candidate = new Date(rawDate);
-        if (!isNaN(candidate.getTime())) dt = candidate;
-      }
-      if (dt) {
-        const y = dt.getFullYear();
-        const m = String(dt.getMonth() + 1).padStart(2, "0");
-        per = `${y}-${m}`;
-      }
-    }
-
-    totalsByAccount[acc] = (totalsByAccount[acc] || 0) + net;
-    totalsByPeriod[per] = (totalsByPeriod[per] || 0) + net;
+  const data = await r.json();
+  if (!data || data.IsErroredOnProcessing) {
+    const msg = data?.ErrorMessage ? (Array.isArray(data.ErrorMessage) ? data.ErrorMessage.join("; ") : String(data.ErrorMessage)) : "Unknown OCR error";
+    return { text: "", error: msg };
   }
 
-  const fmt = (n) => Number(n || 0).toFixed(2);
-
-  const topAccounts = Object.entries(totalsByAccount)
-    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-    .slice(0, 15);
-
-  const periodEntries = Object.entries(totalsByPeriod).sort((a, b) =>
-    String(a[0]).localeCompare(String(b[0]))
-  );
-
-  // If everything is zero, skip
-  const sumAbs = (arr) => arr.reduce((acc, [, v]) => acc + Math.abs(v || 0), 0);
-  if (sumAbs(topAccounts) === 0 && sumAbs(periodEntries) === 0) return null;
-
-  let out = "PRECOMPUTED_GL_SUMMARY_START\n";
-  out +=
-    "The following section was computed by the backend from the GL rows and is numerically accurate.\n";
-  out += "Use these numbers for calculations instead of re-adding raw rows.\n\n";
-
-  if (topAccounts.length) {
-    out += "Totals by Account (net = debit - credit, or amount where applicable):\n";
-    out += "Account | NetAmount\n";
-    for (const [acc, val] of topAccounts) {
-      out += `${acc} | ${fmt(val)}\n`;
-    }
-    out += "\n";
-  }
-
-  if (periodEntries.length) {
-    out += "Totals by Period (derived from Period/Month/Date columns):\n";
-    out += "Period | NetAmount\n";
-    for (const [per, val] of periodEntries) {
-      out += `${per} | ${fmt(val)}\n`;
-    }
-    out += "\n";
-  }
-
-  out += "PRECOMPUTED_GL_SUMMARY_END\n";
-  return out;
+  return { text: data.ParsedResults.map((p) => p.ParsedText || "").join("\n") };
 }
 
-/**
- * Model call (OpenRouter / configured provider) - trimmed input safety
- */
-async function callModel({ model, systemPrompt, fileType, textContent, question }) {
-  // keep a reasonable safety limit – but we now prepend a compact GL summary first
-  const trimmed =
-    textContent.length > 30000
-      ? textContent.slice(0, 30000) + "\n\n[Content truncated]"
-      : textContent;
+/* ---------- Chunking + summarization for large files ---------- */
+function chunkText(text, chunkSize = 20000) {
+  const chunks = [];
+  let start = 0;
+  while (start < text.length) {
+    chunks.push(text.slice(start, start + chunkSize));
+    start += chunkSize;
+  }
+  return chunks;
+}
 
+async function summarizeChunk(chunk, model = process.env.OPENROUTER_MODEL) {
   const messages = [
-    {
-      role: "system",
-      content:
-        systemPrompt ||
-        "You are an expert accounting assistant. Analyze uploaded financial files and answer user questions concisely and accurately. When a precomputed GL summary is present, rely on those numbers for calculations."
-    },
-    {
-      role: "user",
-      content: `File type: ${fileType}\nExtracted content (may be truncated):\n\n${trimmed}`
-    },
-    {
-      role: "user",
-      content: question || "Please analyze the file and provide key insights."
-    }
+    { role: "system", content: "You are an expert financial assistant. Summarize key metrics and content concisely." },
+    { role: "user", content: chunk }
   ];
 
   const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -362,135 +166,156 @@ async function callModel({ model, systemPrompt, fileType, textContent, question 
       "Content-Type": "application/json",
       Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`
     },
-    body: JSON.stringify({
-      model: model || process.env.OPENROUTER_MODEL || "x-ai/grok-4.1-fast:free",
-      messages,
-      temperature: 0.2
-    })
+    body: JSON.stringify({ model, messages, temperature: 0.2, max_tokens: 1500 })
   });
 
-  // safely parse JSON
-  let data;
-  try {
-    data = await r.json();
-  } catch (err) {
-    const raw = await r.text().catch(() => "");
-    console.error("Model returned non-JSON:", raw.slice ? raw.slice(0, 1000) : raw);
-    return { reply: null, raw: raw.slice ? raw.slice(0, 2000) : raw, httpStatus: r.status };
+  const data = await r.json();
+  return data?.choices?.[0]?.message?.content || "";
+}
+
+async function summarizeLargeFile(textContent) {
+  const chunks = chunkText(textContent, 20000);
+  const summaries = [];
+  for (const chunk of chunks) {
+    const sum = await summarizeChunk(chunk);
+    summaries.push(sum);
+  }
+  return summaries.join("\n\n[...next chunk summary...]\n\n");
+}
+
+/* ---------- Model call using summarized content ---------- */
+async function callModel({ model, systemPrompt, fileType, textContent, question }) {
+  let payloadContent = textContent;
+  if (payloadContent.length > 80000) {
+    payloadContent = await summarizeLargeFile(payloadContent);
   }
 
-  const reply =
-    data?.choices?.[0]?.message?.content ||
-    data?.reply ||
-    (typeof data?.output === "string" ? data.output : null) ||
-    (Array.isArray(data?.output) && data.output[0]?.content ? data.output[0].content : null) ||
-    null;
+  const messages = [
+    {
+      role: "system",
+      content: systemPrompt || "You are an expert accounting assistant. Analyze uploaded financial files and answer questions concisely."
+    },
+    { role: "user", content: `File type: ${fileType}\n\nExtracted content:\n\n${payloadContent}` },
+    { role: "user", content: question || "Please analyze and provide summary, tables, and recommendations." }
+  ];
 
+  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` },
+    body: JSON.stringify({ model, messages, temperature: 0.2, max_tokens: 4500 })
+  });
+
+  const data = await r.json();
+  const reply = data?.choices?.[0]?.message?.content || null;
   return { reply, raw: data, httpStatus: r.status };
 }
 
-/**
- * MAIN handler
- * expects { fileUrl, question, transcript? }
- */
+/* ---------- structured JSON extraction (same as old file) ---------- */
+function findFirstJsonSubstring(text) {
+  if (!text) return null;
+  const starts = ["{", "["];
+  for (const startChar of starts) {
+    let start = text.indexOf(startChar);
+    while (start !== -1) {
+      const stack = [];
+      let inString = false;
+      let escape = false;
+      for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (inString) {
+          if (escape) escape = false;
+          else if (ch === "\\") escape = true;
+          else if (ch === '"') inString = false;
+          continue;
+        } else {
+          if (ch === '"') { inString = true; continue; }
+          if (ch === "{" || ch === "[") stack.push(ch);
+          else if (ch === "}" || ch === "]") { stack.pop(); if (stack.length === 0) return text.slice(start, i+1); }
+        }
+      }
+      start = text.indexOf(startChar, start + 1);
+    }
+  }
+  return null;
+}
+
+function extractStructuredJsonFromReply(text) {
+  const startMarker = "STRUCTURED_JSON_START";
+  const endMarker = "STRUCTURED_JSON_END";
+  if (!text || typeof text !== "string") return { ok: false, error: "no-reply-text" };
+
+  const si = text.indexOf(startMarker);
+  const ei = text.indexOf(endMarker);
+  if (si !== -1 && ei !== -1 && ei > si) {
+    const block = text.slice(si + startMarker.length, ei).trim();
+    const codeMatch = block.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    const candidateText = codeMatch ? codeMatch[1] : block;
+    const firstB = candidateText.indexOf("{");
+    const lastB = candidateText.lastIndexOf("}");
+    if (firstB !== -1 && lastB !== -1 && lastB > firstB) {
+      try { return { ok: true, parsed: JSON.parse(candidateText.slice(firstB, lastB + 1)), jsonText: candidateText.slice(firstB, lastB + 1) }; }
+      catch (err) { return { ok: false, error: "JSON parse failed inside markers: "+err.message, raw: candidateText.slice(0,1000) }; }
+    } else return { ok: false, error: "no-json-object-in-markers", raw: candidateText.slice(0,1000) };
+  }
+
+  const fenced = text.match(/```(?:json)?\s*({[\s\S]*?})\s*```/i);
+  if (fenced && fenced[1]) {
+    try { return { ok: true, parsed: JSON.parse(fenced[1]), jsonText: fenced[1] }; }
+    catch (err) { return { ok: false, error: "JSON parse failed fenced: " + err.message, raw: fenced[1].slice(0,1000) }; }
+  }
+
+  const candidate = findFirstJsonSubstring(text);
+  if (candidate) {
+    try { return { ok: true, parsed: JSON.parse(candidate), jsonText: candidate }; }
+    catch (err) { return { ok: false, error: "JSON parse failed on candidate substring: "+err.message, raw: candidate.slice(0,1000) }; }
+  }
+
+  return { ok: false, error: "no-structured-json-found", raw: text.slice(0,1000) };
+}
+
+/* ---------- MAIN handler ---------- */
 export default async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    if (!process.env.OPENROUTER_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENROUTER_API_KEY in environment variables" });
-    }
+    if (!process.env.OPENROUTER_API_KEY) return res.status(500).json({ error: "Missing OPENROUTER_API_KEY" });
 
     const body = await parseJsonBody(req);
-    const { fileUrl, question = "", transcript = "" } = body || {};
-
+    const { fileUrl, question = "" } = body || {};
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
-    // Download file (with timeout and max size)
     const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
-
-    // detect type (inspect bytes)
     const detectedType = detectFileType(fileUrl, contentType, buffer);
 
-    // parse accordingly
     let extracted = { type: detectedType, textContent: "" };
-    if (detectedType === "pdf") {
-      extracted = await extractPdf(buffer);
-    } else if (detectedType === "xlsx") {
-      extracted = extractXlsx(buffer);
-    } else {
-      extracted = extractCsv(buffer);
-    }
-
-    // Handle errors or OCR-needed cases
-    if (extracted.error) {
-      // XLSX parse error or PDF parse error
-      return res.status(200).json({
-        ok: false,
-        type: extracted.type,
-        reply: `Failed to parse ${extracted.type} file: ${extracted.error}`,
-        debug: { contentType, bytesReceived }
-      });
-    }
+    if (detectedType === "pdf") extracted = await extractPdf(buffer);
+    else if (detectedType === "xlsx") extracted = extractXlsx(buffer);
+    else extracted = extractCsv(buffer);
 
     if (extracted.ocrNeeded) {
-      // scanned PDF — still same behaviour as before (no OCR yet)
-      return res.status(200).json({
-        ok: false,
-        type: "pdf",
-        reply:
-          "This PDF appears to be scanned or contains no embedded text. To extract text please run OCR. " +
-          "Recommended: use an OCR API (OCR.space or Google Vision). If you want I can add an OCR step when you provide an OCR API key.",
-        debug: { ocrNeeded: true, contentType, bytesReceived }
-      });
+      const ocrResult = await runOcrOnPdf(buffer);
+      if (ocrResult.error) return res.status(200).json({ ok: false, type: "pdf", reply: "OCR failed: " + ocrResult.error });
+      extracted.textContent = ocrResult.text || "";
+      extracted.ocrUsed = true;
     }
 
-    const textContent = extracted.textContent || "";
+    if (extracted.error) return res.status(200).json({ ok: false, type: extracted.type, reply: `Failed to parse ${extracted.type}: ${extracted.error}` });
+    if (!extracted.textContent || !extracted.textContent.trim()) return res.status(200).json({ ok: false, type: extracted.type, reply: "No text extracted from file." });
 
-    if (!textContent || !textContent.trim()) {
-      return res.status(200).json({
-        ok: false,
-        type: extracted.type,
-        reply: "I couldn't extract any text from this file. It may be empty or corrupted.",
-        debug: { contentType, bytesReceived }
-      });
-    }
+    const { reply, raw, httpStatus } = await callModel({ fileType: extracted.type, textContent: extracted.textContent, question });
+    if (!reply) return res.status(200).json({ ok: false, type: extracted.type, reply: "(No reply from model)" });
 
-    // NEW: if this is XLSX with structured rows, build a precomputed GL summary
-    // and prepend it to the text that goes to the model.
-    let finalTextForModel = textContent;
-    if (extracted.type === "xlsx" && Array.isArray(extracted.rows) && extracted.rows.length) {
-      const glSummary = buildGlPreSummaryFromRows(extracted.rows);
-      if (glSummary) {
-        finalTextForModel = `${glSummary}\n\n${textContent}`;
-      }
-    }
+    const parsedStructured = extractStructuredJsonFromReply(reply);
 
-    // call model with extracted content (possibly with GL summary prepended)
-    const { reply, raw, httpStatus } = await callModel({
-      fileType: extracted.type,
-      textContent: finalTextForModel,
-      question
-    });
-
-    if (!reply) {
-      return res.status(200).json({
-        ok: false,
-        type: extracted.type,
-        reply: "(No reply from model)",
-        debug: { status: httpStatus, body: raw, contentType, bytesReceived }
-      });
-    }
-
-    // success — output shape is unchanged
     return res.status(200).json({
       ok: true,
       type: extracted.type,
       reply,
-      textContent: textContent.slice(0, 20000),
-      debug: { contentType, bytesReceived, status: httpStatus }
+      structured: parsedStructured.ok ? parsedStructured.parsed : null,
+      textContent: extracted.textContent.slice(0, 20000),
+      debug: { contentType, bytesReceived, status: httpStatus, ocrUsed: !!extracted.ocrUsed }
     });
   } catch (err) {
     console.error("analyze-file error:", err);
