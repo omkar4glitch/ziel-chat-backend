@@ -102,6 +102,7 @@ async function downloadFileToBuffer(
     throw new Error(`Error reading download stream: ${err.message || err}`);
   }
 
+  console.log(`Downloaded ${total} bytes, content-type: ${contentType}`);
   return { buffer: Buffer.concat(chunks), contentType, bytesReceived: total };
 }
 
@@ -112,27 +113,56 @@ function detectFileType(fileUrl, contentType, buffer) {
   const lowerUrl = (fileUrl || "").toLowerCase();
   const lowerType = (contentType || "").toLowerCase();
 
+  console.log(`Detecting file type - URL: ${lowerUrl}, ContentType: ${lowerType}, BufferSize: ${buffer?.length || 0}`);
+
   if (buffer && buffer.length >= 4) {
-    if (buffer[0] === 0x50 && buffer[1] === 0x4b) return "xlsx";
-    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46)
+    // XLSX is a ZIP (PK..)
+    if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
+      console.log("Detected XLSX by signature (PK)");
+      return "xlsx";
+    }
+    // PDF starts with %PDF
+    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) {
+      console.log("Detected PDF by signature (%PDF)");
       return "pdf";
+    }
   }
 
-  if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) return "pdf";
+  if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) {
+    console.log("Detected PDF by URL/content-type");
+    return "pdf";
+  }
   if (
     lowerUrl.endsWith(".xlsx") ||
+    lowerUrl.endsWith(".xls") ||
     lowerType.includes("spreadsheet") ||
-    lowerType.includes("sheet")
-  )
+    lowerType.includes("sheet") ||
+    lowerType.includes("excel")
+  ) {
+    console.log("Detected XLSX by URL/content-type");
     return "xlsx";
+  }
   if (
     lowerUrl.endsWith(".csv") ||
-    lowerType.includes("text/csv") ||
-    lowerType.includes("text/plain") ||
-    lowerType.includes("octet-stream")
-  )
+    lowerType.includes("text/csv")
+  ) {
+    console.log("Detected CSV by URL/content-type");
     return "csv";
+  }
 
+  // Fallback - try to detect by content
+  if (buffer && buffer.length > 0) {
+    const sample = buffer.toString("utf8", 0, Math.min(200, buffer.length));
+    console.log(`Sample content: ${sample.substring(0, 100)}...`);
+    
+    // Check if it looks like CSV (has commas or tabs)
+    if (sample.includes(',') || sample.includes('\t')) {
+      console.log("Detected CSV by content inspection");
+      return "csv";
+    }
+  }
+
+  console.log("Defaulting to CSV");
   return "csv";
 }
 
@@ -151,6 +181,7 @@ function bufferToText(buffer) {
  */
 function extractCsv(buffer) {
   const text = bufferToText(buffer);
+  console.log(`CSV extracted - length: ${text.length}, first 200 chars: ${text.substring(0, 200)}`);
   return { type: "csv", textContent: text };
 }
 
@@ -159,16 +190,27 @@ function extractCsv(buffer) {
  */
 function extractXlsx(buffer) {
   try {
+    console.log("Starting XLSX extraction...");
     const workbook = XLSX.read(buffer, {
       type: "buffer",
       cellDates: true,
       cellNF: false,
       cellText: false
     });
+    
+    console.log(`XLSX workbook has ${workbook.SheetNames.length} sheets: ${workbook.SheetNames.join(", ")}`);
+    
     const sheetName = workbook.SheetNames[0];
-    if (!sheetName) return { type: "xlsx", textContent: "" };
+    if (!sheetName) {
+      console.log("No sheets found in XLSX");
+      return { type: "xlsx", textContent: "" };
+    }
+    
     const sheet = workbook.Sheets[sheetName];
     const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+    
+    console.log(`XLSX extracted from sheet "${sheetName}" - CSV length: ${csv.length}, first 200 chars: ${csv.substring(0, 200)}`);
+    
     return { type: "xlsx", textContent: csv };
   } catch (err) {
     console.error("extractXlsx failed:", err?.message || err);
@@ -181,11 +223,18 @@ function extractXlsx(buffer) {
  */
 async function extractPdf(buffer) {
   try {
+    console.log("Starting PDF extraction...");
     const data = await pdf(buffer);
     const text = (data && data.text) ? data.text.trim() : "";
+    
+    console.log(`PDF extracted - text length: ${text.length}, pages: ${data?.numpages || 0}`);
+    
     if (!text || text.length < 50) {
+      console.log("PDF appears to be scanned or has no text");
       return { type: "pdf", textContent: "", ocrNeeded: true };
     }
+    
+    console.log(`PDF first 200 chars: ${text.substring(0, 200)}`);
     return { type: "pdf", textContent: text, ocrNeeded: false };
   } catch (err) {
     console.error("extractPdf failed:", err?.message || err);
@@ -198,56 +247,55 @@ async function extractPdf(buffer) {
  */
 function detectDocumentCategory(textContent) {
   const lower = textContent.toLowerCase();
-  const lines = textContent.split('\n').slice(0, 50); // Check first 50 lines
+  const lines = textContent.split('\n').slice(0, 50);
   
-  // GL Entry indicators
   const glIndicators = [
     'journal entry', 'journal entries', 'gl entry', 'gl entries',
     'debit', 'credit', 'account code', 'account number',
-    'transaction date', 'posting date', 'entry number'
+    'transaction date', 'posting date', 'entry number', 'voucher'
   ];
   
-  // P&L indicators
   const plIndicators = [
     'profit and loss', 'p&l', 'income statement',
     'revenue', 'net sales', 'gross profit', 'operating income',
     'net income', 'net profit', 'ebitda', 'operating expenses'
   ];
   
-  // Balance Sheet indicators
   const bsIndicators = [
     'balance sheet', 'assets', 'liabilities', 'equity',
     'current assets', 'fixed assets', 'current liabilities'
   ];
   
-  // Trial Balance indicators
   const tbIndicators = [
     'trial balance', 'account balances', 'opening balance', 'closing balance'
   ];
   
-  // Count matches
   let glScore = 0;
   let plScore = 0;
   let bsScore = 0;
   let tbScore = 0;
   
   glIndicators.forEach(term => {
-    if (lower.includes(term)) glScore += 2;
+    const count = (lower.match(new RegExp(term, 'g')) || []).length;
+    glScore += count * 2;
   });
   
   plIndicators.forEach(term => {
-    if (lower.includes(term)) plScore += 2;
+    const count = (lower.match(new RegExp(term, 'g')) || []).length;
+    plScore += count * 2;
   });
   
   bsIndicators.forEach(term => {
-    if (lower.includes(term)) bsScore += 2;
+    const count = (lower.match(new RegExp(term, 'g')) || []).length;
+    bsScore += count * 2;
   });
   
   tbIndicators.forEach(term => {
-    if (lower.includes(term)) tbScore += 2;
+    const count = (lower.match(new RegExp(term, 'g')) || []).length;
+    tbScore += count * 2;
   });
   
-  // Check for debit/credit columns (strong GL indicator)
+  // Check for debit/credit columns
   const hasDebitCredit = lines.some(line => {
     const l = line.toLowerCase();
     return (l.includes('debit') && l.includes('credit')) ||
@@ -256,11 +304,12 @@ function detectDocumentCategory(textContent) {
   
   if (hasDebitCredit) glScore += 5;
   
-  // Determine category
+  console.log(`Category detection scores - GL: ${glScore}, P&L: ${plScore}, BS: ${bsScore}, TB: ${tbScore}`);
+  
   const scores = { gl: glScore, pl: plScore, bs: bsScore, tb: tbScore };
   const maxScore = Math.max(glScore, plScore, bsScore, tbScore);
   
-  if (maxScore === 0) return 'general'; // Unknown
+  if (maxScore === 0) return 'general';
   if (glScore === maxScore) return 'gl';
   if (plScore === maxScore) return 'pl';
   if (bsScore === maxScore) return 'bs';
@@ -391,7 +440,6 @@ Respond ONLY in markdown format. Do not output JSON.`
  * Model call with adaptive prompting
  */
 async function callModel({ fileType, textContent, question, category }) {
-  // Limit input size
   const trimmed =
     textContent.length > 60000
       ? textContent.slice(0, 60000) + "\n\n[Content truncated due to length]"
@@ -415,6 +463,8 @@ async function callModel({ fileType, textContent, question, category }) {
         "Please analyze this file thoroughly. Provide accurate calculations, key metrics in a markdown table, and relevant observations & recommendations."
     }
   ];
+
+  console.log(`Calling model with category: ${category}, content length: ${trimmed.length}`);
 
   const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -446,12 +496,13 @@ async function callModel({ fileType, textContent, question, category }) {
     (Array.isArray(data?.output) && data.output[0]?.content ? data.output[0].content : null) ||
     null;
 
+  console.log(`Model response received - status: ${r.status}, has reply: ${!!reply}, reply length: ${reply?.length || 0}`);
+
   return { reply, raw: data, httpStatus: r.status };
 }
 
 /**
  * MAIN handler
- * expects { fileUrl, question }
  */
 export default async function handler(req, res) {
   cors(res);
@@ -465,6 +516,8 @@ export default async function handler(req, res) {
 
     const body = await parseJsonBody(req);
     const { fileUrl, question = "" } = body || {};
+
+    console.log(`Request received - fileUrl: ${fileUrl}, question: ${question}`);
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
@@ -486,11 +539,12 @@ export default async function handler(req, res) {
 
     // Handle errors
     if (extracted.error) {
+      console.error(`Extraction error: ${extracted.error}`);
       return res.status(200).json({
         ok: false,
         type: extracted.type,
         reply: `Failed to parse ${extracted.type} file: ${extracted.error}`,
-        debug: { contentType, bytesReceived }
+        debug: { contentType, bytesReceived, error: extracted.error }
       });
     }
 
@@ -507,12 +561,20 @@ export default async function handler(req, res) {
 
     const textContent = extracted.textContent || "";
 
+    console.log(`Text extraction complete - length: ${textContent.length}`);
+
     if (!textContent || !textContent.trim()) {
+      console.error("No text content extracted");
       return res.status(200).json({
         ok: false,
         type: extracted.type,
         reply: "I couldn't extract any text from this file. It may be empty or corrupted.",
-        debug: { contentType, bytesReceived }
+        debug: { 
+          contentType, 
+          bytesReceived,
+          extractedLength: textContent.length,
+          sample: buffer.toString('utf8', 0, Math.min(500, buffer.length))
+        }
       });
     }
 
@@ -529,15 +591,24 @@ export default async function handler(req, res) {
     });
 
     if (!reply) {
+      console.error("No reply from model");
       return res.status(200).json({
         ok: false,
         type: extracted.type,
         reply: "(No reply from model)",
-        debug: { status: httpStatus, body: raw, contentType, bytesReceived, category }
+        debug: { 
+          status: httpStatus, 
+          body: raw, 
+          contentType, 
+          bytesReceived, 
+          category,
+          textSample: textContent.substring(0, 500)
+        }
       });
     }
 
     // Success
+    console.log("Analysis complete - success");
     return res.status(200).json({
       ok: true,
       type: extracted.type,
@@ -548,6 +619,9 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("analyze-file error:", err);
-    return res.status(500).json({ error: String(err?.message || err) });
+    return res.status(500).json({ 
+      error: String(err?.message || err),
+      stack: err?.stack
+    });
   }
 }
