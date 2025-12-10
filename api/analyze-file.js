@@ -245,12 +245,11 @@ function parseCSVLine(line) {
 }
 
 /**
- * PRE-PROCESS GL DATA - IMPROVED for large files
+ * PRE-PROCESS GL DATA - FIXED for accurate calculations
  */
 function preprocessGLData(textContent) {
-  try {
-    console.log("Starting GL preprocessing...");
-    console.log(`Input text length: ${textContent.length} characters`);
+  console.log("Starting GL preprocessing...");
+  console.log(`Input text length: ${textContent.length} characters`);
   
   // Parse CSV - NO LIMIT, process all rows
   const rows = parseCSV(textContent);
@@ -300,7 +299,7 @@ function preprocessGLData(textContent) {
     };
   }
   
-  // Aggregate by account
+  // Aggregate by account - FIXED CALCULATION LOGIC
   const accountSummary = {};
   let totalDebits = 0;
   let totalCredits = 0;
@@ -308,17 +307,20 @@ function preprocessGLData(textContent) {
   let processedRows = 0;
   let minDate = null;
   let maxDate = null;
-  let reversalEntries = 0;
-  let negativeDebits = 0;
-  let negativeCredits = 0;
   
   rows.forEach((row, idx) => {
     const account = row[accountCol]?.trim();
     
+    // Skip rows without account name
+    if (!account || account === '') {
+      errorRows++;
+      return;
+    }
+    
     let debit = 0;
     let credit = 0;
     
-    // Handle different amount formats
+    // Handle different amount formats - FIXED LOGIC
     if (amountCol && !debitCol && !creditCol) {
       // Single amount column
       const amountStr = row[amountCol]?.trim() || "0";
@@ -329,31 +331,34 @@ function preprocessGLData(textContent) {
         credit = Math.abs(amount);
       }
     } else {
-      // Separate debit/credit columns
-      const debitStr = row[debitCol]?.trim() || "0";
-      const creditStr = row[creditCol]?.trim() || "0";
+      // Separate debit/credit columns - FIXED: Handle all formats properly
+      const debitStr = (row[debitCol]?.trim() || "").replace(/[^0-9.-]/g, '');
+      const creditStr = (row[creditCol]?.trim() || "").replace(/[^0-9.-]/g, '');
       
-      // Parse numbers - handle negative values (reversals)
-      let debitParsed = parseFloat(debitStr.replace(/[^0-9.-]/g, '')) || 0;
-      let creditParsed = parseFloat(creditStr.replace(/[^0-9.-]/g, '')) || 0;
+      // Parse debit - handle negative values (reversal entries)
+      if (debitStr && debitStr !== '' && debitStr !== '-') {
+        const debitValue = parseFloat(debitStr);
+        if (!isNaN(debitValue)) {
+          if (debitValue >= 0) {
+            debit = debitValue;
+          } else {
+            // Negative debit = Credit reversal
+            credit = Math.abs(debitValue);
+          }
+        }
+      }
       
-      // Handle reversal entries (negative amounts in debit/credit columns)
-      if (debitParsed < 0) {
-        // Negative debit means it should be a credit
-        credit = Math.abs(debitParsed);
-        debit = 0;
-        negativeDebits++;
-        reversalEntries++;
-      } else if (creditParsed < 0) {
-        // Negative credit means it should be a debit
-        debit = Math.abs(creditParsed);
-        credit = 0;
-        negativeCredits++;
-        reversalEntries++;
-      } else {
-        // Normal positive entries
-        debit = debitParsed;
-        credit = creditParsed;
+      // Parse credit - handle negative values (reversal entries)
+      if (creditStr && creditStr !== '' && creditStr !== '-') {
+        const creditValue = parseFloat(creditStr);
+        if (!isNaN(creditValue)) {
+          if (creditValue >= 0) {
+            credit = creditValue;
+          } else {
+            // Negative credit = Debit reversal
+            debit = Math.abs(creditValue);
+          }
+        }
       }
     }
     
@@ -364,15 +369,13 @@ function preprocessGLData(textContent) {
       if (!maxDate || dateStr > maxDate) maxDate = dateStr;
     }
     
-    // Skip only truly empty rows (no account and no amounts)
-    if (!account || account === '') {
+    // FIXED: Only skip if BOTH debit and credit are zero
+    if (debit === 0 && credit === 0) {
       errorRows++;
       return;
     }
     
-    // Allow entries with zero amounts (they might be informational)
-    // but don't skip them as they still count as entries
-    
+    // Initialize account if not exists
     if (!accountSummary[account]) {
       accountSummary[account] = { 
         account, 
@@ -382,10 +385,12 @@ function preprocessGLData(textContent) {
       };
     }
     
+    // Add to account totals
     accountSummary[account].totalDebit += debit;
     accountSummary[account].totalCredit += credit;
     accountSummary[account].count += 1;
     
+    // Add to grand totals
     totalDebits += debit;
     totalCredits += credit;
     processedRows++;
@@ -407,34 +412,18 @@ function preprocessGLData(textContent) {
   console.log(`- Total rows in file: ${rows.length}`);
   console.log(`- Processed rows: ${processedRows}`);
   console.log(`- Skipped rows: ${errorRows}`);
-  console.log(`- Reversal entries: ${reversalEntries} (${negativeDebits} negative debits, ${negativeCredits} negative credits)`);
   console.log(`- Unique accounts: ${accounts.length}`);
   console.log(`- Total Debits: ${totalDebits.toFixed(2)}`);
   console.log(`- Total Credits: ${totalCredits.toFixed(2)}`);
   console.log(`- Difference: ${difference.toFixed(2)}`);
   console.log(`- Balanced: ${isBalanced}`);
   
-  // Safety check
-  if (!accounts || accounts.length === 0) {
-    return {
-      processed: false,
-      reason: "No valid accounts found after processing"
-    };
-  }
-  
-  // Create summary text for AI
+  // Create summary text for AI - INCREASED TO 100 ACCOUNTS
   let summary = `## Pre-Processed GL Summary\n\n`;
   summary += `**Data Quality:**\n`;
   summary += `- Total Rows in File: ${rows.length}\n`;
   summary += `- Successfully Processed: ${processedRows} entries\n`;
   summary += `- Skipped/Invalid: ${errorRows} entries\n`;
-  
-  if (reversalEntries > 0) {
-    summary += `- Reversal Entries Detected: ${reversalEntries} (entries with negative amounts that were automatically reversed)\n`;
-    summary += `  - Negative Debits (reversed to Credits): ${negativeDebits}\n`;
-    summary += `  - Negative Credits (reversed to Debits): ${negativeCredits}\n`;
-  }
-  
   summary += `- Unique Accounts: ${accounts.length}\n\n`;
   
   if (minDate && maxDate) {
@@ -451,48 +440,18 @@ function preprocessGLData(textContent) {
     summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of ₹${Math.abs(difference).toFixed(2)}\n\n`;
   }
   
-  // For large account lists, show condensed version to AI to stay within context limits
-  const showTopN = Math.min(50, accounts.length);
+  // INCREASED FROM 30 TO 100 ACCOUNTS
+  const displayLimit = Math.min(100, accounts.length);
+  summary += `### Account-wise Summary (Top ${displayLimit} by Activity)\n\n`;
+  summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
+  summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
   
-  if (accounts.length > 100) {
-    // For very large files (100+ accounts), show top 30 + compact list of rest
-    summary += `### Account-wise Summary (${accounts.length} Total Accounts)\n\n`;
-    summary += `#### Top 30 Most Active Accounts\n\n`;
-    summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
-    summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
-    
-    accounts.slice(0, 30).forEach((acc, i) => {
-      summary += `| ${i+1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.count} |\n`;
-    });
-    
-    // Compact list for remaining accounts (just name and net balance)
-    summary += `\n#### Remaining ${accounts.length - 30} Accounts (Compact View)\n\n`;
-    accounts.slice(30).forEach((acc, i) => {
-      summary += `${30 + i + 1}. ${acc.account}: Net ₹${acc.netBalance.toLocaleString('en-IN', {maximumFractionDigits: 2})} (${acc.count} entries)\n`;
-    });
-  } else {
-    // For smaller files (< 100 accounts), show all in full table
-    summary += `### Account-wise Summary (Showing All ${accounts.length} Accounts)\n\n`;
-    summary += `#### Top ${showTopN} Accounts by Activity\n\n`;
-    summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
-    summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
-    
-    accounts.slice(0, showTopN).forEach((acc, i) => {
-      summary += `| ${i+1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.count} |\n`;
-    });
-    
-    if (accounts.length > showTopN) {
-      summary += `\n#### Remaining ${accounts.length - showTopN} Accounts (Complete List)\n\n`;
-      summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
-      summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
-      
-      accounts.slice(showTopN).forEach((acc, i) => {
-        summary += `| ${showTopN + i + 1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.count} |\n`;
-      });
-      
-      const remainingTotal = accounts.slice(showTopN).reduce((sum, a) => sum + a.totalActivity, 0);
-      summary += `\n*Total activity in remaining accounts: ₹${remainingTotal.toLocaleString('en-IN', {maximumFractionDigits: 2})}*\n`;
-    }
+  accounts.slice(0, displayLimit).forEach((acc, i) => {
+    summary += `| ${i+1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.count} |\n`;
+  });
+  
+  if (accounts.length > displayLimit) {
+    summary += `\n*... and ${accounts.length - displayLimit} more accounts (total activity: ₹${accounts.slice(displayLimit).reduce((sum, a) => sum + a.totalActivity, 0).toLocaleString('en-IN', {maximumFractionDigits: 2})})*\n`;
   }
   
   // Add account classification hints
@@ -503,8 +462,6 @@ function preprocessGLData(textContent) {
   summary += `- **Equity** (typically Credit balance): Capital, Reserves, Retained Earnings\n`;
   summary += `- **Revenue** (Credit balance): Sales, Service Income, Other Income\n`;
   summary += `- **Expenses** (Debit balance): Salaries, Rent, Utilities, Depreciation\n\n`;
-  
-  console.log(`Summary created, returning preprocessed data with ${accounts.length} accounts`);
   
   return {
     processed: true,
@@ -520,7 +477,7 @@ function preprocessGLData(textContent) {
       errorCount: errorRows,
       dateRange: minDate && maxDate ? `${minDate} to ${maxDate}` : 'Unknown'
     },
-    accounts: accounts.slice(0, 50)
+    accounts: accounts.slice(0, 100) // Return top 100 accounts
   };
 }
 
@@ -550,31 +507,21 @@ function getSystemPrompt(category, isPreprocessed = false) {
 
 **CRITICAL INSTRUCTIONS:**
 1. The data you receive is ALREADY CALCULATED - do NOT recalculate the numbers
-2. Use the exact numbers provided in the summary tables
-3. ALL accounts are included in the data - not just a sample
-4. Reversal entries (negative amounts) have been automatically handled and are noted in the summary
-5. Your job is to INTERPRET and PROVIDE INSIGHTS, not recalculate
+2. Use the exact numbers provided in the summary table
+3. Your job is to INTERPRET and PROVIDE INSIGHTS, not recalculate
 
 **Your Response Format:**
 1. Start with "**General Ledger Analysis**"
-2. Present key summary statistics:
-   - Total Debits and Credits
-   - Whether balanced or not
-   - Number of accounts processed
-   - Any reversal entries noted
-3. Copy the main account summary table (you can reference all accounts by name)
-4. Add observations:
+2. Copy the summary table provided (showing total debits, credits, net balances)
+3. Add observations:
    - Which accounts have the highest activity?
    - Are debits and credits balanced?
    - Any unusual or suspicious entries?
-   - Breakdown by account type (Assets, Liabilities, Equity, Revenue, Expenses)
-   - Note any reversal entries and their impact
-5. Add recommendations:
+   - Expense vs Revenue breakdown
+4. Add recommendations:
    - Accounts that need reconciliation
    - Potential errors or anomalies
    - Compliance or audit considerations
-
-**IMPORTANT:** All ${accounts.length || 'available'} accounts are included in your data. You can reference any account by name.
 
 DO NOT make up numbers. Use ONLY the data provided.
 Respond in clean markdown format.`;
