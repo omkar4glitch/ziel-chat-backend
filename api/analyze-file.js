@@ -331,34 +331,24 @@ function preprocessGLData(textContent) {
         credit = Math.abs(amount);
       }
     } else {
-      // Separate debit/credit columns - FIXED: Handle all formats properly
-      const debitStr = (row[debitCol]?.trim() || "").replace(/[^0-9.-]/g, '');
-      const creditStr = (row[creditCol]?.trim() || "").replace(/[^0-9.-]/g, '');
+      // Separate debit/credit columns - USE SAME LOGIC FOR BOTH
+      const debitStr = row[debitCol]?.trim() || "0";
+      const creditStr = row[creditCol]?.trim() || "0";
       
-      // Parse debit - handle negative values (reversal entries)
-      if (debitStr && debitStr !== '' && debitStr !== '-') {
-        const debitValue = parseFloat(debitStr);
-        if (!isNaN(debitValue)) {
-          if (debitValue >= 0) {
-            debit = debitValue;
-          } else {
-            // Negative debit = Credit reversal
-            credit = Math.abs(debitValue);
-          }
-        }
+      // Parse debit - same logic as before
+      debit = parseFloat(debitStr.replace(/[^0-9.-]/g, '')) || 0;
+      
+      // Parse credit - EXACT SAME LOGIC as debit
+      credit = parseFloat(creditStr.replace(/[^0-9.-]/g, '')) || 0;
+      
+      // Handle negative values (reversal entries) for both
+      if (debit < 0) {
+        credit += Math.abs(debit);
+        debit = 0;
       }
-      
-      // Parse credit - handle negative values (reversal entries)
-      if (creditStr && creditStr !== '' && creditStr !== '-') {
-        const creditValue = parseFloat(creditStr);
-        if (!isNaN(creditValue)) {
-          if (creditValue >= 0) {
-            credit = creditValue;
-          } else {
-            // Negative credit = Debit reversal
-            debit = Math.abs(creditValue);
-          }
-        }
+      if (credit < 0) {
+        debit += Math.abs(credit);
+        credit = 0;
       }
     }
     
