@@ -574,7 +574,7 @@ function getSystemPrompt(category, isPreprocessed = false) {
    - Potential errors or anomalies
    - Compliance or audit considerations
 
-**IMPORTANT:** All ${accounts.length || 'available'} accounts are included in your data. You can reference any account by name.
+**IMPORTANT:** All accounts from the preprocessed data are included in your summary. You can reference any account by name.
 
 DO NOT make up numbers. Use ONLY the data provided.
 Respond in clean markdown format.`;
