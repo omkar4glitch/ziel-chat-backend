@@ -544,56 +544,61 @@ function detectDocumentCategory(textContent) {
 /**
  * Get system prompt
  */
-function getSystemPrompt(category, isPreprocessed = false) {
+function getSystemPrompt(category, options = {}) {
+  const { isPreprocessed = false, stats = null } = options;
+
   if (category === 'gl' && isPreprocessed) {
+    const accountCount =
+      (stats && typeof stats.accountCount === "number")
+        ? stats.accountCount
+        : "all available";
+
     return `You are an expert accounting assistant. You've been given PRE-CALCULATED GL data.
 
 **CRITICAL INSTRUCTIONS:**
-1. The data you receive is ALREADY CALCULATED - do NOT recalculate the numbers
-2. Use the exact numbers provided in the summary tables
-3. ALL accounts are included in the data - not just a sample
-4. Reversal entries (negative amounts) have been automatically handled and are noted in the summary
-5. Your job is to INTERPRET and PROVIDE INSIGHTS, not recalculate
+1. The data you receive is ALREADY CALCULATED - do NOT recalculate the numbers.
+2. Use the exact numbers provided in the summary tables.
+3. ALL accounts (${accountCount}) are included in the data - not just a sample.
+4. Reversal entries (negative amounts) have been automatically handled and are noted in the summary.
+5. Your job is to INTERPRET and PROVIDE INSIGHTS, not recalculate.
 
 **Your Response Format:**
-1. Start with "**General Ledger Analysis**"
+1. Start with "**General Ledger Analysis**".
 2. Present key summary statistics:
-   - Total Debits and Credits
-   - Whether balanced or not
-   - Number of accounts processed
-   - Any reversal entries noted
-3. Copy the main account summary table (you can reference all accounts by name)
+   - Total Debits and Credits.
+   - Whether balanced or not.
+   - Number of accounts processed.
+   - Any reversal entries noted.
+3. Use the provided account summary table(s) — you can reference any account by name.
 4. Add observations:
    - Which accounts have the highest activity?
-   - Are debits and credits balanced?
+   - Are debits and credits balanced overall?
    - Any unusual or suspicious entries?
-   - Breakdown by account type (Assets, Liabilities, Equity, Revenue, Expenses)
-   - Note any reversal entries and their impact
+   - Breakdown by account type (Assets, Liabilities, Equity, Revenue, Expenses).
+   - Note any reversal entries and their impact.
 5. Add recommendations:
-   - Accounts that need reconciliation
-   - Potential errors or anomalies
-   - Compliance or audit considerations
-
-**IMPORTANT:** All accounts from the preprocessed data are included in your summary. You can reference any account by name.
+   - Accounts that need reconciliation.
+   - Potential errors or anomalies.
+   - Compliance or audit considerations.
 
 DO NOT make up numbers. Use ONLY the data provided.
 Respond in clean markdown format.`;
   }
-  
+
   if (category === 'gl') {
     return `You are an expert accounting assistant analyzing General Ledger entries.
 
 **Instructions:**
-1. Parse the CSV data to identify: Account Name, Debit, Credit columns
-2. Group by account and sum debits/credits
-3. Verify total debits = total credits
-4. Present findings in a markdown table
-5. Add observations and recommendations
+1. Parse the CSV data to identify: Account Name, Debit, Credit columns.
+2. Group by account and sum debits/credits.
+3. Verify total debits = total credits.
+4. Present findings in a markdown table.
+5. Add observations and recommendations.
 
 Respond in markdown format only.`;
   }
-  
-  // P&L prompt
+
+  // P&L / General
   return `You are an expert accounting assistant analyzing financial statements.
 
 When totals exist in the file (Net Sales, Gross Profit, etc.), USE those numbers.
@@ -609,44 +614,49 @@ Respond in markdown format only.`;
 async function callModel({ fileType, textContent, question, category, preprocessedData }) {
   let content = textContent;
   let isPreprocessed = false;
-  
+
   // Use preprocessed data if available
   if (preprocessedData && preprocessedData.processed) {
     content = preprocessedData.summary;
     isPreprocessed = true;
     console.log("Using preprocessed GL summary");
   }
-  
-  const trimmed = content.length > 60000 
+
+  const trimmed = content.length > 60000
     ? content.slice(0, 60000) + "\n\n[Content truncated]"
     : content;
 
-  const systemPrompt = getSystemPrompt(category, isPreprocessed);
+  const systemPrompt = getSystemPrompt(category, {
+    isPreprocessed,
+    stats: preprocessedData?.stats || null,
+  });
 
   const messages = [
     { role: "system", content: systemPrompt },
-    { 
-      role: "user", 
-      content: `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\n${trimmed}`
+    {
+      role: "user",
+      content: `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\n${trimmed}`,
     },
     {
       role: "user",
-      content: question || "Analyze this data and provide insights with observations and recommendations."
-    }
+      content:
+        question ||
+        "Analyze this data and provide insights with observations and recommendations.",
+    },
   ];
 
   const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
     },
     body: JSON.stringify({
       model: process.env.OPENROUTER_MODEL || "tngtech/deepseek-r1t2-chimera:free",
       messages,
       temperature: 0.2,
-      max_tokens: 4000
-    })
+      max_tokens: 4000,
+    }),
   });
 
   let data;
