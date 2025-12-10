@@ -13,7 +13,7 @@ function cors(res) {
 }
 
 /**
- * Tolerant body parser with lightweight logs
+ * Tolerant body parser
  */
 async function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -26,34 +26,15 @@ async function parseJsonBody(req) {
       if (contentType.includes("application/json")) {
         try {
           const parsed = JSON.parse(body);
-          console.log("analyze-file: parsed JSON body keys:", Object.keys(parsed));
           return resolve(parsed);
-        } catch (err) {
-          console.warn("analyze-file: JSON parse failed, falling back to raw text");
-          return resolve({ userMessage: body });
-        }
-      }
-      if (contentType.includes("application/x-www-form-urlencoded")) {
-        try {
-          const params = new URLSearchParams(body);
-          const obj = {};
-          for (const [k, v] of params) obj[k] = v;
-          console.log("analyze-file: parsed form body keys:", Object.keys(obj));
-          return resolve(obj);
         } catch (err) {
           return resolve({ userMessage: body });
         }
       }
       try {
         const parsed = JSON.parse(body);
-        console.log("analyze-file: parsed fallback JSON keys:", Object.keys(parsed));
         return resolve(parsed);
       } catch {
-        console.log(
-          "analyze-file: using raw body as userMessage (len=",
-          body.length,
-          ")"
-        );
         return resolve({ userMessage: body });
       }
     });
@@ -62,7 +43,7 @@ async function parseJsonBody(req) {
 }
 
 /**
- * Download remote file into Buffer (with a timeout + maxBytes)
+ * Download remote file into Buffer
  */
 async function downloadFileToBuffer(
   url,
@@ -107,67 +88,33 @@ async function downloadFileToBuffer(
 }
 
 /**
- * Detect type by inspecting buffer signature first, then fallback to URL/contentType
+ * Detect file type
  */
 function detectFileType(fileUrl, contentType, buffer) {
   const lowerUrl = (fileUrl || "").toLowerCase();
   const lowerType = (contentType || "").toLowerCase();
 
-  console.log(`Detecting file type - URL: ${lowerUrl}, ContentType: ${lowerType}, BufferSize: ${buffer?.length || 0}`);
-
   if (buffer && buffer.length >= 4) {
-    // XLSX is a ZIP (PK..)
-    if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
-      console.log("Detected XLSX by signature (PK)");
-      return "xlsx";
-    }
-    // PDF starts with %PDF
-    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) {
-      console.log("Detected PDF by signature (%PDF)");
+    if (buffer[0] === 0x50 && buffer[1] === 0x4b) return "xlsx";
+    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46)
       return "pdf";
-    }
   }
 
-  if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) {
-    console.log("Detected PDF by URL/content-type");
-    return "pdf";
-  }
+  if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) return "pdf";
   if (
     lowerUrl.endsWith(".xlsx") ||
     lowerUrl.endsWith(".xls") ||
     lowerType.includes("spreadsheet") ||
     lowerType.includes("sheet") ||
     lowerType.includes("excel")
-  ) {
-    console.log("Detected XLSX by URL/content-type");
-    return "xlsx";
-  }
-  if (
-    lowerUrl.endsWith(".csv") ||
-    lowerType.includes("text/csv")
-  ) {
-    console.log("Detected CSV by URL/content-type");
-    return "csv";
-  }
+  ) return "xlsx";
+  if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv")) return "csv";
 
-  // Fallback - try to detect by content
-  if (buffer && buffer.length > 0) {
-    const sample = buffer.toString("utf8", 0, Math.min(200, buffer.length));
-    console.log(`Sample content: ${sample.substring(0, 100)}...`);
-    
-    // Check if it looks like CSV (has commas or tabs)
-    if (sample.includes(',') || sample.includes('\t')) {
-      console.log("Detected CSV by content inspection");
-      return "csv";
-    }
-  }
-
-  console.log("Defaulting to CSV");
   return "csv";
 }
 
 /**
- * Convert buffer to UTF-8 text (strip BOM)
+ * Convert buffer to UTF-8 text
  */
 function bufferToText(buffer) {
   if (!buffer) return "";
@@ -177,20 +124,18 @@ function bufferToText(buffer) {
 }
 
 /**
- * Extract CSV (simple)
+ * Extract CSV
  */
 function extractCsv(buffer) {
   const text = bufferToText(buffer);
-  console.log(`CSV extracted - length: ${text.length}, first 200 chars: ${text.substring(0, 200)}`);
   return { type: "csv", textContent: text };
 }
 
 /**
- * Extract XLSX: first sheet -> CSV text. Returns error field if parsing fails.
+ * Extract XLSX
  */
 function extractXlsx(buffer) {
   try {
-    console.log("Starting XLSX extraction...");
     const workbook = XLSX.read(buffer, {
       type: "buffer",
       cellDates: true,
@@ -198,18 +143,11 @@ function extractXlsx(buffer) {
       cellText: false
     });
     
-    console.log(`XLSX workbook has ${workbook.SheetNames.length} sheets: ${workbook.SheetNames.join(", ")}`);
-    
     const sheetName = workbook.SheetNames[0];
-    if (!sheetName) {
-      console.log("No sheets found in XLSX");
-      return { type: "xlsx", textContent: "" };
-    }
+    if (!sheetName) return { type: "xlsx", textContent: "" };
     
     const sheet = workbook.Sheets[sheetName];
     const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
-    
-    console.log(`XLSX extracted from sheet "${sheetName}" - CSV length: ${csv.length}, first 200 chars: ${csv.substring(0, 200)}`);
     
     return { type: "xlsx", textContent: csv };
   } catch (err) {
@@ -219,22 +157,17 @@ function extractXlsx(buffer) {
 }
 
 /**
- * Extract PDF text. If text is absent/too-short we mark ocrNeeded:true
+ * Extract PDF
  */
 async function extractPdf(buffer) {
   try {
-    console.log("Starting PDF extraction...");
     const data = await pdf(buffer);
     const text = (data && data.text) ? data.text.trim() : "";
     
-    console.log(`PDF extracted - text length: ${text.length}, pages: ${data?.numpages || 0}`);
-    
     if (!text || text.length < 50) {
-      console.log("PDF appears to be scanned or has no text");
       return { type: "pdf", textContent: "", ocrNeeded: true };
     }
     
-    console.log(`PDF first 200 chars: ${text.substring(0, 200)}`);
     return { type: "pdf", textContent: text, ocrNeeded: false };
   } catch (err) {
     console.error("extractPdf failed:", err?.message || err);
@@ -243,228 +176,259 @@ async function extractPdf(buffer) {
 }
 
 /**
- * Detect document category based on content
+ * Parse CSV to array of objects
+ */
+function parseCSV(csvText) {
+  const lines = csvText.trim().split('\n');
+  if (lines.length < 2) return [];
+  
+  const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+  const rows = [];
+  
+  for (let i = 1; i < lines.length; i++) {
+    const values = lines[i].split(',').map(v => v.trim().replace(/^"|"$/g, ''));
+    if (values.length === headers.length) {
+      const row = {};
+      headers.forEach((h, idx) => {
+        row[h] = values[idx];
+      });
+      rows.push(row);
+    }
+  }
+  
+  return rows;
+}
+
+/**
+ * PRE-PROCESS GL DATA - Do the heavy lifting before AI
+ */
+function preprocessGLData(textContent) {
+  console.log("Starting GL preprocessing...");
+  
+  // Parse CSV
+  const rows = parseCSV(textContent);
+  console.log(`Parsed ${rows.length} rows`);
+  
+  if (rows.length === 0) {
+    return { processed: false, reason: "No data rows found" };
+  }
+  
+  // Find relevant columns (flexible column name matching)
+  const headers = Object.keys(rows[0]);
+  console.log("Headers found:", headers);
+  
+  const findColumn = (possibleNames) => {
+    for (const name of possibleNames) {
+      const found = headers.find(h => h.toLowerCase().includes(name.toLowerCase()));
+      if (found) return found;
+    }
+    return null;
+  };
+  
+  const accountCol = findColumn(['account', 'acc', 'gl account', 'account name', 'ledger']);
+  const debitCol = findColumn(['debit', 'dr', 'debit amount']);
+  const creditCol = findColumn(['credit', 'cr', 'credit amount']);
+  const dateCol = findColumn(['date', 'trans date', 'transaction date', 'posting date']);
+  const descCol = findColumn(['description', 'desc', 'narration', 'particulars']);
+  
+  console.log("Column mapping:", { accountCol, debitCol, creditCol, dateCol, descCol });
+  
+  if (!accountCol || !debitCol || !creditCol) {
+    return { 
+      processed: false, 
+      reason: "Could not identify required columns (Account, Debit, Credit)",
+      headers: headers
+    };
+  }
+  
+  // Aggregate by account
+  const accountSummary = {};
+  let totalDebits = 0;
+  let totalCredits = 0;
+  let errorRows = 0;
+  
+  rows.forEach((row, idx) => {
+    const account = row[accountCol]?.trim();
+    const debitStr = row[debitCol]?.trim() || "0";
+    const creditStr = row[creditCol]?.trim() || "0";
+    
+    // Parse numbers (remove commas, currency symbols)
+    const debit = parseFloat(debitStr.replace(/[^0-9.-]/g, '')) || 0;
+    const credit = parseFloat(creditStr.replace(/[^0-9.-]/g, '')) || 0;
+    
+    if (!account || (debit === 0 && credit === 0)) {
+      errorRows++;
+      return;
+    }
+    
+    if (!accountSummary[account]) {
+      accountSummary[account] = { 
+        account, 
+        totalDebit: 0, 
+        totalCredit: 0, 
+        count: 0,
+        firstDate: row[dateCol] || '',
+        lastDate: row[dateCol] || ''
+      };
+    }
+    
+    accountSummary[account].totalDebit += debit;
+    accountSummary[account].totalCredit += credit;
+    accountSummary[account].count += 1;
+    accountSummary[account].lastDate = row[dateCol] || accountSummary[account].lastDate;
+    
+    totalDebits += debit;
+    totalCredits += credit;
+  });
+  
+  // Convert to array and sort by total activity (debit + credit)
+  const accounts = Object.values(accountSummary)
+    .map(acc => ({
+      ...acc,
+      netBalance: acc.totalDebit - acc.totalCredit,
+      totalActivity: acc.totalDebit + acc.totalCredit
+    }))
+    .sort((a, b) => b.totalActivity - a.totalActivity);
+  
+  const isBalanced = Math.abs(totalDebits - totalCredits) < 0.01;
+  
+  console.log(`Processed ${accounts.length} accounts, Total Dr: ${totalDebits}, Total Cr: ${totalCredits}, Balanced: ${isBalanced}`);
+  
+  // Create summary text for AI
+  let summary = `## Pre-Processed GL Summary\n\n`;
+  summary += `**Period:** ${accounts[0]?.firstDate || 'N/A'} to ${accounts[0]?.lastDate || 'N/A'}\n`;
+  summary += `**Total Entries:** ${rows.length} (${errorRows} skipped)\n`;
+  summary += `**Unique Accounts:** ${accounts.length}\n`;
+  summary += `**Total Debits:** ${totalDebits.toFixed(2)}\n`;
+  summary += `**Total Credits:** ${totalCredits.toFixed(2)}\n`;
+  summary += `**Balanced:** ${isBalanced ? 'YES ✓' : 'NO ✗ (Difference: ' + (totalDebits - totalCredits).toFixed(2) + ')'}\n\n`;
+  
+  summary += `### Account-wise Summary (Top 20 by Activity)\n\n`;
+  summary += `| Account | Total Debit | Total Credit | Net Balance | Entries |\n`;
+  summary += `|---------|-------------|--------------|-------------|----------|\n`;
+  
+  accounts.slice(0, 20).forEach(acc => {
+    summary += `| ${acc.account} | ${acc.totalDebit.toFixed(2)} | ${acc.totalCredit.toFixed(2)} | ${acc.netBalance.toFixed(2)} | ${acc.count} |\n`;
+  });
+  
+  if (accounts.length > 20) {
+    summary += `\n*... and ${accounts.length - 20} more accounts*\n`;
+  }
+  
+  return {
+    processed: true,
+    summary,
+    stats: {
+      totalDebits,
+      totalCredits,
+      isBalanced,
+      accountCount: accounts.length,
+      entryCount: rows.length
+    },
+    accounts: accounts.slice(0, 50) // Keep top 50 for reference
+  };
+}
+
+/**
+ * Detect document category
  */
 function detectDocumentCategory(textContent) {
   const lower = textContent.toLowerCase();
-  const lines = textContent.split('\n').slice(0, 50);
   
-  const glIndicators = [
-    'journal entry', 'journal entries', 'gl entry', 'gl entries',
-    'debit', 'credit', 'account code', 'account number',
-    'transaction date', 'posting date', 'entry number', 'voucher'
-  ];
+  const glScore = (lower.match(/debit|credit|journal|gl entry/g) || []).length;
+  const plScore = (lower.match(/revenue|profit|loss|income|expenses|ebitda/g) || []).length;
   
-  const plIndicators = [
-    'profit and loss', 'p&l', 'income statement',
-    'revenue', 'net sales', 'gross profit', 'operating income',
-    'net income', 'net profit', 'ebitda', 'operating expenses'
-  ];
+  console.log(`Category scores - GL: ${glScore}, P&L: ${plScore}`);
   
-  const bsIndicators = [
-    'balance sheet', 'assets', 'liabilities', 'equity',
-    'current assets', 'fixed assets', 'current liabilities'
-  ];
-  
-  const tbIndicators = [
-    'trial balance', 'account balances', 'opening balance', 'closing balance'
-  ];
-  
-  let glScore = 0;
-  let plScore = 0;
-  let bsScore = 0;
-  let tbScore = 0;
-  
-  glIndicators.forEach(term => {
-    const count = (lower.match(new RegExp(term, 'g')) || []).length;
-    glScore += count * 2;
-  });
-  
-  plIndicators.forEach(term => {
-    const count = (lower.match(new RegExp(term, 'g')) || []).length;
-    plScore += count * 2;
-  });
-  
-  bsIndicators.forEach(term => {
-    const count = (lower.match(new RegExp(term, 'g')) || []).length;
-    bsScore += count * 2;
-  });
-  
-  tbIndicators.forEach(term => {
-    const count = (lower.match(new RegExp(term, 'g')) || []).length;
-    tbScore += count * 2;
-  });
-  
-  // Check for debit/credit columns
-  const hasDebitCredit = lines.some(line => {
-    const l = line.toLowerCase();
-    return (l.includes('debit') && l.includes('credit')) ||
-           (l.includes('dr') && l.includes('cr'));
-  });
-  
-  if (hasDebitCredit) glScore += 5;
-  
-  console.log(`Category detection scores - GL: ${glScore}, P&L: ${plScore}, BS: ${bsScore}, TB: ${tbScore}`);
-  
-  const scores = { gl: glScore, pl: plScore, bs: bsScore, tb: tbScore };
-  const maxScore = Math.max(glScore, plScore, bsScore, tbScore);
-  
-  if (maxScore === 0) return 'general';
-  if (glScore === maxScore) return 'gl';
-  if (plScore === maxScore) return 'pl';
-  if (bsScore === maxScore) return 'bs';
-  if (tbScore === maxScore) return 'tb';
+  if (glScore > plScore && glScore > 3) return 'gl';
+  if (plScore > glScore && plScore > 3) return 'pl';
   
   return 'general';
 }
 
 /**
- * Get system prompt based on document category
+ * Get system prompt
  */
-function getSystemPrompt(category) {
-  const prompts = {
-    gl: `You are an expert accounting assistant specializing in General Ledger (GL) analysis.
+function getSystemPrompt(category, isPreprocessed = false) {
+  if (category === 'gl' && isPreprocessed) {
+    return `You are an expert accounting assistant. You've been given PRE-CALCULATED GL data.
 
-When analyzing GL entries, follow these steps:
+**CRITICAL INSTRUCTIONS:**
+1. The data you receive is ALREADY CALCULATED - do NOT recalculate the numbers
+2. Use the exact numbers provided in the summary table
+3. Your job is to INTERPRET and PROVIDE INSIGHTS, not recalculate
 
-1. **Identify Structure**: Recognize columns for Date, Account Code/Number, Account Name, Description, Debit, Credit, Reference/Entry Number.
+**Your Response Format:**
+1. Start with "**General Ledger Analysis**"
+2. Copy the summary table provided (showing total debits, credits, net balances)
+3. Add observations:
+   - Which accounts have the highest activity?
+   - Are debits and credits balanced?
+   - Any unusual or suspicious entries?
+   - Expense vs Revenue breakdown
+4. Add recommendations:
+   - Accounts that need reconciliation
+   - Potential errors or anomalies
+   - Compliance or audit considerations
 
-2. **Perform Calculations**:
-   - Group entries by Account Code or Account Name
-   - Sum Debits and Credits for each account
-   - Calculate net balance for each account (Debits - Credits or Credits - Debits depending on account type)
-   - Verify that total Debits = total Credits (fundamental accounting equation)
+DO NOT make up numbers. Use ONLY the data provided.
+Respond in clean markdown format.`;
+  }
+  
+  if (category === 'gl') {
+    return `You are an expert accounting assistant analyzing General Ledger entries.
 
-3. **Classify Accounts**: Categorize accounts into:
-   - Assets (usually debit balance)
-   - Liabilities (usually credit balance)
-   - Equity (usually credit balance)
-   - Revenue (credit balance)
-   - Expenses (debit balance)
+**Instructions:**
+1. Parse the CSV data to identify: Account Name, Debit, Credit columns
+2. Group by account and sum debits/credits
+3. Verify total debits = total credits
+4. Present findings in a markdown table
+5. Add observations and recommendations
 
-4. **Output Format**:
-   - Start with: "**General Ledger Analysis**"
-   - Create a summary table with: Account Name, Account Type, Total Debits, Total Credits, Net Balance
-   - Verify: "Total Debits: X | Total Credits: Y | Balanced: Yes/No"
-   - List key observations (largest expenses, revenue accounts, unusual entries)
-   - Provide recommendations (account reconciliation needs, potential errors, compliance checks)
+Respond in markdown format only.`;
+  }
+  
+  // P&L prompt
+  return `You are an expert accounting assistant analyzing financial statements.
 
-5. **Important Rules**:
-   - DO NOT make up numbers - only use data from the file
-   - If debits don't equal credits, flag this as a critical issue
-   - For date ranges, note the period covered
-   - Identify any missing or incomplete entries
+When totals exist in the file (Net Sales, Gross Profit, etc.), USE those numbers.
+Respect multiple periods if present.
 
-Respond ONLY in markdown format. Do not output JSON.`,
-
-    pl: `You are an expert accounting & FP&A assistant specializing in Profit & Loss statements.
-
-When analyzing P&L statements:
-
-1. **Use Existing Totals**: When totals (Net Sales, Gross Profit, Operating Income, Net Profit, etc.) already exist in the file, USE those numbers instead of recomputing them.
-
-2. **Respect Multiple Periods**: If multiple periods exist (Period 1-12, Q1-Q4, etc.), respect the table structure and use values from the correct period columns.
-
-3. **Output Format**:
-   - Start with: "**[Period] Financial Summary**"
-   - Create a markdown table with key metrics: Revenue, COGS, Gross Profit, Operating Expenses, Operating Income, Net Profit, and relevant %
-   - Add bullet-point observations about trends, margins, cost structure
-   - Add numbered recommendations for improvement
-
-4. **Key Metrics to Calculate** (if not provided):
-   - Gross Profit Margin % = (Gross Profit / Revenue) × 100
-   - Operating Margin % = (Operating Income / Revenue) × 100
-   - Net Profit Margin % = (Net Profit / Revenue) × 100
-
-Respond ONLY in markdown format. Do not output JSON.`,
-
-    bs: `You are an expert accounting assistant specializing in Balance Sheet analysis.
-
-When analyzing Balance Sheets:
-
-1. **Verify the Accounting Equation**: Assets = Liabilities + Equity
-
-2. **Analyze Components**:
-   - Current Assets & Current Liabilities (calculate working capital)
-   - Fixed/Non-current Assets
-   - Long-term Liabilities
-   - Equity components
-
-3. **Calculate Key Ratios**:
-   - Current Ratio = Current Assets / Current Liabilities
-   - Debt-to-Equity = Total Liabilities / Total Equity
-   - Working Capital = Current Assets - Current Liabilities
-
-4. **Output Format**:
-   - Start with: "**Balance Sheet Analysis**"
-   - Summary table with Assets, Liabilities, Equity totals
-   - Key ratios and liquidity metrics
-   - Observations about financial position
-   - Recommendations for financial health improvement
-
-Respond ONLY in markdown format.`,
-
-    tb: `You are an expert accounting assistant specializing in Trial Balance analysis.
-
-When analyzing Trial Balances:
-
-1. **Verify Balance**: Total Debits MUST equal Total Credits
-
-2. **Account Classification**: Group accounts by type (Assets, Liabilities, Equity, Revenue, Expenses)
-
-3. **Output Format**:
-   - Start with: "**Trial Balance Summary**"
-   - Summary by account category with totals
-   - Verification: "Total Debits = Total Credits: [Amount]"
-   - Flag any imbalances as CRITICAL ERRORS
-   - Note any unusual account balances
-   - Recommendations for account reconciliation
-
-Respond ONLY in markdown format.`,
-
-    general: `You are an expert accounting assistant.
-
-Analyze the provided financial document and:
-1. Identify what type of document it is
-2. Extract and summarize key financial information
-3. Present findings in clear markdown tables
-4. Provide relevant observations and recommendations
-
-Respond ONLY in markdown format. Do not output JSON.`
-  };
-
-  return prompts[category] || prompts.general;
+Create a markdown table with key metrics and add observations & recommendations.
+Respond in markdown format only.`;
 }
 
 /**
- * Model call with adaptive prompting
+ * Model call
  */
-async function callModel({ fileType, textContent, question, category }) {
-  const trimmed =
-    textContent.length > 60000
-      ? textContent.slice(0, 60000) + "\n\n[Content truncated due to length]"
-      : textContent;
+async function callModel({ fileType, textContent, question, category, preprocessedData }) {
+  let content = textContent;
+  let isPreprocessed = false;
+  
+  // Use preprocessed data if available
+  if (preprocessedData && preprocessedData.processed) {
+    content = preprocessedData.summary;
+    isPreprocessed = true;
+    console.log("Using preprocessed GL summary");
+  }
+  
+  const trimmed = content.length > 60000 
+    ? content.slice(0, 60000) + "\n\n[Content truncated]"
+    : content;
 
-  const systemPrompt = getSystemPrompt(category);
+  const systemPrompt = getSystemPrompt(category, isPreprocessed);
 
   const messages = [
-    {
-      role: "system",
-      content: systemPrompt
+    { role: "system", content: systemPrompt },
+    { 
+      role: "user", 
+      content: `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\n${trimmed}`
     },
     {
       role: "user",
-      content: `File type: ${fileType}\nDocument category: ${category.toUpperCase()}\n\nExtracted content:\n\n${trimmed}`
-    },
-    {
-      role: "user",
-      content:
-        question ||
-        "Please analyze this file thoroughly. Provide accurate calculations, key metrics in a markdown table, and relevant observations & recommendations."
+      content: question || "Analyze this data and provide insights with observations and recommendations."
     }
   ];
-
-  console.log(`Calling model with category: ${category}, content length: ${trimmed.length}`);
 
   const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -485,18 +449,14 @@ async function callModel({ fileType, textContent, question, category }) {
     data = await r.json();
   } catch (err) {
     const raw = await r.text().catch(() => "");
-    console.error("Model returned non-JSON:", raw.slice ? raw.slice(0, 1000) : raw);
-    return { reply: null, raw: raw.slice ? raw.slice(0, 2000) : raw, httpStatus: r.status };
+    console.error("Model returned non-JSON:", raw.slice(0, 1000));
+    return { reply: null, raw, httpStatus: r.status };
   }
 
   const reply =
     data?.choices?.[0]?.message?.content ||
     data?.reply ||
-    (typeof data?.output === "string" ? data.output : null) ||
-    (Array.isArray(data?.output) && data.output[0]?.content ? data.output[0].content : null) ||
     null;
-
-  console.log(`Model response received - status: ${r.status}, has reply: ${!!reply}, reply length: ${reply?.length || 0}`);
 
   return { reply, raw: data, httpStatus: r.status };
 }
@@ -511,23 +471,21 @@ export default async function handler(req, res) {
 
   try {
     if (!process.env.OPENROUTER_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENROUTER_API_KEY in environment variables" });
+      return res.status(500).json({ error: "Missing OPENROUTER_API_KEY" });
     }
 
     const body = await parseJsonBody(req);
     const { fileUrl, question = "" } = body || {};
 
-    console.log(`Request received - fileUrl: ${fileUrl}, question: ${question}`);
-
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
-    // Download file
+    // Download
     const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
 
-    // Detect file type
+    // Detect type
     const detectedType = detectFileType(fileUrl, contentType, buffer);
 
-    // Parse file
+    // Extract
     let extracted = { type: detectedType, textContent: "" };
     if (detectedType === "pdf") {
       extracted = await extractPdf(buffer);
@@ -537,14 +495,12 @@ export default async function handler(req, res) {
       extracted = extractCsv(buffer);
     }
 
-    // Handle errors
     if (extracted.error) {
-      console.error(`Extraction error: ${extracted.error}`);
       return res.status(200).json({
         ok: false,
         type: extracted.type,
-        reply: `Failed to parse ${extracted.type} file: ${extracted.error}`,
-        debug: { contentType, bytesReceived, error: extracted.error }
+        reply: `Failed to parse file: ${extracted.error}`,
+        debug: { error: extracted.error }
       });
     }
 
@@ -552,76 +508,73 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ok: false,
         type: "pdf",
-        reply:
-          "This PDF appears to be scanned or contains no embedded text. OCR is required to extract text. " +
-          "Recommended: use an OCR API (OCR.space or Google Vision).",
-        debug: { ocrNeeded: true, contentType, bytesReceived }
+        reply: "This PDF requires OCR to extract text.",
+        debug: { ocrNeeded: true }
       });
     }
 
     const textContent = extracted.textContent || "";
 
-    console.log(`Text extraction complete - length: ${textContent.length}`);
-
-    if (!textContent || !textContent.trim()) {
-      console.error("No text content extracted");
+    if (!textContent.trim()) {
       return res.status(200).json({
         ok: false,
         type: extracted.type,
-        reply: "I couldn't extract any text from this file. It may be empty or corrupted.",
-        debug: { 
-          contentType, 
-          bytesReceived,
-          extractedLength: textContent.length,
-          sample: buffer.toString('utf8', 0, Math.min(500, buffer.length))
-        }
+        reply: "No text could be extracted from this file.",
+        debug: { contentType, bytesReceived }
       });
     }
 
-    // Detect document category
+    // Detect category
     const category = detectDocumentCategory(textContent);
-    console.log(`Detected document category: ${category}`);
+    console.log(`Category: ${category}`);
 
-    // Call model with adaptive prompt
+    // PRE-PROCESS GL DATA
+    let preprocessedData = null;
+    if (category === 'gl') {
+      preprocessedData = preprocessGLData(textContent);
+      console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
+      
+      if (!preprocessedData.processed) {
+        console.log("Preprocessing failed:", preprocessedData.reason);
+      }
+    }
+
+    // Call model
     const { reply, raw, httpStatus } = await callModel({
       fileType: extracted.type,
       textContent,
       question,
-      category
+      category,
+      preprocessedData
     });
 
     if (!reply) {
-      console.error("No reply from model");
       return res.status(200).json({
         ok: false,
         type: extracted.type,
         reply: "(No reply from model)",
-        debug: { 
-          status: httpStatus, 
-          body: raw, 
-          contentType, 
-          bytesReceived, 
-          category,
-          textSample: textContent.substring(0, 500)
-        }
+        debug: { status: httpStatus, body: raw }
       });
     }
 
     // Success
-    console.log("Analysis complete - success");
     return res.status(200).json({
       ok: true,
       type: extracted.type,
       category,
       reply,
-      textContent: textContent.slice(0, 20000),
-      debug: { contentType, bytesReceived, status: httpStatus, category }
+      preprocessed: preprocessedData?.processed || false,
+      debug: { 
+        status: httpStatus, 
+        category,
+        preprocessed: preprocessedData?.processed || false,
+        stats: preprocessedData?.stats || null
+      }
     });
   } catch (err) {
     console.error("analyze-file error:", err);
     return res.status(500).json({ 
-      error: String(err?.message || err),
-      stack: err?.stack
+      error: String(err?.message || err)
     });
   }
 }
