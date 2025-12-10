@@ -248,8 +248,9 @@ function parseCSVLine(line) {
  * PRE-PROCESS GL DATA - IMPROVED for large files
  */
 function preprocessGLData(textContent) {
-  console.log("Starting GL preprocessing...");
-  console.log(`Input text length: ${textContent.length} characters`);
+  try {
+    console.log("Starting GL preprocessing...");
+    console.log(`Input text length: ${textContent.length} characters`);
   
   // Parse CSV - NO LIMIT, process all rows
   const rows = parseCSV(textContent);
@@ -413,6 +414,14 @@ function preprocessGLData(textContent) {
   console.log(`- Difference: ${difference.toFixed(2)}`);
   console.log(`- Balanced: ${isBalanced}`);
   
+  // Safety check
+  if (!accounts || accounts.length === 0) {
+    return {
+      processed: false,
+      reason: "No valid accounts found after processing"
+    };
+  }
+  
   // Create summary text for AI
   let summary = `## Pre-Processed GL Summary\n\n`;
   summary += `**Data Quality:**\n`;
@@ -477,6 +486,8 @@ function preprocessGLData(textContent) {
   summary += `- **Equity** (typically Credit balance): Capital, Reserves, Retained Earnings\n`;
   summary += `- **Revenue** (Credit balance): Sales, Service Income, Other Income\n`;
   summary += `- **Expenses** (Debit balance): Salaries, Rent, Utilities, Depreciation\n\n`;
+  
+  console.log(`Summary created, returning preprocessed data with ${accounts.length} accounts`);
   
   return {
     processed: true,
