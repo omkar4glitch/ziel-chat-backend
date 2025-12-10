@@ -744,7 +744,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // Call model
+  // Call model
     const { reply, raw, httpStatus } = await callModel({
       fileType: extracted.type,
       textContent,
