@@ -737,11 +737,12 @@ export default async function handler(req, res) {
     });
 
     if (!reply) {
-      debug: { 
-  status: httpStatus,
-  body: String(raw || "").substring(0, 500)
-}
-
+      return res.status(200).json({
+        ok: false,
+        type: extracted.type,
+        reply: "(No reply from model)",
+        debug: { status: httpStatus, body: raw }
+      });
     }
 
     // Success
