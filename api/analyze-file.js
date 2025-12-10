@@ -411,7 +411,7 @@ function preprocessGLData(textContent) {
   summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
   summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
   
-  accounts.slice(0, 100).forEach((acc, i) => {
+  accounts.slice(0, 30).forEach((acc, i) => {
     summary += `| ${i+1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.count} |\n`;
   });
   
