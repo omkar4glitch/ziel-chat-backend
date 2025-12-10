@@ -331,17 +331,27 @@ function preprocessGLData(textContent) {
         credit = Math.abs(amount);
       }
     } else {
-      // Separate debit/credit columns - USE SAME LOGIC FOR BOTH
-      const debitStr = row[debitCol]?.trim() || "0";
-      const creditStr = row[creditCol]?.trim() || "0";
+      // Separate debit/credit columns - ALWAYS PROCESS BOTH COLUMNS
+      const debitStr = row[debitCol]?.trim() || "";
+      const creditStr = row[creditCol]?.trim() || "";
       
-      // Parse debit - same logic as before
-      debit = parseFloat(debitStr.replace(/[^0-9.-]/g, '')) || 0;
+      // Parse debit - handle empty, dashes, zeros
+      if (debitStr && debitStr !== '' && debitStr !== '-' && debitStr !== '0' && debitStr !== '0.00') {
+        const cleanDebit = debitStr.replace(/[^0-9.-]/g, '');
+        if (cleanDebit && cleanDebit !== '' && cleanDebit !== '-') {
+          debit = parseFloat(cleanDebit) || 0;
+        }
+      }
       
       // Parse credit - EXACT SAME LOGIC as debit
-      credit = parseFloat(creditStr.replace(/[^0-9.-]/g, '')) || 0;
+      if (creditStr && creditStr !== '' && creditStr !== '-' && creditStr !== '0' && creditStr !== '0.00') {
+        const cleanCredit = creditStr.replace(/[^0-9.-]/g, '');
+        if (cleanCredit && cleanCredit !== '' && cleanCredit !== '-') {
+          credit = parseFloat(cleanCredit) || 0;
+        }
+      }
       
-      // Handle negative values (reversal entries) for both
+      // Handle negative values (reversal entries) - ALWAYS APPLY
       if (debit < 0) {
         credit += Math.abs(debit);
         debit = 0;
@@ -375,15 +385,20 @@ function preprocessGLData(textContent) {
       };
     }
     
-    // Add to account totals
-    accountSummary[account].totalDebit += debit;
-    accountSummary[account].totalCredit += credit;
+    // Add to account totals - use absolute values to avoid any negative accumulation
+    accountSummary[account].totalDebit += Math.abs(debit);
+    accountSummary[account].totalCredit += Math.abs(credit);
     accountSummary[account].count += 1;
     
-    // Add to grand totals
-    totalDebits += debit;
-    totalCredits += credit;
+    // Add to grand totals - use absolute values
+    totalDebits += Math.abs(debit);
+    totalCredits += Math.abs(credit);
     processedRows++;
+    
+    // DEBUG: Log reversal entries
+    if ((row[debitCol]?.includes('-') || row[creditCol]?.includes('-')) && (debit > 0 || credit > 0)) {
+      console.log(`Row ${idx+1}: Reversal detected - Account: ${account}, Original Debit: ${row[debitCol]}, Original Credit: ${row[creditCol]}, Processed Debit: ${debit}, Processed Credit: ${credit}`);
+    }
   });
   
   // Convert to array and sort by total activity (debit + credit)
