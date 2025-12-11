@@ -279,6 +279,9 @@ function preprocessGLData(textContent) {
   
   console.log("Processing rows...");
   
+  // Track detailed debugging info
+  let debugInfo = [];
+  
   rows.forEach((row, idx) => {
     const account = row[accountCol]?.trim();
     
@@ -291,9 +294,21 @@ function preprocessGLData(textContent) {
     const debitStr = row[debitCol]?.trim() || "0";
     const creditStr = row[creditCol]?.trim() || "0";
     
-    // Parse numbers - handle negative values (reversals)
-    let debit = parseFloat(debitStr.replace(/[^0-9.-]/g, '')) || 0;
-    let credit = parseFloat(creditStr.replace(/[^0-9.-]/g, '')) || 0;
+    // MORE ROBUST number parsing - handle all formats
+    let debit = 0;
+    let credit = 0;
+    
+    // Remove ALL non-numeric characters except decimal point, minus sign, and digits
+    const cleanDebit = debitStr.replace(/[^\d.-]/g, '');
+    const cleanCredit = creditStr.replace(/[^\d.-]/g, '');
+    
+    // Parse the cleaned strings
+    if (cleanDebit && cleanDebit !== '-') {
+      debit = parseFloat(cleanDebit) || 0;
+    }
+    if (cleanCredit && cleanCredit !== '-') {
+      credit = parseFloat(cleanCredit) || 0;
+    }
     
     // Handle reversal entries (negative amounts)
     if (debit < 0) {
@@ -319,20 +334,24 @@ function preprocessGLData(textContent) {
         account, 
         totalDebit: 0, 
         totalCredit: 0, 
-        count: 0,
-        entries: [] // Track individual entries for debugging
+        count: 0
       };
     }
     
-    // Add to account totals - THIS IS THE KEY FIX
-    // Always add, even if zero, to count the entry
+    // Add to account totals
     accountSummary[account].totalDebit += debit;
     accountSummary[account].totalCredit += credit;
     accountSummary[account].count += 1;
     
-    // Store entry for debugging (only first 5 per account)
-    if (accountSummary[account].entries.length < 5) {
-      accountSummary[account].entries.push({ debit, credit });
+    // Debug: Track entries for "8021 Interest Expense" to diagnose the issue
+    if (account.includes('8021') || account.toLowerCase().includes('interest expense')) {
+      debugInfo.push({
+        row: idx + 2, // +2 because Excel rows start at 1 and we have header
+        debitStr,
+        creditStr,
+        debitParsed: debit,
+        creditParsed: credit
+      });
     }
     
     // Add to grand totals
@@ -343,6 +362,15 @@ function preprocessGLData(textContent) {
   
   console.log(`Processing complete - ${processedRows} rows processed, ${skippedRows} skipped`);
   console.log(`Reversal entries found: ${reversalEntries}`);
+  
+  // Log debug info for Interest Expense account
+  if (debugInfo.length > 0) {
+    console.log(`\n=== DEBUG: Found ${debugInfo.length} entries for account containing "8021" or "Interest Expense" ===`);
+    debugInfo.forEach((entry, i) => {
+      console.log(`Entry ${i + 1} (Row ${entry.row}): Dr="${entry.debitStr}" (${entry.debitParsed}), Cr="${entry.creditStr}" (${entry.creditParsed})`);
+    });
+    console.log(`=== END DEBUG ===\n`);
+  }
   
   // Convert to array and sort
   const accounts = Object.values(accountSummary)
