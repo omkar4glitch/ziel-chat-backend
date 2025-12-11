@@ -176,30 +176,49 @@ async function extractPdf(buffer) {
 }
 
 /**
- * Parse CSV to array of objects - IMPROVED for large files
+ * Parse CSV to array of objects - handles quoted commas
  */
-function parseCSV(csvText, maxRows = null) {
+function parseCSV(csvText) {
   const lines = csvText.trim().split('\n');
   if (lines.length < 2) return [];
   
-  // Parse headers - handle quoted commas properly
-  const headerLine = lines[0];
-  const headers = parseCSVLine(headerLine);
+  const parseCSVLine = (line) => {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      const nextChar = line[i + 1];
+      
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  };
   
+  const headers = parseCSVLine(lines[0]);
   const rows = [];
-  const limit = maxRows || lines.length;
   
-  for (let i = 1; i < Math.min(lines.length, limit); i++) {
-    if (!lines[i].trim()) continue; // Skip empty lines
-    
+  // Process ALL rows
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
     const values = parseCSVLine(lines[i]);
-    
-    // Only add row if it has the right number of columns (or close to it)
     if (values.length >= headers.length - 2 && values.length <= headers.length + 2) {
       const row = {};
-      headers.forEach((h, idx) => {
-        row[h] = values[idx] || '';
-      });
+      headers.forEach((h, idx) => row[h] = values[idx] || '');
       rows.push(row);
     }
   }
@@ -209,50 +228,12 @@ function parseCSV(csvText, maxRows = null) {
 }
 
 /**
- * Parse a single CSV line handling quoted commas
- */
-function parseCSVLine(line) {
-  const result = [];
-  let current = '';
-  let inQuotes = false;
-  
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    const nextChar = line[i + 1];
-    
-    if (char === '"') {
-      if (inQuotes && nextChar === '"') {
-        // Escaped quote
-        current += '"';
-        i++; // Skip next quote
-      } else {
-        // Toggle quote state
-        inQuotes = !inQuotes;
-      }
-    } else if (char === ',' && !inQuotes) {
-      // End of field
-      result.push(current.trim());
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  
-  // Add last field
-  result.push(current.trim());
-  
-  return result;
-}
-
-/**
- * PRE-PROCESS GL DATA - IMPROVED for large files
+ * PRE-PROCESS GL DATA
  */
 function preprocessGLData(textContent) {
-  try {
-    console.log("Starting GL preprocessing...");
-    console.log(`Input text length: ${textContent.length} characters`);
+  console.log("Starting GL preprocessing...");
+  console.log(`Input text length: ${textContent.length} characters`);
   
-  // Parse CSV - NO LIMIT, process all rows
   const rows = parseCSV(textContent);
   console.log(`Parsed ${rows.length} rows`);
   
@@ -260,7 +241,6 @@ function preprocessGLData(textContent) {
     return { processed: false, reason: "No data rows found" };
   }
   
-  // Find relevant columns (flexible column name matching)
   const headers = Object.keys(rows[0]);
   console.log("Headers found:", headers);
   
@@ -276,85 +256,54 @@ function preprocessGLData(textContent) {
   const debitCol = findColumn(['debit', 'dr', 'debit amount', 'dr amount']);
   const creditCol = findColumn(['credit', 'cr', 'credit amount', 'cr amount']);
   const dateCol = findColumn(['date', 'trans date', 'transaction date', 'posting date', 'entry date']);
-  const descCol = findColumn(['description', 'desc', 'narration', 'particulars', 'details']);
-  const amountCol = findColumn(['amount']); // Sometimes there's just one amount column
   
-  console.log("Column mapping:", { accountCol, debitCol, creditCol, dateCol, descCol, amountCol });
+  console.log("Column mapping:", { accountCol, debitCol, creditCol, dateCol });
   
-  if (!accountCol) {
+  if (!accountCol || !debitCol || !creditCol) {
     return { 
       processed: false, 
-      reason: "Could not identify Account column",
+      reason: "Could not identify required columns (Account, Debit, Credit)",
       headers: headers
     };
   }
   
-  // Handle case where there's only one "Amount" column (not separate Debit/Credit)
-  if (!debitCol && !creditCol && amountCol) {
-    console.log("Using single Amount column - will treat positive as debit, negative as credit");
-  } else if (!debitCol || !creditCol) {
-    return { 
-      processed: false, 
-      reason: "Could not identify Debit and Credit columns",
-      headers: headers
-    };
-  }
-  
-  // Aggregate by account
+  // Aggregate by account - FIXED to handle duplicates correctly
   const accountSummary = {};
   let totalDebits = 0;
   let totalCredits = 0;
-  let errorRows = 0;
+  let skippedRows = 0;
   let processedRows = 0;
   let minDate = null;
   let maxDate = null;
   let reversalEntries = 0;
-  let negativeDebits = 0;
-  let negativeCredits = 0;
+  
+  console.log("Processing rows...");
   
   rows.forEach((row, idx) => {
     const account = row[accountCol]?.trim();
     
-    let debit = 0;
-    let credit = 0;
+    // Skip rows with no account name
+    if (!account || account === '') {
+      skippedRows++;
+      return;
+    }
     
-    // Handle different amount formats
-    if (amountCol && !debitCol && !creditCol) {
-      // Single amount column
-      const amountStr = row[amountCol]?.trim() || "0";
-      const amount = parseFloat(amountStr.replace(/[^0-9.-]/g, '')) || 0;
-      if (amount >= 0) {
-        debit = amount;
-      } else {
-        credit = Math.abs(amount);
-      }
-    } else {
-      // Separate debit/credit columns
-      const debitStr = row[debitCol]?.trim() || "0";
-      const creditStr = row[creditCol]?.trim() || "0";
-      
-      // Parse numbers - handle negative values (reversals)
-      let debitParsed = parseFloat(debitStr.replace(/[^0-9.-]/g, '')) || 0;
-      let creditParsed = parseFloat(creditStr.replace(/[^0-9.-]/g, '')) || 0;
-      
-      // Handle reversal entries (negative amounts in debit/credit columns)
-      if (debitParsed < 0) {
-        // Negative debit means it should be a credit
-        credit = Math.abs(debitParsed);
-        debit = 0;
-        negativeDebits++;
-        reversalEntries++;
-      } else if (creditParsed < 0) {
-        // Negative credit means it should be a debit
-        debit = Math.abs(creditParsed);
-        credit = 0;
-        negativeCredits++;
-        reversalEntries++;
-      } else {
-        // Normal positive entries
-        debit = debitParsed;
-        credit = creditParsed;
-      }
+    const debitStr = row[debitCol]?.trim() || "0";
+    const creditStr = row[creditCol]?.trim() || "0";
+    
+    // Parse numbers - handle negative values (reversals)
+    let debit = parseFloat(debitStr.replace(/[^0-9.-]/g, '')) || 0;
+    let credit = parseFloat(creditStr.replace(/[^0-9.-]/g, '')) || 0;
+    
+    // Handle reversal entries (negative amounts)
+    if (debit < 0) {
+      credit = Math.abs(debit);
+      debit = 0;
+      reversalEntries++;
+    } else if (credit < 0) {
+      debit = Math.abs(credit);
+      credit = 0;
+      reversalEntries++;
     }
     
     // Track dates
@@ -364,75 +313,68 @@ function preprocessGLData(textContent) {
       if (!maxDate || dateStr > maxDate) maxDate = dateStr;
     }
     
-    // Skip only truly empty rows (no account and no amounts)
-    if (!account || account === '') {
-      errorRows++;
-      return;
-    }
-    
-    // Allow entries with zero amounts (they might be informational)
-    // but don't skip them as they still count as entries
-    
+    // Initialize account if first time seeing it
     if (!accountSummary[account]) {
       accountSummary[account] = { 
         account, 
         totalDebit: 0, 
         totalCredit: 0, 
-        count: 0
+        count: 0,
+        entries: [] // Track individual entries for debugging
       };
     }
     
+    // Add to account totals - THIS IS THE KEY FIX
+    // Always add, even if zero, to count the entry
     accountSummary[account].totalDebit += debit;
     accountSummary[account].totalCredit += credit;
     accountSummary[account].count += 1;
     
+    // Store entry for debugging (only first 5 per account)
+    if (accountSummary[account].entries.length < 5) {
+      accountSummary[account].entries.push({ debit, credit });
+    }
+    
+    // Add to grand totals
     totalDebits += debit;
     totalCredits += credit;
     processedRows++;
   });
   
-  // Convert to array and sort by total activity (debit + credit)
+  console.log(`Processing complete - ${processedRows} rows processed, ${skippedRows} skipped`);
+  console.log(`Reversal entries found: ${reversalEntries}`);
+  
+  // Convert to array and sort
   const accounts = Object.values(accountSummary)
     .map(acc => ({
-      ...acc,
+      account: acc.account,
+      totalDebit: acc.totalDebit,
+      totalCredit: acc.totalCredit,
       netBalance: acc.totalDebit - acc.totalCredit,
-      totalActivity: acc.totalDebit + acc.totalCredit
+      totalActivity: acc.totalDebit + acc.totalCredit,
+      count: acc.count
     }))
     .sort((a, b) => b.totalActivity - a.totalActivity);
   
-  const isBalanced = Math.abs(totalDebits - totalCredits) < 1; // Allow 1 rupee tolerance for rounding
+  const isBalanced = Math.abs(totalDebits - totalCredits) < 1;
   const difference = totalDebits - totalCredits;
   
   console.log(`PREPROCESSING COMPLETE:`);
-  console.log(`- Total rows in file: ${rows.length}`);
-  console.log(`- Processed rows: ${processedRows}`);
-  console.log(`- Skipped rows: ${errorRows}`);
-  console.log(`- Reversal entries: ${reversalEntries} (${negativeDebits} negative debits, ${negativeCredits} negative credits)`);
   console.log(`- Unique accounts: ${accounts.length}`);
   console.log(`- Total Debits: ${totalDebits.toFixed(2)}`);
   console.log(`- Total Credits: ${totalCredits.toFixed(2)}`);
   console.log(`- Difference: ${difference.toFixed(2)}`);
   console.log(`- Balanced: ${isBalanced}`);
   
-  // Safety check
-  if (!accounts || accounts.length === 0) {
-    return {
-      processed: false,
-      reason: "No valid accounts found after processing"
-    };
-  }
-  
-  // Create summary text for AI
+  // Create summary
   let summary = `## Pre-Processed GL Summary\n\n`;
   summary += `**Data Quality:**\n`;
-  summary += `- Total Rows in File: ${rows.length}\n`;
-  summary += `- Successfully Processed: ${processedRows} entries\n`;
-  summary += `- Skipped/Invalid: ${errorRows} entries\n`;
+  summary += `- Total Rows: ${rows.length}\n`;
+  summary += `- Processed: ${processedRows} entries\n`;
+  summary += `- Skipped: ${skippedRows} entries\n`;
   
   if (reversalEntries > 0) {
-    summary += `- Reversal Entries Detected: ${reversalEntries} (entries with negative amounts that were automatically reversed)\n`;
-    summary += `  - Negative Debits (reversed to Credits): ${negativeDebits}\n`;
-    summary += `  - Negative Credits (reversed to Debits): ${negativeCredits}\n`;
+    summary += `- Reversal Entries: ${reversalEntries} (negative amounts auto-corrected)\n`;
   }
   
   summary += `- Unique Accounts: ${accounts.length}\n\n`;
@@ -451,60 +393,21 @@ function preprocessGLData(textContent) {
     summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of ₹${Math.abs(difference).toFixed(2)}\n\n`;
   }
   
-  // For large account lists, show condensed version to AI to stay within context limits
-  const showTopN = Math.min(50, accounts.length);
+  // Show all accounts in full detail
+  summary += `### Account-wise Summary (All ${accounts.length} Accounts)\n\n`;
+  summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
+  summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
   
-  if (accounts.length > 100) {
-    // For very large files (100+ accounts), show top 30 + compact list of rest
-    summary += `### Account-wise Summary (${accounts.length} Total Accounts)\n\n`;
-    summary += `#### Top 30 Most Active Accounts\n\n`;
-    summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
-    summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
-    
-    accounts.slice(0, 30).forEach((acc, i) => {
-      summary += `| ${i+1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.count} |\n`;
-    });
-    
-    // Compact list for remaining accounts (just name and net balance)
-    summary += `\n#### Remaining ${accounts.length - 30} Accounts (Compact View)\n\n`;
-    accounts.slice(30).forEach((acc, i) => {
-      summary += `${30 + i + 1}. ${acc.account}: Net ₹${acc.netBalance.toLocaleString('en-IN', {maximumFractionDigits: 2})} (${acc.count} entries)\n`;
-    });
-  } else {
-    // For smaller files (< 100 accounts), show all in full table
-    summary += `### Account-wise Summary (Showing All ${accounts.length} Accounts)\n\n`;
-    summary += `#### Top ${showTopN} Accounts by Activity\n\n`;
-    summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
-    summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
-    
-    accounts.slice(0, showTopN).forEach((acc, i) => {
-      summary += `| ${i+1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.count} |\n`;
-    });
-    
-    if (accounts.length > showTopN) {
-      summary += `\n#### Remaining ${accounts.length - showTopN} Accounts (Complete List)\n\n`;
-      summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
-      summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
-      
-      accounts.slice(showTopN).forEach((acc, i) => {
-        summary += `| ${showTopN + i + 1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.count} |\n`;
-      });
-      
-      const remainingTotal = accounts.slice(showTopN).reduce((sum, a) => sum + a.totalActivity, 0);
-      summary += `\n*Total activity in remaining accounts: ₹${remainingTotal.toLocaleString('en-IN', {maximumFractionDigits: 2})}*\n`;
-    }
-  }
+  accounts.forEach((acc, i) => {
+    summary += `| ${i+1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.count} |\n`;
+  });
   
-  // Add account classification hints
   summary += `\n### Account Classification Guide\n`;
-  summary += `Based on the net balances, accounts can be classified as:\n`;
-  summary += `- **Assets** (typically Debit balance): Cash, Bank, Inventory, Receivables, Fixed Assets\n`;
-  summary += `- **Liabilities** (typically Credit balance): Payables, Loans, Provisions\n`;
-  summary += `- **Equity** (typically Credit balance): Capital, Reserves, Retained Earnings\n`;
-  summary += `- **Revenue** (Credit balance): Sales, Service Income, Other Income\n`;
-  summary += `- **Expenses** (Debit balance): Salaries, Rent, Utilities, Depreciation\n\n`;
-  
-  console.log(`Summary created, returning preprocessed data with ${accounts.length} accounts`);
+  summary += `- **Assets** (Debit balance): Cash, Bank, Inventory, Receivables, Fixed Assets\n`;
+  summary += `- **Liabilities** (Credit balance): Payables, Loans, Provisions\n`;
+  summary += `- **Equity** (Credit balance): Capital, Reserves, Retained Earnings\n`;
+  summary += `- **Revenue** (Credit balance): Sales, Income\n`;
+  summary += `- **Expenses** (Debit balance): Salaries, Rent, Utilities\n\n`;
   
   return {
     processed: true,
@@ -517,10 +420,11 @@ function preprocessGLData(textContent) {
       accountCount: accounts.length,
       entryCount: rows.length,
       processedCount: processedRows,
-      errorCount: errorRows,
+      skippedCount: skippedRows,
+      reversalCount: reversalEntries,
       dateRange: minDate && maxDate ? `${minDate} to ${maxDate}` : 'Unknown'
     },
-    accounts: accounts.slice(0, 50)
+    accounts: accounts
   };
 }
 
@@ -544,37 +448,29 @@ function detectDocumentCategory(textContent) {
 /**
  * Get system prompt
  */
-function getSystemPrompt(category, isPreprocessed = false) {
+function getSystemPrompt(category, isPreprocessed = false, accountCount = 0) {
   if (category === 'gl' && isPreprocessed) {
     return `You are an expert accounting assistant. You've been given PRE-CALCULATED GL data.
 
 **CRITICAL INSTRUCTIONS:**
-1. The data you receive is ALREADY CALCULATED - do NOT recalculate the numbers
-2. Use the exact numbers provided in the summary tables
-3. ALL accounts are included in the data - not just a sample
-4. Reversal entries (negative amounts) have been automatically handled and are noted in the summary
-5. Your job is to INTERPRET and PROVIDE INSIGHTS, not recalculate
+1. The data is ALREADY CALCULATED - do NOT recalculate
+2. Use the exact numbers provided in the summary table
+3. ALL ${accountCount} accounts are included - reference any account by name
+4. Your job is to INTERPRET and PROVIDE INSIGHTS
 
 **Your Response Format:**
 1. Start with "**General Ledger Analysis**"
-2. Present key summary statistics:
-   - Total Debits and Credits
-   - Whether balanced or not
-   - Number of accounts processed
-   - Any reversal entries noted
-3. Copy the main account summary table (you can reference all accounts by name)
+2. Present key statistics (Total Debits, Credits, Balance status)
+3. Reference the account summary table
 4. Add observations:
-   - Which accounts have the highest activity?
-   - Are debits and credits balanced?
-   - Any unusual or suspicious entries?
-   - Breakdown by account type (Assets, Liabilities, Equity, Revenue, Expenses)
-   - Note any reversal entries and their impact
+   - Highest activity accounts
+   - Balance verification
+   - Account type breakdown (Assets, Liabilities, Revenue, Expenses)
+   - Any anomalies or unusual entries
 5. Add recommendations:
-   - Accounts that need reconciliation
-   - Potential errors or anomalies
-   - Compliance or audit considerations
-
-**IMPORTANT:** All ${accounts.length || 'available'} accounts are included in your data. You can reference any account by name.
+   - Reconciliation needs
+   - Potential errors
+   - Compliance considerations
 
 DO NOT make up numbers. Use ONLY the data provided.
 Respond in clean markdown format.`;
@@ -583,24 +479,12 @@ Respond in clean markdown format.`;
   if (category === 'gl') {
     return `You are an expert accounting assistant analyzing General Ledger entries.
 
-**Instructions:**
-1. Parse the CSV data to identify: Account Name, Debit, Credit columns
-2. Group by account and sum debits/credits
-3. Verify total debits = total credits
-4. Present findings in a markdown table
-5. Add observations and recommendations
-
-Respond in markdown format only.`;
+Parse the data, group by account, sum debits/credits, and present findings in markdown.`;
   }
   
-  // P&L prompt
   return `You are an expert accounting assistant analyzing financial statements.
 
-When totals exist in the file (Net Sales, Gross Profit, etc.), USE those numbers.
-Respect multiple periods if present.
-
-Create a markdown table with key metrics and add observations & recommendations.
-Respond in markdown format only.`;
+When totals exist, USE those numbers. Create a markdown table with metrics and insights.`;
 }
 
 /**
@@ -609,11 +493,12 @@ Respond in markdown format only.`;
 async function callModel({ fileType, textContent, question, category, preprocessedData }) {
   let content = textContent;
   let isPreprocessed = false;
+  let accountCount = 0;
   
-  // Use preprocessed data if available
   if (preprocessedData && preprocessedData.processed) {
     content = preprocessedData.summary;
     isPreprocessed = true;
+    accountCount = preprocessedData.stats?.accountCount || 0;
     console.log("Using preprocessed GL summary");
   }
   
@@ -621,7 +506,7 @@ async function callModel({ fileType, textContent, question, category, preprocess
     ? content.slice(0, 60000) + "\n\n[Content truncated]"
     : content;
 
-  const systemPrompt = getSystemPrompt(category, isPreprocessed);
+  const systemPrompt = getSystemPrompt(category, isPreprocessed, accountCount);
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -655,13 +540,10 @@ async function callModel({ fileType, textContent, question, category, preprocess
   } catch (err) {
     const raw = await r.text().catch(() => "");
     console.error("Model returned non-JSON:", raw.slice(0, 1000));
-    return { reply: null, raw, httpStatus: r.status };
+    return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
   }
 
-  const reply =
-    data?.choices?.[0]?.message?.content ||
-    data?.reply ||
-    null;
+  const reply = data?.choices?.[0]?.message?.content || data?.reply || null;
 
   return { reply, raw: data, httpStatus: r.status };
 }
@@ -674,9 +556,6 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  console.log("=== NEW REQUEST STARTED ===");
-  console.log("Timestamp:", new Date().toISOString());
-
   try {
     if (!process.env.OPENROUTER_API_KEY) {
       return res.status(500).json({ error: "Missing OPENROUTER_API_KEY" });
@@ -687,13 +566,9 @@ export default async function handler(req, res) {
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
-    // Download
     const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
-
-    // Detect type
     const detectedType = detectFileType(fileUrl, contentType, buffer);
 
-    // Extract
     let extracted = { type: detectedType, textContent: "" };
     if (detectedType === "pdf") {
       extracted = await extractPdf(buffer);
@@ -732,11 +607,9 @@ export default async function handler(req, res) {
       });
     }
 
-    // Detect category
     const category = detectDocumentCategory(textContent);
     console.log(`Category: ${category}`);
 
-    // PRE-PROCESS GL DATA
     let preprocessedData = null;
     if (category === 'gl') {
       preprocessedData = preprocessGLData(textContent);
@@ -747,7 +620,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // Call model
     const { reply, raw, httpStatus } = await callModel({
       fileType: extracted.type,
       textContent,
@@ -761,11 +633,10 @@ export default async function handler(req, res) {
         ok: false,
         type: extracted.type,
         reply: "(No reply from model)",
-        debug: { status: httpStatus, body: raw }
+        debug: { status: httpStatus, raw: raw }
       });
     }
 
-    // Success
     return res.status(200).json({
       ok: true,
       type: extracted.type,
@@ -776,13 +647,7 @@ export default async function handler(req, res) {
         status: httpStatus, 
         category,
         preprocessed: preprocessedData?.processed || false,
-        stats: preprocessedData?.stats || null,
-        // DEBUGGING: Show what was actually sent to AI
-        contentSentToAI: preprocessedData?.processed 
-          ? preprocessedData.summary.substring(0, 1000) 
-          : textContent.substring(0, 1000),
-        topAccounts: preprocessedData?.accounts?.slice(0, 5) || null,
-        preprocessingReason: preprocessedData?.reason || null
+        stats: preprocessedData?.stats || null
       }
     });
   } catch (err) {
