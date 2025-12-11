@@ -132,52 +132,76 @@ function extractCsv(buffer) {
 }
 
 /**
- * Extract XLSX - FIXED to not skip any rows
+ * Extract XLSX - COMPLETELY REWRITTEN to capture EVERY row
  */
 function extractXlsx(buffer) {
   try {
     console.log("Starting XLSX extraction...");
-    const workbook = XLSX.read(buffer, { type: "buffer" });
-
+    const workbook = XLSX.read(buffer, {
+      type: "buffer",
+      cellDates: false,
+      cellNF: false,
+      cellText: false,
+      raw: false, // Use formatted values
+      defval: '' // Empty cells become empty strings
+    });
+    
+    console.log(`XLSX has ${workbook.SheetNames.length} sheets:`, workbook.SheetNames);
+    
     const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-
-    // FIX #1 — Force Excel to expand the used range
-    const range = XLSX.utils.decode_range(sheet["!ref"]);
-    const maxRow = range.e.r;
-    const maxCol = range.e.c;
-
-    // FIX #2 — Convert sheet to JSON WITHOUT skipping anything
-    const rows = [];
-    for (let r = 0; r <= maxRow; r++) {
-      const row = [];
-      for (let c = 0; c <= maxCol; c++) {
-        const cellAddress = XLSX.utils.encode_cell({ r, c });
-        const cell = sheet[cellAddress];
-        row.push(cell ? String(cell.v ?? "") : "");
-      }
-      rows.push(row);
+    if (!sheetName) {
+      console.log("No sheets found");
+      return { type: "xlsx", textContent: "" };
     }
-
-    // FIX #3 — Convert rows → CSV manually (no XLSX internals)
-    const csv = rows
-      .map(row =>
-        row
-          .map(v => {
-            if (v.includes(",") || v.includes('"')) return `"${v.replace(/"/g, '""')}"`;
-            return v;
-          })
-          .join(",")
-      )
-      .join("\n");
-
-    console.log(`Extracted ${rows.length} rows and ${maxCol + 1} columns (NO skipping)`);
-
+    
+    const sheet = workbook.Sheets[sheetName];
+    
+    // Get the actual range
+    const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+    const totalRows = range.e.r - range.s.r + 1;
+    const totalCols = range.e.c - range.s.c + 1;
+    console.log(`Sheet "${sheetName}" range: ${sheet['!ref']} = ${totalRows} rows x ${totalCols} cols`);
+    
+    // MANUAL CSV GENERATION - to ensure we don't skip ANY row
+    const csvLines = [];
+    
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      const rowData = [];
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
+        const cell = sheet[cellAddress];
+        
+        if (!cell || cell.v === undefined) {
+          rowData.push(''); // Empty cell
+        } else {
+          // Get the formatted value or raw value
+          let val = cell.w !== undefined ? cell.w : cell.v;
+          
+          // Convert to string and escape quotes
+          val = String(val).replace(/"/g, '""');
+          
+          // Wrap in quotes if contains comma or quote
+          if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+            val = '"' + val + '"';
+          }
+          
+          rowData.push(val);
+        }
+      }
+      csvLines.push(rowData.join(','));
+    }
+    
+    const csv = csvLines.join('\n');
+    console.log(`Generated CSV with ${csvLines.length} rows (should match ${totalRows})`);
+    console.log(`First 3 rows preview:`);
+    csvLines.slice(0, 3).forEach((line, i) => {
+      console.log(`  Row ${i}: ${line.substring(0, 100)}...`);
+    });
+    
     return { type: "xlsx", textContent: csv };
-
   } catch (err) {
-    console.error("extractXlsx failed:", err);
-    return { type: "xlsx", textContent: "", error: String(err) };
+    console.error("extractXlsx failed:", err?.message || err);
+    return { type: "xlsx", textContent: "", error: String(err?.message || err) };
   }
 }
 
@@ -201,22 +225,26 @@ async function extractPdf(buffer) {
 }
 
 /**
- * Parse CSV - FIXED to never skip valid data rows
+ * Parse CSV - with detailed logging
  */
 function parseCSV(csvText) {
-  const lines = csvText.split(/\r?\n/);
-
-  if (lines.length < 2) return [];
-
+  const lines = csvText.trim().split('\n');
+  console.log(`\n>>> CSV Parser: Received ${lines.length} lines`);
+  
+  if (lines.length < 2) {
+    console.log(">>> CSV Parser: Less than 2 lines, returning empty");
+    return [];
+  }
+  
   const parseCSVLine = (line) => {
     const result = [];
-    let current = "";
+    let current = '';
     let inQuotes = false;
-
+    
     for (let i = 0; i < line.length; i++) {
       const char = line[i];
       const nextChar = line[i + 1];
-
+      
       if (char === '"') {
         if (inQuotes && nextChar === '"') {
           current += '"';
@@ -224,69 +252,50 @@ function parseCSV(csvText) {
         } else {
           inQuotes = !inQuotes;
         }
-      } else if (char === "," && !inQuotes) {
-        result.push(current);
-        current = "";
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim());
+        current = '';
       } else {
         current += char;
       }
     }
-    result.push(current);
+    result.push(current.trim());
     return result;
   };
-
+  
   const headers = parseCSVLine(lines[0]);
   const headerCount = headers.length;
-
   const rows = [];
-  let abnormalRows = [];
-
+  let emptyLineCount = 0;
+  
+  console.log(`>>> CSV Parser: ${headerCount} columns found`);
+  console.log(`>>> CSV Parser: Headers = [${headers.join(', ')}]`);
+  
+  // Process ALL lines
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
-
-    if (!line || !line.trim()) continue; // skip 100% blank rows only
-
+    
+    // Skip ONLY completely empty lines
+    if (!line || !line.trim()) {
+      emptyLineCount++;
+      continue;
+    }
+    
     const values = parseCSVLine(line);
-
-    // If row has more columns → extend header dynamically with Extra_#
-    if (values.length > headerCount) {
-      const extras = values.length - headerCount;
-
-      for (let e = 0; e < extras; e++) {
-        headers.push(`Extra_${e + 1}`);
-      }
-
-      abnormalRows.push({
-        row: i + 1,
-        reason: `Row had ${values.length} columns (expected ${headerCount}), extended headers.`
-      });
-    }
-
-    // If row has fewer columns → fill the missing ones
-    if (values.length < headerCount) {
-      abnormalRows.push({
-        row: i + 1,
-        reason: `Row had ${values.length} columns (expected ${headerCount}), filled blanks.`
-      });
-      while (values.length < headerCount) values.push("");
-    }
-
-    // Build final row object
-    const rowObj = {};
+    
+    // Create row object - NO VALIDATION, just create it
+    const row = {};
     headers.forEach((h, idx) => {
-      rowObj[h] = values[idx] ?? "";
+      row[h] = values[idx] || '';
     });
-
-    rows.push(rowObj);
+    rows.push(row);
   }
-
-  // Add detailed logs
-  if (abnormalRows.length > 0) {
-    console.log(`\n=== CSV ROW WARNINGS (${abnormalRows.length} rows) ===`);
-    abnormalRows.forEach(r => console.log(`Row ${r.row}: ${r.reason}`));
-    console.log("=== END WARNINGS ===\n");
-  }
-
+  
+  console.log(`>>> CSV Parser: Processed ${rows.length} data rows`);
+  console.log(`>>> CSV Parser: Skipped ${emptyLineCount} empty lines`);
+  console.log(`>>> CSV Parser: Total should be ${lines.length - 1} (${lines.length} lines - 1 header)`);
+  console.log(`>>> CSV Parser: Match = ${rows.length + emptyLineCount === lines.length - 1 ? 'YES ✓' : 'NO ✗'}\n`);
+  
   return rows;
 }
 
@@ -373,6 +382,7 @@ function preprocessGLData(textContent) {
   let reversalCount = 0;
   
   console.log("\nProcessing rows...");
+  let sampleRows = [];
   
   rows.forEach((row, idx) => {
     const account = row[accountCol]?.trim();
@@ -389,6 +399,18 @@ function preprocessGLData(textContent) {
     // Parse amounts using robust parser
     let debit = parseAmount(debitStr);
     let credit = parseAmount(creditStr);
+    
+    // Capture first 5 rows for debugging
+    if (sampleRows.length < 5) {
+      sampleRows.push({
+        row: idx + 2,
+        account: account.substring(0, 30),
+        debitStr: String(debitStr).substring(0, 20),
+        creditStr: String(creditStr).substring(0, 20),
+        debitParsed: debit,
+        creditParsed: credit
+      });
+    }
     
     // Handle reversals (negative amounts)
     if (debit < 0) {
@@ -429,6 +451,14 @@ function preprocessGLData(textContent) {
     totalDebits += debit;
     totalCredits += credit;
     processedRows++;
+  });
+  
+  // Show sample of first 5 rows
+  console.log("\n>>> SAMPLE OF FIRST 5 PROCESSED ROWS:");
+  sampleRows.forEach(s => {
+    console.log(`  Row ${s.row}: ${s.account}`);
+    console.log(`    Debit: "${s.debitStr}" → ${s.debitParsed}`);
+    console.log(`    Credit: "${s.creditStr}" → ${s.creditParsed}`);
   });
   
   console.log("\n" + "=".repeat(80));
