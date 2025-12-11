@@ -308,8 +308,10 @@ function preprocessGLData(textContent) {
   const debitCol = findColumn(['debit', 'dr', 'debit amount', 'dr amount']);
   const creditCol = findColumn(['credit', 'cr', 'credit amount', 'cr amount']);
   const dateCol = findColumn(['date', 'trans date', 'transaction date', 'posting date', 'entry date']);
+  const referenceCol = findColumn(['reference', 'ref', 'entry', 'journal', 'voucher', 'transaction']);
+  const balanceCol = findColumn(['balance', 'net', 'amount']); // To detect reversals
   
-  console.log("Column mapping:", { accountCol, debitCol, creditCol, dateCol });
+  console.log("Column mapping:", { accountCol, debitCol, creditCol, dateCol, referenceCol, balanceCol });
   
   if (!accountCol || !debitCol || !creditCol) {
     return { 
