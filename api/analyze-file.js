@@ -136,18 +136,46 @@ function extractCsv(buffer) {
  */
 function extractXlsx(buffer) {
   try {
+    console.log("Starting XLSX extraction...");
     const workbook = XLSX.read(buffer, {
       type: "buffer",
       cellDates: true,
       cellNF: false,
-      cellText: false
+      cellText: false,
+      raw: false, // Don't use raw values, format them
+      defval: '' // Default value for empty cells
     });
     
+    console.log(`XLSX has ${workbook.SheetNames.length} sheets:`, workbook.SheetNames);
+    
     const sheetName = workbook.SheetNames[0];
-    if (!sheetName) return { type: "xlsx", textContent: "" };
+    if (!sheetName) {
+      console.log("No sheets found");
+      return { type: "xlsx", textContent: "" };
+    }
     
     const sheet = workbook.Sheets[sheetName];
-    const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+    
+    // Get the range to see how many rows we have
+    const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+    const totalRows = range.e.r - range.s.r + 1;
+    console.log(`Sheet "${sheetName}" has ${totalRows} rows (including header)`);
+    
+    // Convert to CSV with all options to preserve data
+    const csv = XLSX.utils.sheet_to_csv(sheet, { 
+      blankrows: false, // Skip completely blank rows
+      FS: ',', // Field separator
+      RS: '\n', // Row separator
+      strip: false, // Don't strip quotes
+      rawNumbers: false // Format numbers properly
+    });
+    
+    const csvLines = csv.split('\n').length;
+    console.log(`CSV has ${csvLines} lines`);
+    
+    if (totalRows !== csvLines) {
+      console.log(`WARNING: Row count mismatch - Sheet: ${totalRows}, CSV: ${csvLines}`);
+    }
     
     return { type: "xlsx", textContent: csv };
   } catch (err) {
@@ -210,20 +238,44 @@ function parseCSV(csvText) {
   };
   
   const headers = parseCSVLine(lines[0]);
+  const headerCount = headers.length;
   const rows = [];
+  let skippedDueToColumnMismatch = 0;
   
-  // Process ALL rows
+  console.log(`CSV has ${headerCount} columns:`, headers);
+  
+  // Process ALL rows - be more lenient with column count
   for (let i = 1; i < lines.length; i++) {
-    if (!lines[i].trim()) continue;
-    const values = parseCSVLine(lines[i]);
-    if (values.length >= headers.length - 2 && values.length <= headers.length + 2) {
-      const row = {};
-      headers.forEach((h, idx) => row[h] = values[idx] || '');
-      rows.push(row);
+    const line = lines[i];
+    if (!line || !line.trim()) continue; // Skip empty lines
+    
+    const values = parseCSVLine(line);
+    
+    // CRITICAL FIX: Be more lenient - accept rows with column count variance
+    // Old logic was too strict: values.length >= headers.length - 2 && values.length <= headers.length + 2
+    // This was skipping valid rows!
+    
+    if (values.length < headerCount - 5 || values.length > headerCount + 5) {
+      // Only skip if VERY different (5+ columns off)
+      skippedDueToColumnMismatch++;
+      if (skippedDueToColumnMismatch <= 5) {
+        console.log(`Skipping row ${i + 1}: has ${values.length} columns, expected ~${headerCount}`);
+      }
+      continue;
     }
+    
+    const row = {};
+    headers.forEach((h, idx) => {
+      row[h] = values[idx] || ''; // Use empty string if column missing
+    });
+    rows.push(row);
   }
   
   console.log(`Parsed ${rows.length} rows out of ${lines.length - 1} total lines`);
+  if (skippedDueToColumnMismatch > 0) {
+    console.log(`Skipped ${skippedDueToColumnMismatch} rows due to column count mismatch`);
+  }
+  
   return rows;
 }
 
