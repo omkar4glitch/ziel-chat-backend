@@ -204,18 +204,19 @@ async function extractPdf(buffer) {
  * Parse CSV - FIXED to never skip valid data rows
  */
 function parseCSV(csvText) {
-  const lines = csvText.trim().split('\n');
+  const lines = csvText.split(/\r?\n/);
+
   if (lines.length < 2) return [];
-  
+
   const parseCSVLine = (line) => {
     const result = [];
-    let current = '';
+    let current = "";
     let inQuotes = false;
-    
+
     for (let i = 0; i < line.length; i++) {
       const char = line[i];
       const nextChar = line[i + 1];
-      
+
       if (char === '"') {
         if (inQuotes && nextChar === '"') {
           current += '"';
@@ -223,41 +224,69 @@ function parseCSV(csvText) {
         } else {
           inQuotes = !inQuotes;
         }
-      } else if (char === ',' && !inQuotes) {
-        result.push(current.trim());
-        current = '';
+      } else if (char === "," && !inQuotes) {
+        result.push(current);
+        current = "";
       } else {
         current += char;
       }
     }
-    result.push(current.trim());
+    result.push(current);
     return result;
   };
-  
+
   const headers = parseCSVLine(lines[0]);
   const headerCount = headers.length;
+
   const rows = [];
-  
-  console.log(`CSV has ${headerCount} columns:`, headers);
-  console.log(`CSV has ${lines.length - 1} data lines to process`);
-  
-  // Process ALL rows - NO SKIPPING based on column count
+  let abnormalRows = [];
+
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
-    if (!line || !line.trim()) continue; // Only skip truly empty lines
-    
+
+    if (!line || !line.trim()) continue; // skip 100% blank rows only
+
     const values = parseCSVLine(line);
-    
-    // CRITICAL FIX: Accept ALL rows, just pad with empty strings if needed
-    const row = {};
+
+    // If row has more columns → extend header dynamically with Extra_#
+    if (values.length > headerCount) {
+      const extras = values.length - headerCount;
+
+      for (let e = 0; e < extras; e++) {
+        headers.push(`Extra_${e + 1}`);
+      }
+
+      abnormalRows.push({
+        row: i + 1,
+        reason: `Row had ${values.length} columns (expected ${headerCount}), extended headers.`
+      });
+    }
+
+    // If row has fewer columns → fill the missing ones
+    if (values.length < headerCount) {
+      abnormalRows.push({
+        row: i + 1,
+        reason: `Row had ${values.length} columns (expected ${headerCount}), filled blanks.`
+      });
+      while (values.length < headerCount) values.push("");
+    }
+
+    // Build final row object
+    const rowObj = {};
     headers.forEach((h, idx) => {
-      row[h] = values[idx] || ''; // Use empty string if column missing
+      rowObj[h] = values[idx] ?? "";
     });
-    rows.push(row);
+
+    rows.push(rowObj);
   }
-  
-  console.log(`Parsed ${rows.length} rows (should match data lines)`);
-  
+
+  // Add detailed logs
+  if (abnormalRows.length > 0) {
+    console.log(`\n=== CSV ROW WARNINGS (${abnormalRows.length} rows) ===`);
+    abnormalRows.forEach(r => console.log(`Row ${r.row}: ${r.reason}`));
+    console.log("=== END WARNINGS ===\n");
+  }
+
   return rows;
 }
 
