@@ -137,47 +137,47 @@ function extractCsv(buffer) {
 function extractXlsx(buffer) {
   try {
     console.log("Starting XLSX extraction...");
-    const workbook = XLSX.read(buffer, {
-      type: "buffer",
-      cellDates: false, // Don't convert dates, keep as numbers
-      cellNF: false,
-      cellText: false,
-      raw: true, // Use raw values to avoid formatting issues
-      defval: '' // Default value for empty cells
-    });
-    
-    console.log(`XLSX has ${workbook.SheetNames.length} sheets:`, workbook.SheetNames);
-    
+    const workbook = XLSX.read(buffer, { type: "buffer" });
+
     const sheetName = workbook.SheetNames[0];
-    if (!sheetName) {
-      console.log("No sheets found");
-      return { type: "xlsx", textContent: "" };
-    }
-    
     const sheet = workbook.Sheets[sheetName];
-    
-    // Get the range to see how many rows we have
-    const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
-    const totalRows = range.e.r - range.s.r + 1;
-    console.log(`Sheet "${sheetName}" has ${totalRows} rows (range: ${sheet['!ref']})`);
-    
-    // Convert to CSV - CRITICAL: Use all options to preserve every row
-    const csv = XLSX.utils.sheet_to_csv(sheet, { 
-      blankrows: true, // CHANGED: Include blank rows to maintain row numbering
-      FS: ',',
-      RS: '\n',
-      strip: false,
-      rawNumbers: true, // Keep numbers as-is
-      skipHidden: false // Don't skip hidden rows
-    });
-    
-    const csvLines = csv.split('\n').filter(line => line.trim()).length;
-    console.log(`CSV has ${csvLines} non-empty lines`);
-    
+
+    // FIX #1 — Force Excel to expand the used range
+    const range = XLSX.utils.decode_range(sheet["!ref"]);
+    const maxRow = range.e.r;
+    const maxCol = range.e.c;
+
+    // FIX #2 — Convert sheet to JSON WITHOUT skipping anything
+    const rows = [];
+    for (let r = 0; r <= maxRow; r++) {
+      const row = [];
+      for (let c = 0; c <= maxCol; c++) {
+        const cellAddress = XLSX.utils.encode_cell({ r, c });
+        const cell = sheet[cellAddress];
+        row.push(cell ? String(cell.v ?? "") : "");
+      }
+      rows.push(row);
+    }
+
+    // FIX #3 — Convert rows → CSV manually (no XLSX internals)
+    const csv = rows
+      .map(row =>
+        row
+          .map(v => {
+            if (v.includes(",") || v.includes('"')) return `"${v.replace(/"/g, '""')}"`;
+            return v;
+          })
+          .join(",")
+      )
+      .join("\n");
+
+    console.log(`Extracted ${rows.length} rows and ${maxCol + 1} columns (NO skipping)`);
+
     return { type: "xlsx", textContent: csv };
+
   } catch (err) {
-    console.error("extractXlsx failed:", err?.message || err);
-    return { type: "xlsx", textContent: "", error: String(err?.message || err) };
+    console.error("extractXlsx failed:", err);
+    return { type: "xlsx", textContent: "", error: String(err) };
   }
 }
 
