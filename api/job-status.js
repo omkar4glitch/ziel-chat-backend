@@ -132,18 +132,18 @@ function extractCsv(buffer) {
 }
 
 /**
- * Extract XLSX - CRITICAL FIX: Extract ALL rows without skipping
+ * Extract XLSX - COMPLETELY REWRITTEN to capture EVERY row
  */
 function extractXlsx(buffer) {
   try {
     console.log("Starting XLSX extraction...");
     const workbook = XLSX.read(buffer, {
       type: "buffer",
-      cellDates: false, // Keep as text to avoid date conversion issues
+      cellDates: false,
       cellNF: false,
-      cellText: true, // Convert everything to text
-      raw: false,
-      defval: '' // Default value for empty cells
+      cellText: false,
+      raw: false, // Use formatted values
+      defval: '' // Empty cells become empty strings
     });
     
     console.log(`XLSX has ${workbook.SheetNames.length} sheets:`, workbook.SheetNames);
@@ -156,32 +156,47 @@ function extractXlsx(buffer) {
     
     const sheet = workbook.Sheets[sheetName];
     
-    // Get the actual range to see total rows
+    // Get the actual range
     const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
-    const totalRows = range.e.r - range.s.r + 1; // +1 to include header
-    console.log(`Sheet "${sheetName}" has ${totalRows} rows (row ${range.s.r} to ${range.e.r})`);
+    const totalRows = range.e.r - range.s.r + 1;
+    const totalCols = range.e.c - range.s.c + 1;
+    console.log(`Sheet "${sheetName}" range: ${sheet['!ref']} = ${totalRows} rows x ${totalCols} cols`);
     
-    // CRITICAL: Use blankrows: true to include ALL rows, even with some empty cells
-    const csv = XLSX.utils.sheet_to_csv(sheet, { 
-      blankrows: true, // CHANGED FROM false - include ALL rows
-      FS: ',',
-      RS: '\n',
-      strip: false,
-      rawNumbers: false
-    });
+    // MANUAL CSV GENERATION - to ensure we don't skip ANY row
+    const csvLines = [];
     
-    const csvLines = csv.split('\n').filter(line => line.trim()).length; // Count non-empty lines
-    console.log(`CSV output has ${csvLines} non-empty lines`);
-    
-    if (Math.abs(totalRows - csvLines) > 1) {
-      console.warn(`⚠️ WARNING: Row count mismatch - Excel: ${totalRows}, CSV: ${csvLines}`);
-      console.warn(`Missing ${totalRows - csvLines} rows during conversion!`);
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      const rowData = [];
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
+        const cell = sheet[cellAddress];
+        
+        if (!cell || cell.v === undefined) {
+          rowData.push(''); // Empty cell
+        } else {
+          // Get the formatted value or raw value
+          let val = cell.w !== undefined ? cell.w : cell.v;
+          
+          // Convert to string and escape quotes
+          val = String(val).replace(/"/g, '""');
+          
+          // Wrap in quotes if contains comma or quote
+          if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+            val = '"' + val + '"';
+          }
+          
+          rowData.push(val);
+        }
+      }
+      csvLines.push(rowData.join(','));
     }
     
-    // Count commas in first line to verify column count
-    const firstLine = csv.split('\n')[0];
-    const columnCount = (firstLine.match(/,/g) || []).length + 1;
-    console.log(`CSV has ${columnCount} columns`);
+    const csv = csvLines.join('\n');
+    console.log(`Generated CSV with ${csvLines.length} rows (should match ${totalRows})`);
+    console.log(`First 3 rows preview:`);
+    csvLines.slice(0, 3).forEach((line, i) => {
+      console.log(`  Row ${i}: ${line.substring(0, 100)}...`);
+    });
     
     return { type: "xlsx", textContent: csv };
   } catch (err) {
@@ -210,11 +225,16 @@ async function extractPdf(buffer) {
 }
 
 /**
- * Parse CSV to array of objects - MUST NOT SKIP ANY ROWS
+ * Parse CSV - with detailed logging
  */
 function parseCSV(csvText) {
   const lines = csvText.trim().split('\n');
-  if (lines.length < 2) return [];
+  console.log(`\n>>> CSV Parser: Received ${lines.length} lines`);
+  
+  if (lines.length < 2) {
+    console.log(">>> CSV Parser: Less than 2 lines, returning empty");
+    return [];
+  }
   
   const parseCSVLine = (line) => {
     const result = [];
@@ -246,55 +266,87 @@ function parseCSV(csvText) {
   const headers = parseCSVLine(lines[0]);
   const headerCount = headers.length;
   const rows = [];
+  let emptyLineCount = 0;
   
-  console.log(`CSV has ${lines.length} lines total (including header)`);
-  console.log(`Headers (${headerCount} columns):`, headers);
+  console.log(`>>> CSV Parser: ${headerCount} columns found`);
+  console.log(`>>> CSV Parser: Headers = [${headers.join(', ')}]`);
   
-  // CRITICAL: Process EVERY single line - do NOT skip based on column count
+  // Process ALL lines
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     
-    // Only skip completely empty lines
-    if (!line || line.trim() === '' || line.trim() === ','.repeat(headerCount - 1)) {
+    // Skip ONLY completely empty lines
+    if (!line || !line.trim()) {
+      emptyLineCount++;
       continue;
     }
     
     const values = parseCSVLine(line);
     
-    // Create row object - pad with empty strings if needed
+    // Create row object - NO VALIDATION, just create it
     const row = {};
     headers.forEach((h, idx) => {
-      row[h] = values[idx] !== undefined ? values[idx] : '';
+      row[h] = values[idx] || '';
     });
-    
     rows.push(row);
   }
   
-  console.log(`✓ Parsed ${rows.length} data rows (should match Excel row count minus header)`);
-  const expectedRows = lines.length - 1;
-  if (rows.length !== expectedRows) {
-    console.warn(`⚠️ PARSING ISSUE: Expected ${expectedRows} rows, got ${rows.length}. Missing ${expectedRows - rows.length} rows!`);
-  }
+  console.log(`>>> CSV Parser: Processed ${rows.length} data rows`);
+  console.log(`>>> CSV Parser: Skipped ${emptyLineCount} empty lines`);
+  console.log(`>>> CSV Parser: Total should be ${lines.length - 1} (${lines.length} lines - 1 header)`);
+  console.log(`>>> CSV Parser: Match = ${rows.length + emptyLineCount === lines.length - 1 ? 'YES ✓' : 'NO ✗'}\n`);
   
   return rows;
 }
 
 /**
- * PRE-PROCESS GL DATA
+ * Parse a number from string - handles ALL Excel formats
+ */
+function parseAmount(str) {
+  if (!str) return 0;
+  
+  const trimmed = String(str).trim();
+  
+  // Empty, dash, or zero
+  if (!trimmed || trimmed === '-' || trimmed === '—' || trimmed === '–') return 0;
+  
+  // Remove ALL non-numeric except decimal point and minus
+  // This handles: ₹, Rs, $, commas, spaces, etc.
+  let cleaned = trimmed.replace(/[^\d.-]/g, '');
+  
+  // Handle multiple decimal points (keep only first one)
+  const parts = cleaned.split('.');
+  if (parts.length > 2) {
+    cleaned = parts[0] + '.' + parts.slice(1).join('');
+  }
+  
+  // Handle parentheses notation for negative (123.45) = -123.45
+  if (trimmed.startsWith('(') && trimmed.endsWith(')')) {
+    cleaned = '-' + cleaned;
+  }
+  
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? 0 : num;
+}
+
+/**
+ * PRE-PROCESS GL DATA - COMPLETELY REWRITTEN for accuracy
  */
 function preprocessGLData(textContent) {
-  console.log("Starting GL preprocessing...");
+  console.log("=".repeat(80));
+  console.log("STARTING GL PREPROCESSING");
+  console.log("=".repeat(80));
   console.log(`Input text length: ${textContent.length} characters`);
   
   const rows = parseCSV(textContent);
-  console.log(`Parsed ${rows.length} rows`);
+  console.log(`✓ Parsed ${rows.length} rows from CSV`);
   
   if (rows.length === 0) {
     return { processed: false, reason: "No data rows found" };
   }
   
   const headers = Object.keys(rows[0]);
-  console.log("Headers found:", headers);
+  console.log("✓ Headers:", headers);
   
   const findColumn = (possibleNames) => {
     for (const name of possibleNames) {
@@ -309,17 +361,17 @@ function preprocessGLData(textContent) {
   const creditCol = findColumn(['credit', 'cr', 'credit amount', 'cr amount']);
   const dateCol = findColumn(['date', 'trans date', 'transaction date', 'posting date', 'entry date']);
   
-  console.log("Column mapping:", { accountCol, debitCol, creditCol, dateCol });
+  console.log("✓ Column mapping:", { accountCol, debitCol, creditCol, dateCol });
   
   if (!accountCol || !debitCol || !creditCol) {
     return { 
       processed: false, 
-      reason: "Could not identify required columns (Account, Debit, Credit)",
+      reason: "Could not identify required columns",
       headers: headers
     };
   }
   
-  // Aggregate by account - FIXED to handle duplicates correctly
+  // Process every single row
   const accountSummary = {};
   let totalDebits = 0;
   let totalCredits = 0;
@@ -327,60 +379,61 @@ function preprocessGLData(textContent) {
   let processedRows = 0;
   let minDate = null;
   let maxDate = null;
-  let reversalEntries = 0;
+  let reversalCount = 0;
   
-  console.log("Processing rows...");
-  
-  // Track detailed debugging info
-  let debugInfo = [];
+  console.log("\nProcessing rows...");
+  let sampleRows = [];
   
   rows.forEach((row, idx) => {
     const account = row[accountCol]?.trim();
     
-    // Skip rows with no account name
+    // Only skip if account is truly empty
     if (!account || account === '') {
       skippedRows++;
       return;
     }
     
-    const debitStr = row[debitCol]?.trim() || "0";
-    const creditStr = row[creditCol]?.trim() || "0";
+    const debitStr = row[debitCol];
+    const creditStr = row[creditCol];
     
-    // MORE ROBUST number parsing - handle all formats
-    let debit = 0;
-    let credit = 0;
+    // Parse amounts using robust parser
+    let debit = parseAmount(debitStr);
+    let credit = parseAmount(creditStr);
     
-    // Remove ALL non-numeric characters except decimal point, minus sign, and digits
-    const cleanDebit = debitStr.replace(/[^\d.-]/g, '');
-    const cleanCredit = creditStr.replace(/[^\d.-]/g, '');
-    
-    // Parse the cleaned strings
-    if (cleanDebit && cleanDebit !== '-') {
-      debit = parseFloat(cleanDebit) || 0;
+    // Capture first 5 rows for debugging
+    if (sampleRows.length < 5) {
+      sampleRows.push({
+        row: idx + 2,
+        account: account.substring(0, 30),
+        debitStr: String(debitStr).substring(0, 20),
+        creditStr: String(creditStr).substring(0, 20),
+        debitParsed: debit,
+        creditParsed: credit
+      });
     }
-    if (cleanCredit && cleanCredit !== '-') {
-      credit = parseFloat(cleanCredit) || 0;
-    }
     
-    // Handle reversal entries (negative amounts)
+    // Handle reversals (negative amounts)
     if (debit < 0) {
-      credit = Math.abs(debit);
+      credit += Math.abs(debit);
       debit = 0;
-      reversalEntries++;
-    } else if (credit < 0) {
-      debit = Math.abs(credit);
+      reversalCount++;
+    }
+    if (credit < 0) {
+      debit += Math.abs(credit);
       credit = 0;
-      reversalEntries++;
+      reversalCount++;
     }
     
     // Track dates
     if (dateCol && row[dateCol]) {
-      const dateStr = row[dateCol].trim();
-      if (!minDate || dateStr < minDate) minDate = dateStr;
-      if (!maxDate || dateStr > maxDate) maxDate = dateStr;
+      const dateStr = String(row[dateCol]).trim();
+      if (dateStr) {
+        if (!minDate || dateStr < minDate) minDate = dateStr;
+        if (!maxDate || dateStr > maxDate) maxDate = dateStr;
+      }
     }
     
-    // Initialize account if first time seeing it
+    // Initialize account
     if (!accountSummary[account]) {
       accountSummary[account] = { 
         account, 
@@ -390,41 +443,38 @@ function preprocessGLData(textContent) {
       };
     }
     
-    // Add to account totals
+    // Accumulate
     accountSummary[account].totalDebit += debit;
     accountSummary[account].totalCredit += credit;
     accountSummary[account].count += 1;
     
-    // Debug: Track entries for "8021 Interest Expense" to diagnose the issue
-    if (account.includes('8021') || account.toLowerCase().includes('interest expense')) {
-      debugInfo.push({
-        row: idx + 2, // +2 because Excel rows start at 1 and we have header
-        debitStr,
-        creditStr,
-        debitParsed: debit,
-        creditParsed: credit
-      });
-    }
-    
-    // Add to grand totals
     totalDebits += debit;
     totalCredits += credit;
     processedRows++;
   });
   
-  console.log(`Processing complete - ${processedRows} rows processed, ${skippedRows} skipped`);
-  console.log(`Reversal entries found: ${reversalEntries}`);
+  // Show sample of first 5 rows
+  console.log("\n>>> SAMPLE OF FIRST 5 PROCESSED ROWS:");
+  sampleRows.forEach(s => {
+    console.log(`  Row ${s.row}: ${s.account}`);
+    console.log(`    Debit: "${s.debitStr}" → ${s.debitParsed}`);
+    console.log(`    Credit: "${s.creditStr}" → ${s.creditParsed}`);
+  });
   
-  // Log debug info for Interest Expense account
-  if (debugInfo.length > 0) {
-    console.log(`\n=== DEBUG: Found ${debugInfo.length} entries for account containing "8021" or "Interest Expense" ===`);
-    debugInfo.forEach((entry, i) => {
-      console.log(`Entry ${i + 1} (Row ${entry.row}): Dr="${entry.debitStr}" (${entry.debitParsed}), Cr="${entry.creditStr}" (${entry.creditParsed})`);
-    });
-    console.log(`=== END DEBUG ===\n`);
-  }
+  console.log("\n" + "=".repeat(80));
+  console.log("PREPROCESSING COMPLETE");
+  console.log("=".repeat(80));
+  console.log(`Total rows in file: ${rows.length}`);
+  console.log(`Processed rows: ${processedRows}`);
+  console.log(`Skipped rows (no account): ${skippedRows}`);
+  console.log(`Reversal entries: ${reversalCount}`);
+  console.log(`Unique accounts: ${Object.keys(accountSummary).length}`);
+  console.log(`Total Debits: ₹${totalDebits.toFixed(2)}`);
+  console.log(`Total Credits: ₹${totalCredits.toFixed(2)}`);
+  console.log(`Difference: ₹${(totalDebits - totalCredits).toFixed(2)}`);
+  console.log("=".repeat(80) + "\n");
   
-  // Convert to array and sort
+  // Sort accounts
   const accounts = Object.values(accountSummary)
     .map(acc => ({
       account: acc.account,
@@ -436,25 +486,18 @@ function preprocessGLData(textContent) {
     }))
     .sort((a, b) => b.totalActivity - a.totalActivity);
   
-  const isBalanced = Math.abs(totalDebits - totalCredits) < 1;
   const difference = totalDebits - totalCredits;
+  const isBalanced = Math.abs(difference) < 1;
   
-  console.log(`PREPROCESSING COMPLETE:`);
-  console.log(`- Unique accounts: ${accounts.length}`);
-  console.log(`- Total Debits: ${totalDebits.toFixed(2)}`);
-  console.log(`- Total Credits: ${totalCredits.toFixed(2)}`);
-  console.log(`- Difference: ${difference.toFixed(2)}`);
-  console.log(`- Balanced: ${isBalanced}`);
-  
-  // Create summary
+  // Create summary for AI
   let summary = `## Pre-Processed GL Summary\n\n`;
   summary += `**Data Quality:**\n`;
-  summary += `- Total Rows: ${rows.length}\n`;
-  summary += `- Processed: ${processedRows} entries\n`;
-  summary += `- Skipped: ${skippedRows} entries\n`;
+  summary += `- Total Rows in File: ${rows.length}\n`;
+  summary += `- Successfully Processed: ${processedRows} entries\n`;
+  summary += `- Skipped (no account): ${skippedRows} entries\n`;
   
-  if (reversalEntries > 0) {
-    summary += `- Reversal Entries: ${reversalEntries} (negative amounts auto-corrected)\n`;
+  if (reversalCount > 0) {
+    summary += `- Reversal Entries Detected: ${reversalCount}\n`;
   }
   
   summary += `- Unique Accounts: ${accounts.length}\n\n`;
@@ -470,11 +513,10 @@ function preprocessGLData(textContent) {
   summary += `- **Balanced:** ${isBalanced ? '✓ YES' : '✗ NO'}\n\n`;
   
   if (!isBalanced) {
-    summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of ₹${Math.abs(difference).toFixed(2)}\n\n`;
+    summary += `⚠️ **WARNING:** GL is out of balance by ₹${Math.abs(difference).toFixed(2)}\n\n`;
   }
   
-  // Show all accounts in full detail
-  summary += `### Account-wise Summary (All ${accounts.length} Accounts)\n\n`;
+  summary += `### Complete Account Summary (All ${accounts.length} Accounts)\n\n`;
   summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
   summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
   
@@ -501,7 +543,7 @@ function preprocessGLData(textContent) {
       entryCount: rows.length,
       processedCount: processedRows,
       skippedCount: skippedRows,
-      reversalCount: reversalEntries,
+      reversalCount: reversalCount,
       dateRange: minDate && maxDate ? `${minDate} to ${maxDate}` : 'Unknown'
     },
     accounts: accounts
@@ -535,25 +577,20 @@ function getSystemPrompt(category, isPreprocessed = false, accountCount = 0) {
 **CRITICAL INSTRUCTIONS:**
 1. The data is ALREADY CALCULATED - do NOT recalculate
 2. Use the exact numbers provided in the summary table
-3. ALL ${accountCount} accounts are included - reference any account by name
+3. ALL ${accountCount} accounts are included - you can reference any account
 4. Your job is to INTERPRET and PROVIDE INSIGHTS
 
-**Your Response Format:**
+**Response Format:**
 1. Start with "**General Ledger Analysis**"
-2. Present key statistics (Total Debits, Credits, Balance status)
-3. Reference the account summary table
-4. Add observations:
-   - Highest activity accounts
+2. Present key financial summary (Total Debits, Credits, Balance status)
+3. Highlight top accounts by activity
+4. Provide observations:
    - Balance verification
-   - Account type breakdown (Assets, Liabilities, Revenue, Expenses)
-   - Any anomalies or unusual entries
-5. Add recommendations:
-   - Reconciliation needs
-   - Potential errors
-   - Compliance considerations
+   - Account type breakdown
+   - Unusual patterns or anomalies
+5. Add recommendations for reconciliation and compliance
 
-DO NOT make up numbers. Use ONLY the data provided.
-Respond in clean markdown format.`;
+Use ONLY the provided data. Respond in markdown format.`;
   }
   
   if (category === 'gl') {
@@ -564,7 +601,7 @@ Parse the data, group by account, sum debits/credits, and present findings in ma
   
   return `You are an expert accounting assistant analyzing financial statements.
 
-When totals exist, USE those numbers. Create a markdown table with metrics and insights.`;
+Create a markdown table with key metrics and provide insights.`;
 }
 
 /**
