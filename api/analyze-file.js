@@ -172,35 +172,6 @@ function parseAmount(s) {
 }
 
 /**
- * Format date to US format (MM/DD/YYYY)
- */
-function formatDateUS(dateStr) {
-  if (!dateStr) return dateStr;
-  
-  // Try to parse Excel serial date number
-  const num = parseFloat(dateStr);
-  if (!isNaN(num) && num > 40000 && num < 50000) {
-    // Excel date serial number (days since 1900-01-01)
-    const date = new Date((num - 25569) * 86400 * 1000);
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const year = date.getFullYear();
-    return `${month}/${day}/${year}`;
-  }
-  
-  // Try to parse ISO date or other formats
-  const date = new Date(dateStr);
-  if (!isNaN(date.getTime())) {
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const year = date.getFullYear();
-    return `${month}/${day}/${year}`;
-  }
-  
-  return dateStr;
-}
-
-/**
  * Extract XLSX using sheet_to_json (reliable row preservation)
  * Return both the json rows (array) and a CSV fallback for legacy code paths.
  */
@@ -452,10 +423,6 @@ function preprocessGLDataFromRows(rows) {
   const isBalanced = Math.abs(roundedDebits - roundedCredits) < 0.01;
   const difference = roundedDebits - roundedCredits;
 
-  // Format dates to US format
-  const formattedMinDate = formatDateUS(minDate);
-  const formattedMaxDate = formatDateUS(maxDate);
-
   let summary = `## Pre-Processed GL Summary\n\n`;
   summary += `**Data Quality:**\n`;
   summary += `- Total Rows: ${rows.length}\n`;
@@ -463,20 +430,20 @@ function preprocessGLDataFromRows(rows) {
   summary += `- Skipped: ${skippedRows} entries\n`;
   if (reversalEntries > 0) summary += `- Reversal Entries: ${reversalEntries} (negative amounts auto-corrected)\n`;
   summary += `- Unique Accounts: ${accounts.length}\n\n`;
-  if (formattedMinDate && formattedMaxDate) summary += `**Period:** ${formattedMinDate} to ${formattedMaxDate}\n\n`;
+  if (minDate && maxDate) summary += `**Period:** ${minDate} to ${maxDate}\n\n`;
 
   summary += `**Financial Summary:**\n`;
-  summary += `- Total Debits: $${Math.round(roundedDebits).toLocaleString('en-US')}\n`;
-  summary += `- Total Credits: $${Math.round(roundedCredits).toLocaleString('en-US')}\n`;
-  summary += `- Difference: $${Math.round(difference).toLocaleString('en-US')}\n`;
+  summary += `- Total Debits: ₹${roundedDebits.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}\n`;
+  summary += `- Total Credits: ₹${roundedCredits.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}\n`;
+  summary += `- Difference: ₹${difference.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}\n`;
   summary += `- **Balanced:** ${isBalanced ? '✓ YES' : '✗ NO'}\n\n`;
-  if (!isBalanced) summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of $${Math.round(Math.abs(difference)).toLocaleString('en-US')}\n\n`;
+  if (!isBalanced) summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of ₹${Math.abs(difference).toFixed(2)}\n\n`;
 
   summary += `### Account-wise Summary (All ${accounts.length} Accounts)\n\n`;
-  summary += `| # | Account Name | Total Debit ($) | Total Credit ($) | Net Balance ($) | Entries |\n`;
+  summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
   summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
   accounts.forEach((acc,i) => {
-    summary += `| ${i+1} | ${acc.account} | ${Math.round(acc.totalDebit).toLocaleString('en-US')} | ${Math.round(acc.totalCredit).toLocaleString('en-US')} | ${Math.round(acc.netBalance).toLocaleString('en-US')} | ${acc.count} |\n`;
+    summary += `| ${i+1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})} | ${acc.count} |\n`;
   });
 
   return {
@@ -492,7 +459,7 @@ function preprocessGLDataFromRows(rows) {
       processedCount: processedRows,
       skippedCount: skippedRows,
       reversalCount: reversalEntries,
-      dateRange: formattedMinDate && formattedMaxDate ? `${formattedMinDate} to ${formattedMaxDate}` : 'Unknown'
+      dateRange: minDate && maxDate ? `${minDate} to ${maxDate}` : 'Unknown'
     },
     accounts,
     debug: { sampleUnparsed: debugInfo.slice(0,10) }
@@ -542,8 +509,6 @@ function getSystemPrompt(category, isPreprocessed = false, accountCount = 0) {
 2. Use the exact numbers provided in the summary table
 3. ALL ${accountCount} accounts are included - reference any account by name
 4. Your job is to INTERPRET and PROVIDE INSIGHTS
-5. All amounts are in USD ($) and already rounded to whole dollars
-6. For percentages in your analysis, use 2 decimal places (e.g., 25.50%)
 
 **Your Response Format:**
 1. Start with "**General Ledger Analysis**"
