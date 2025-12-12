@@ -553,11 +553,12 @@ function preprocessGLData(textContent) {
     summary += `**Period:** ${minDate} to ${maxDate}\n\n`;
   }
 
-  summary += `**Financial Summary:**\n`;
-- Total Debits: $${formatNumber(roundedDebits)}
-- Total Credits: $${formatNumber(roundedCredits)}
-- Difference: $${formatNumber(difference)}
-...
+summary += `**Financial Summary:**\n`;
+summary += `- Total Debits: $${formatNumber(roundedDebits)}
+summary += `- Total Credits: $${formatNumber(roundedCredits)}
+summary += `- Difference: $${formatNumber(difference)}
+summary += `- **Balanced:** ${isBalanced ? '✓ YES' : '✗ NO'}\n\n`;
+  
 | ${i+1} | ${acc.account} | ${formatNumber(acc.totalDebit)} | ${formatNumber(acc.totalCredit)} | ${formatNumber(acc.netBalance)} | ${acc.count} |
 
   if (!isBalanced) {
