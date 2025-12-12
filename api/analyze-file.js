@@ -46,7 +46,7 @@ async function parseJsonBody(req) {
  */
 async function downloadFileToBuffer(
   url,
-  maxBytes = 30 * 1024 * 1024,
+  maxBytes = 10 * 1024 * 1024,
   timeoutMs = 20000
 ) {
   const controller = new AbortController();
@@ -132,6 +132,15 @@ function extractCsv(buffer) {
 
 /**
  * Robust numeric parser for accounting amounts
+ * Accepts:
+ *  - "1,234.56"
+ *  - "(1,234.56)" -> -1234.56
+ *  - "1,234.56 CR" -> -1234.56
+ *  - "1,234.56 DR" -> +1234.56
+ *  - "1234-" -> -1234
+ *  - "-1234" -> -1234
+ *  - "₹1,234.00" -> 1234
+ * Returns number (signed).
  */
 function parseAmount(s) {
   if (s === null || s === undefined) return 0;
@@ -170,10 +179,21 @@ function parseAmount(s) {
   if (Number.isNaN(n)) return 0;
   return n;
 }
+// Output formatting helpers
+// - formatNumber: US style, no decimals (e.g. 1,234,567)
+// - formatPercent: 2 decimals and a % sign (e.g. 12.34%)
+function formatNumber(v) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return '0';
+  return Math.round(Number(v)).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+function formatPercent(v) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return '0.00%';
+  return Number(v).toFixed(2) + '%';
+}
+
 
 /**
- * Extract XLSX using sheet_to_json (reliable row preservation)
- * Return both the json rows (array) and a CSV fallback for legacy code paths.
+ * Extract XLSX - include all rows
  */
 function extractXlsx(buffer) {
   try {
@@ -192,16 +212,17 @@ function extractXlsx(buffer) {
     const sheetName = workbook.SheetNames[0];
     if (!sheetName) {
       console.log("No sheets found");
-      return { type: "xlsx", textContent: "", rows: [] };
+      return { type: "xlsx", textContent: "" };
     }
 
     const sheet = workbook.Sheets[sheetName];
 
-    // Prefer sheet_to_json which preserves rows/blankrows and avoids CSV line-splitting issues
-    const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval: '', blankrows: true, raw: false });
-    console.log("sheet_to_json length:", jsonRows.length);
+    // Get the actual range to see total rows
+    const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+    const totalRows = range.e.r - range.s.r + 1; // +1 to include header
+    console.log(`Sheet "${sheetName}" has ${totalRows} rows (row ${range.s.r} to ${range.e.r})`);
 
-    // Also generate CSV as a fallback for older parsing; keep blank rows
+    // Use blankrows: true to include ALL rows, even empty cells
     const csv = XLSX.utils.sheet_to_csv(sheet, {
       blankrows: true,
       FS: ',',
@@ -210,14 +231,30 @@ function extractXlsx(buffer) {
       rawNumbers: false
     });
 
+    const csvLines = csv.split('\n').filter(line => line.trim()).length; // Count non-empty lines
+    console.log(`CSV output has ${csvLines} non-empty lines`);
+
+    if (Math.abs(totalRows - csvLines) > 1) {
+      console.warn(`⚠️ WARNING: Row count mismatch - Excel: ${totalRows}, CSV: ${csvLines}`);
+      console.warn(`Missing ${totalRows - csvLines} rows during conversion!`);
+    }
+
+    // Additional debug: try sheet_to_json to see rows read
+    try {
+      const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval: '', blankrows: true, raw: false });
+      console.log("sheet_to_json length:", jsonRows.length);
+    } catch (e) {
+      console.warn("sheet_to_json failed:", e?.message || e);
+    }
+
     const firstLine = csv.split('\n')[0] || '';
     const columnCount = (firstLine.match(/,/g) || []).length + 1;
     console.log(`CSV has ${columnCount} columns`);
 
-    return { type: "xlsx", textContent: csv, rows: jsonRows };
+    return { type: "xlsx", textContent: csv };
   } catch (err) {
     console.error("extractXlsx failed:", err?.message || err);
-    return { type: "xlsx", textContent: "", rows: [], error: String(err?.message || err) };
+    return { type: "xlsx", textContent: "", error: String(err?.message || err) };
   }
 }
 
@@ -241,7 +278,7 @@ async function extractPdf(buffer) {
 }
 
 /**
- * Parse CSV to array of objects (fallback)
+ * Parse CSV to array of objects - MUST NOT SKIP ANY ROWS
  */
 function parseCSV(csvText) {
   const lines = csvText.trim().split('\n');
@@ -281,15 +318,18 @@ function parseCSV(csvText) {
   console.log(`CSV has ${lines.length} lines total (including header)`);
   console.log(`Headers (${headerCount} columns):`, headers);
 
+  // Process EVERY single line - do NOT skip based on column count
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
 
+    // Only skip completely empty lines
     if (!line || line.trim() === '' || line.trim() === ','.repeat(headerCount - 1)) {
       continue;
     }
 
     const values = parseCSVLine(line);
 
+    // Create row object - pad with empty strings if needed
     const row = {};
     headers.forEach((h, idx) => {
       row[h] = values[idx] !== undefined ? values[idx] : '';
@@ -299,18 +339,30 @@ function parseCSV(csvText) {
   }
 
   console.log(`✓ Parsed ${rows.length} data rows (should match Excel row count minus header)`);
+  const expectedRows = lines.length - 1;
+  if (rows.length !== expectedRows) {
+    console.warn(`⚠️ PARSING ISSUE: Expected ${expectedRows} rows, got ${rows.length}. Missing ${expectedRows - rows.length} rows!`);
+  }
+
   return rows;
 }
 
 /**
- * Convert rows (array of objects) into the same structure used by preprocessGLData
+ * PRE-PROCESS GL DATA
  */
-function preprocessGLDataFromRows(rows) {
-  // rows is an array of objects where keys are column headers
-  // We'll reuse logic from preprocessGLData but operate directly on rows
-  if (!rows || rows.length === 0) return { processed: false, reason: 'No rows' };
+function preprocessGLData(textContent) {
+  console.log("Starting GL preprocessing...");
+  console.log(`Input text length: ${textContent.length} characters`);
+
+  const rows = parseCSV(textContent);
+  console.log(`Parsed ${rows.length} rows`);
+
+  if (rows.length === 0) {
+    return { processed: false, reason: "No data rows found" };
+  }
 
   const headers = Object.keys(rows[0]);
+  console.log("Headers found:", headers);
 
   const findColumn = (possibleNames) => {
     for (const name of possibleNames) {
@@ -325,12 +377,19 @@ function preprocessGLDataFromRows(rows) {
   const creditCol = findColumn(['credit', 'cr', 'credit amount', 'cr amount']);
   const dateCol = findColumn(['date', 'trans date', 'transaction date', 'posting date', 'entry date']);
   const referenceCol = findColumn(['reference', 'ref', 'entry', 'journal', 'voucher', 'transaction']);
-  const balanceCol = findColumn(['balance', 'net', 'amount']);
+  const balanceCol = findColumn(['balance', 'net', 'amount']); // To detect reversals or single amount
+
+  console.log("Column mapping:", { accountCol, debitCol, creditCol, dateCol, referenceCol, balanceCol });
 
   if (!accountCol || (!debitCol && !creditCol && !balanceCol)) {
-    return { processed: false, reason: 'Could not identify required columns', headers };
+    return {
+      processed: false,
+      reason: "Could not identify required columns (Account, Debit/Credit/Amount)",
+      headers: headers
+    };
   }
 
+  // Aggregate by account
   const accountSummary = {};
   let totalDebits = 0;
   let totalCredits = 0;
@@ -340,25 +399,33 @@ function preprocessGLDataFromRows(rows) {
   let maxDate = null;
   let reversalEntries = 0;
 
+  console.log("Processing rows...");
+
+  // Track detailed debugging info
   let debugInfo = [];
 
   rows.forEach((row, idx) => {
-    const account = (row[accountCol] || '').toString().trim();
-    if (!account) {
+    const account = row[accountCol]?.trim();
+
+    // Skip rows with no account name
+    if (!account || account === '') {
       skippedRows++;
       return;
     }
 
-    const debitStr = debitCol ? (row[debitCol] || '').toString().trim() : '';
-    const creditStr = creditCol ? (row[creditCol] || '').toString().trim() : '';
+    const debitStr = debitCol ? (row[debitCol]?.trim() || "") : '';
+    const creditStr = creditCol ? (row[creditCol]?.trim() || "") : '';
 
+    // Use parseAmount helper to handle parentheses/CR/DR/trailing minus/currency
     let debit = 0;
     let credit = 0;
 
     const parsedDebit = parseAmount(debitStr || '');
     const parsedCredit = parseAmount(creditStr || '');
 
+    // If both columns exist and one is non-zero, use them
     if (parsedDebit !== 0 || parsedCredit !== 0) {
+      // If parsedDebit negative => it's actually credit
       if (parsedDebit < 0) {
         credit = Math.abs(parsedDebit);
         reversalEntries++;
@@ -367,15 +434,19 @@ function preprocessGLDataFromRows(rows) {
       }
 
       if (parsedCredit < 0) {
+        // negative credit means it's actually debit
         debit = debit + Math.abs(parsedCredit);
         reversalEntries++;
       } else {
         credit = credit + parsedCredit;
       }
     } else {
+      // FALLBACK: sometimes files have single "Amount" or "Balance" column with sign
       const amountColCandidate = balanceCol || (headers.find(h => /amount|amt|value/i.test(h)) || null);
       if (amountColCandidate && row[amountColCandidate] !== undefined) {
         const amt = parseAmount(row[amountColCandidate]);
+        // Convention assumption: positive -> Debit, negative -> Credit.
+        // If your data convention is opposite, flip sign here.
         if (amt < 0) {
           credit = Math.abs(amt);
           reversalEntries++;
@@ -385,66 +456,128 @@ function preprocessGLDataFromRows(rows) {
       }
     }
 
+    // Track dates
     if (dateCol && row[dateCol]) {
-      const dateStr = row[dateCol].toString().trim();
+      const dateStr = row[dateCol].trim();
       if (!minDate || dateStr < minDate) minDate = dateStr;
       if (!maxDate || dateStr > maxDate) maxDate = dateStr;
     }
 
+    // Initialize account if first time seeing it
     if (!accountSummary[account]) {
-      accountSummary[account] = { account, totalDebit: 0, totalCredit: 0, count: 0 };
+      accountSummary[account] = {
+        account,
+        totalDebit: 0,
+        totalCredit: 0,
+        count: 0
+      };
     }
 
+    // Add to account totals
     accountSummary[account].totalDebit += debit;
     accountSummary[account].totalCredit += credit;
     accountSummary[account].count += 1;
 
-    // Debug capture for anomalous entries
-    if ((parsedDebit === 0 && parsedCredit === 0) && (debitStr || creditStr)) {
-      debugInfo.push({ row: idx + 1, debitStr, creditStr, amountCandidate: row[balanceCol] });
+    // Debug: Track entries for "8021 Interest Expense" to diagnose the issue
+    if (account.includes('8021') || account.toLowerCase().includes('interest expense')) {
+      debugInfo.push({
+        row: idx + 2, // +2 because Excel rows start at 1 and we have header
+        debitStr,
+        creditStr,
+        debitParsed: debit,
+        creditParsed: credit
+      });
     }
 
+    // If parsing produced zero but original strings exist, capture for debugging
+    if ((parsedDebit === 0 && parsedCredit === 0) && (debitStr || creditStr)) {
+      console.log("UNPARSED AMT (row", idx + 2, "):", { debitStr, creditStr, balance: row[balanceCol] });
+    }
+
+    // Add to grand totals
     totalDebits += debit;
     totalCredits += credit;
     processedRows++;
   });
 
-  const accounts = Object.values(accountSummary).map(acc => ({
-    account: acc.account,
-    totalDebit: acc.totalDebit,
-    totalCredit: acc.totalCredit,
-    netBalance: acc.totalDebit - acc.totalCredit,
-    totalActivity: acc.totalDebit + acc.totalCredit,
-    count: acc.count
-  })).sort((a,b) => b.totalActivity - a.totalActivity);
+  console.log(`Processing complete - ${processedRows} rows processed, ${skippedRows} skipped`);
+  console.log(`Reversal entries found: ${reversalEntries}`);
+
+  // Log debug info for Interest Expense account
+  if (debugInfo.length > 0) {
+    console.log(`\n=== DEBUG: Found ${debugInfo.length} entries for account containing "8021" or "Interest Expense" ===`);
+    debugInfo.forEach((entry, i) => {
+      console.log(`Entry ${i + 1} (Row ${entry.row}): Dr="${entry.debitStr}" (${entry.debitParsed}), Cr="${entry.creditStr}" (${entry.creditParsed})`);
+    });
+    console.log(`=== END DEBUG ===\n`);
+  }
+
+  // Convert to array and sort
+  const accounts = Object.values(accountSummary)
+    .map(acc => ({
+      account: acc.account,
+      totalDebit: acc.totalDebit,
+      totalCredit: acc.totalCredit,
+      netBalance: acc.totalDebit - acc.totalCredit,
+      totalActivity: acc.totalDebit + acc.totalCredit,
+      count: acc.count
+    }))
+    .sort((a, b) => b.totalActivity - a.totalActivity);
 
   const roundedDebits = Number(totalDebits.toFixed(2));
   const roundedCredits = Number(totalCredits.toFixed(2));
   const isBalanced = Math.abs(roundedDebits - roundedCredits) < 0.01;
   const difference = roundedDebits - roundedCredits;
 
+  console.log(`PREPROCESSING COMPLETE:`);
+  console.log(`- Unique accounts: ${accounts.length}`);
+  console.log(`- Total Debits: ${roundedDebits.toFixed(2)}`);
+  console.log(`- Total Credits: ${roundedCredits.toFixed(2)}`);
+  console.log(`- Difference: ${difference.toFixed(2)}`);
+  console.log(`- Balanced: ${isBalanced}`);
+
+  // Create summary
   let summary = `## Pre-Processed GL Summary\n\n`;
   summary += `**Data Quality:**\n`;
   summary += `- Total Rows: ${rows.length}\n`;
   summary += `- Processed: ${processedRows} entries\n`;
   summary += `- Skipped: ${skippedRows} entries\n`;
-  if (reversalEntries > 0) summary += `- Reversal Entries: ${reversalEntries} (negative amounts auto-corrected)\n`;
+
+  if (reversalEntries > 0) {
+    summary += `- Reversal Entries: ${reversalEntries} (negative amounts auto-corrected)\n`;
+  }
+
   summary += `- Unique Accounts: ${accounts.length}\n\n`;
-  if (minDate && maxDate) summary += `**Period:** ${minDate} to ${maxDate}\n\n`;
+
+  if (minDate && maxDate) {
+    summary += `**Period:** ${minDate} to ${maxDate}\n\n`;
+  }
 
   summary += `**Financial Summary:**\n`;
-  summary += `- Total Debits: ₹${roundedDebits.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}\n`;
-  summary += `- Total Credits: ₹${roundedCredits.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}\n`;
-  summary += `- Difference: ₹${difference.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}\n`;
+  summary += `- Total Debits: ₹${roundedDebits.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}\n`;
+  summary += `- Total Credits: ₹${roundedCredits.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}\n`;
+  summary += `- Difference: ₹${difference.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}\n`;
   summary += `- **Balanced:** ${isBalanced ? '✓ YES' : '✗ NO'}\n\n`;
-  if (!isBalanced) summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of ₹${Math.abs(difference).toFixed(2)}\n\n`;
 
+  if (!isBalanced) {
+    summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of ₹${Math.abs(difference).toFixed(2)}\n\n`;
+  }
+
+  // Show all accounts in full detail
   summary += `### Account-wise Summary (All ${accounts.length} Accounts)\n\n`;
   summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
   summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
-  accounts.forEach((acc,i) => {
-    summary += `| ${i+1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})} | ${acc.count} |\n`;
+
+  accounts.forEach((acc, i) => {
+    summary += `| ${i+1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.count} |\n`;
   });
+
+  summary += `\n### Account Classification Guide\n`;
+  summary += `- **Assets** (Debit balance): Cash, Bank, Inventory, Receivables, Fixed Assets\n`;
+  summary += `- **Liabilities** (Credit balance): Payables, Loans, Provisions\n`;
+  summary += `- **Equity** (Credit balance): Capital, Reserves, Retained Earnings\n`;
+  summary += `- **Revenue** (Credit balance): Sales, Income\n`;
+  summary += `- **Expenses** (Debit balance): Salaries, Rent, Utilities\n\n`;
 
   return {
     processed: true,
@@ -461,23 +594,8 @@ function preprocessGLDataFromRows(rows) {
       reversalCount: reversalEntries,
       dateRange: minDate && maxDate ? `${minDate} to ${maxDate}` : 'Unknown'
     },
-    accounts,
-    debug: { sampleUnparsed: debugInfo.slice(0,10) }
+    accounts: accounts
   };
-}
-
-/**
- * PRE-PROCESS GL DATA (accepts CSV string OR rows array)
- */
-function preprocessGLData(textOrRows) {
-  // If it's already an array of rows, use the direct path
-  if (Array.isArray(textOrRows)) {
-    return preprocessGLDataFromRows(textOrRows);
-  }
-
-  // Otherwise assume CSV text
-  const rows = parseCSV(textOrRows);
-  return preprocessGLDataFromRows(rows);
 }
 
 /**
@@ -648,42 +766,33 @@ export default async function handler(req, res) {
       });
     }
 
-    // If extractXlsx returned rows, use them directly for preprocessing to avoid CSV pitfalls
+    const textContent = extracted.textContent || "";
+
+    if (!textContent.trim()) {
+      return res.status(200).json({
+        ok: false,
+        type: extracted.type,
+        reply: "No text could be extracted from this file.",
+        debug: { contentType, bytesReceived }
+      });
+    }
+
+    const category = detectDocumentCategory(textContent);
+    console.log(`Category: ${category}`);
+
     let preprocessedData = null;
-    let category = 'general';
-    if (extracted.rows) {
-      // Detect category using a simple join of first N rows values (best-effort)
-      const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
-      category = detectDocumentCategory(sampleText);
-      if (category === 'gl') {
-        preprocessedData = preprocessGLData(extracted.rows);
-        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
-        if (!preprocessedData.processed) console.log("Preprocessing failed:", preprocessedData.reason);
-      }
-    } else {
-      const textContent = extracted.textContent || '';
-      if (!textContent.trim()) {
-        return res.status(200).json({
-          ok: false,
-          type: extracted.type,
-          reply: "No text could be extracted from this file.",
-          debug: { contentType, bytesReceived }
-        });
-      }
+    if (category === 'gl') {
+      preprocessedData = preprocessGLData(textContent);
+      console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
 
-      category = detectDocumentCategory(textContent);
-      console.log(`Category: ${category}`);
-
-      if (category === 'gl') {
-        preprocessedData = preprocessGLData(textContent);
-        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
-        if (!preprocessedData.processed) console.log("Preprocessing failed:", preprocessedData.reason);
+      if (!preprocessedData.processed) {
+        console.log("Preprocessing failed:", preprocessedData.reason);
       }
     }
 
     const { reply, raw, httpStatus } = await callModel({
       fileType: extracted.type,
-      textContent: extracted.textContent || '',
+      textContent,
       question,
       category,
       preprocessedData
@@ -708,8 +817,7 @@ export default async function handler(req, res) {
         status: httpStatus,
         category,
         preprocessed: preprocessedData?.processed || false,
-        stats: preprocessedData?.stats || null,
-        debug_sample: preprocessedData?.debug || null
+        stats: preprocessedData?.stats || null
       }
     });
   } catch (err) {
