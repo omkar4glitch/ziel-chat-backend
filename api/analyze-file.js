@@ -172,35 +172,102 @@ function parseAmount(s) {
 }
 
 /**
+ * Format date to US format (MM/DD/YYYY)
+ */
+function formatDateUS(dateStr) {
+  if (!dateStr) return dateStr;
+  
+  // Try to parse Excel serial date number
+  const num = parseFloat(dateStr);
+  if (!isNaN(num) && num > 40000 && num < 50000) {
+    // Excel date serial number (days since 1900-01-01)
+    const date = new Date((num - 25569) * 86400 * 1000);
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${month}/${day}/${year}`;
+  }
+  
+  // Try to parse ISO date or other formats
+  const date = new Date(dateStr);
+  if (!isNaN(date.getTime())) {
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${month}/${day}/${year}`;
+  }
+  
+  return dateStr;
+}
+
+/**
  * Extract XLSX using sheet_to_json (reliable row preservation)
- * Return both the json rows (array) and a CSV fallback for legacy code paths.
+ * NOW READS ALL SHEETS and combines them
  */
 function extractXlsx(buffer) {
   try {
+    console.log("Starting XLSX extraction...");
     const workbook = XLSX.read(buffer, {
       type: "buffer",
+      cellDates: false,
+      cellNF: false,
+      cellText: true,
+      raw: false,
       defval: ''
     });
 
-    const allSheets = {};
+    console.log(`XLSX has ${workbook.SheetNames.length} sheets:`, workbook.SheetNames);
 
-    workbook.SheetNames.forEach(sheetName => {
+    if (workbook.SheetNames.length === 0) {
+      console.log("No sheets found");
+      return { type: "xlsx", textContent: "", rows: [] };
+    }
+
+    // Read ALL sheets and combine rows
+    let allRows = [];
+    let allCsv = '';
+
+    workbook.SheetNames.forEach((sheetName, index) => {
+      console.log(`Processing sheet ${index + 1}/${workbook.SheetNames.length}: "${sheetName}"`);
+      
       const sheet = workbook.Sheets[sheetName];
-      const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval: '', blankrows: true });
-      const csv = XLSX.utils.sheet_to_csv(sheet, { defval: '', blankrows: true });
-
-      allSheets[sheetName] = {
-        rows: jsonRows,
-        csv
-      };
+      
+      // Get rows from this sheet
+      const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval: '', blankrows: true, raw: false });
+      console.log(`  - Sheet "${sheetName}" has ${jsonRows.length} rows`);
+      
+      // Add sheet name to each row for reference
+      const rowsWithSheetName = jsonRows.map(row => ({
+        ...row,
+        __sheet_name: sheetName
+      }));
+      
+      allRows = allRows.concat(rowsWithSheetName);
+      
+      // Also generate CSV for this sheet
+      const csv = XLSX.utils.sheet_to_csv(sheet, {
+        blankrows: true,
+        FS: ',',
+        RS: '\n',
+        strip: false,
+        rawNumbers: false
+      });
+      
+      // Add sheet separator in CSV
+      if (index > 0) allCsv += '\n\n';
+      allCsv += `Sheet: ${sheetName}\n${csv}`;
     });
 
-    return {
-      type: "xlsx",
-      sheets: allSheets
-    };
+    console.log(`Total rows from all sheets: ${allRows.length}`);
+
+    const firstLine = allCsv.split('\n')[0] || '';
+    const columnCount = (firstLine.match(/,/g) || []).length + 1;
+    console.log(`Combined CSV has ${columnCount} columns`);
+
+    return { type: "xlsx", textContent: allCsv, rows: allRows, sheetCount: workbook.SheetNames.length };
   } catch (err) {
-    return { type: "xlsx", error: err.message };
+    console.error("extractXlsx failed:", err?.message || err);
+    return { type: "xlsx", textContent: "", rows: [], error: String(err?.message || err) };
   }
 }
 
@@ -406,6 +473,10 @@ function preprocessGLDataFromRows(rows) {
   const isBalanced = Math.abs(roundedDebits - roundedCredits) < 0.01;
   const difference = roundedDebits - roundedCredits;
 
+  // Format dates to US format
+  const formattedMinDate = formatDateUS(minDate);
+  const formattedMaxDate = formatDateUS(maxDate);
+
   let summary = `## Pre-Processed GL Summary\n\n`;
   summary += `**Data Quality:**\n`;
   summary += `- Total Rows: ${rows.length}\n`;
@@ -413,20 +484,20 @@ function preprocessGLDataFromRows(rows) {
   summary += `- Skipped: ${skippedRows} entries\n`;
   if (reversalEntries > 0) summary += `- Reversal Entries: ${reversalEntries} (negative amounts auto-corrected)\n`;
   summary += `- Unique Accounts: ${accounts.length}\n\n`;
-  if (minDate && maxDate) summary += `**Period:** ${minDate} to ${maxDate}\n\n`;
+  if (formattedMinDate && formattedMaxDate) summary += `**Period:** ${formattedMinDate} to ${formattedMaxDate}\n\n`;
 
   summary += `**Financial Summary:**\n`;
-  summary += `- Total Debits: ₹${roundedDebits.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}\n`;
-  summary += `- Total Credits: ₹${roundedCredits.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}\n`;
-  summary += `- Difference: ₹${difference.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}\n`;
+  summary += `- Total Debits: $${Math.round(roundedDebits).toLocaleString('en-US')}\n`;
+  summary += `- Total Credits: $${Math.round(roundedCredits).toLocaleString('en-US')}\n`;
+  summary += `- Difference: $${Math.round(difference).toLocaleString('en-US')}\n`;
   summary += `- **Balanced:** ${isBalanced ? '✓ YES' : '✗ NO'}\n\n`;
-  if (!isBalanced) summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of ₹${Math.abs(difference).toFixed(2)}\n\n`;
+  if (!isBalanced) summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of $${Math.round(Math.abs(difference)).toLocaleString('en-US')}\n\n`;
 
   summary += `### Account-wise Summary (All ${accounts.length} Accounts)\n\n`;
-  summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
+  summary += `| # | Account Name | Total Debit ($) | Total Credit ($) | Net Balance ($) | Entries |\n`;
   summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
   accounts.forEach((acc,i) => {
-    summary += `| ${i+1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})} | ${acc.count} |\n`;
+    summary += `| ${i+1} | ${acc.account} | ${Math.round(acc.totalDebit).toLocaleString('en-US')} | ${Math.round(acc.totalCredit).toLocaleString('en-US')} | ${Math.round(acc.netBalance).toLocaleString('en-US')} | ${acc.count} |\n`;
   });
 
   return {
@@ -442,7 +513,7 @@ function preprocessGLDataFromRows(rows) {
       processedCount: processedRows,
       skippedCount: skippedRows,
       reversalCount: reversalEntries,
-      dateRange: minDate && maxDate ? `${minDate} to ${maxDate}` : 'Unknown'
+      dateRange: formattedMinDate && formattedMaxDate ? `${formattedMinDate} to ${formattedMaxDate}` : 'Unknown'
     },
     accounts,
     debug: { sampleUnparsed: debugInfo.slice(0,10) }
@@ -492,6 +563,8 @@ function getSystemPrompt(category, isPreprocessed = false, accountCount = 0) {
 2. Use the exact numbers provided in the summary table
 3. ALL ${accountCount} accounts are included - reference any account by name
 4. Your job is to INTERPRET and PROVIDE INSIGHTS
+5. All amounts are in USD ($) and already rounded to whole dollars
+6. For percentages in your analysis, use 2 decimal places (e.g., 25.50%)
 
 **Your Response Format:**
 1. Start with "**General Ledger Analysis**"
@@ -634,43 +707,6 @@ export default async function handler(req, res) {
     // If extractXlsx returned rows, use them directly for preprocessing to avoid CSV pitfalls
     let preprocessedData = null;
     let category = 'general';
-
-    // Handle XLSX multi-sheet logic (GL uses first sheet, P&L uses all)
-if (extracted.type === "xlsx" && extracted.sheets) {
-
-    // Detect category using the first sheet only
-    const firstSheetName = Object.keys(extracted.sheets)[0];
-    const firstSheet = extracted.sheets[firstSheetName];
-
-    const sampleText = JSON.stringify(firstSheet.rows.slice(0, 20)).toLowerCase();
-    category = detectDocumentCategory(sampleText);
-
-    // GL = only first sheet
-    if (category === "gl") {
-        preprocessedData = preprocessGLData(firstSheet.rows);
-        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
-
-        extracted.textContent = JSON.stringify(firstSheet.rows, null, 2);
-    }
-
-    // P&L = ALL sheets (store-wise P&L)
-    else if (category === "pl") {
-        const sheetData = {};
-        for (const [sheetName, data] of Object.entries(extracted.sheets)) {
-            sheetData[sheetName] = data.rows;
-        }
-
-        // Put ALL sheets into the text content passed to the model
-        extracted.textContent = JSON.stringify(sheetData, null, 2);
-        console.log("P&L multi-sheet extraction: ", Object.keys(sheetData));
-    }
-
-    // General documents
-    else {
-        extracted.textContent = JSON.stringify(firstSheet.rows, null, 2);
-    }
-}
-
     if (extracted.rows) {
       // Detect category using a simple join of first N rows values (best-effort)
       const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
