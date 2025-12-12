@@ -179,9 +179,12 @@ function parseAmount(s) {
   if (Number.isNaN(n)) return 0;
   return n;
 }
-// Output formatting helpers
-// - formatNumber: US style, no decimals (e.g. 1,234,567)
-// - formatPercent: 2 decimals and a % sign (e.g. 12.34%)
+
+/**
+ * Output formatting helpers
+ * - formatNumber: US style, no decimals (e.g. 1,234,567)
+ * - formatPercent: 2 decimals and a % sign (e.g. 12.34%)
+ */
 function formatNumber(v) {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return '0';
   return Math.round(Number(v)).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -190,7 +193,6 @@ function formatPercent(v) {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return '0.00%';
   return Number(v).toFixed(2) + '%';
 }
-
 
 /**
  * Extract XLSX - include all rows
@@ -553,25 +555,23 @@ function preprocessGLData(textContent) {
     summary += `**Period:** ${minDate} to ${maxDate}\n\n`;
   }
 
-summary += `**Financial Summary:**\n`;
-summary += `- Total Debits: $${formatNumber(roundedDebits)}
-summary += `- Total Credits: $${formatNumber(roundedCredits)}
-summary += `- Difference: $${formatNumber(difference)}
-summary += `- **Balanced:** ${isBalanced ? '✓ YES' : '✗ NO'}\n\n`;
-  
-| ${i+1} | ${acc.account} | ${formatNumber(acc.totalDebit)} | ${formatNumber(acc.totalCredit)} | ${formatNumber(acc.netBalance)} | ${acc.count} |
+  summary += `**Financial Summary:**\n`;
+  summary += `- Total Debits: $${formatNumber(roundedDebits)}\n`;
+  summary += `- Total Credits: $${formatNumber(roundedCredits)}\n`;
+  summary += `- Difference: $${formatNumber(difference)}\n`;
+  summary += `- **Balanced:** ${isBalanced ? '✓ YES' : '✗ NO'}\n\n`;
 
   if (!isBalanced) {
-    summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of ₹${Math.abs(difference).toFixed(2)}\n\n`;
+    summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of $${Math.abs(difference).toFixed(2)}\n\n`;
   }
 
   // Show all accounts in full detail
   summary += `### Account-wise Summary (All ${accounts.length} Accounts)\n\n`;
-  summary += `| # | Account Name | Total Debit (₹) | Total Credit (₹) | Net Balance (₹) | Entries |\n`;
+  summary += `| # | Account Name | Total Debit ($) | Total Credit ($) | Net Balance ($) | Entries |\n`;
   summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
 
   accounts.forEach((acc, i) => {
-    summary += `| ${i+1} | ${acc.account} | ${acc.totalDebit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.totalCredit.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.netBalance.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})} | ${acc.count} |\n`;
+    summary += `| ${i+1} | ${acc.account} | ${formatNumber(acc.totalDebit)} | ${formatNumber(acc.totalCredit)} | ${formatNumber(acc.netBalance)} | ${acc.count} |\n`;
   });
 
   summary += `\n### Account Classification Guide\n`;
