@@ -177,47 +177,30 @@ function parseAmount(s) {
  */
 function extractXlsx(buffer) {
   try {
-    console.log("Starting XLSX extraction...");
     const workbook = XLSX.read(buffer, {
       type: "buffer",
-      cellDates: false,
-      cellNF: false,
-      cellText: true,
-      raw: false,
       defval: ''
     });
 
-    console.log(`XLSX has ${workbook.SheetNames.length} sheets:`, workbook.SheetNames);
+    const allSheets = {};
 
-    const sheetName = workbook.SheetNames[0];
-    if (!sheetName) {
-      console.log("No sheets found");
-      return { type: "xlsx", textContent: "", rows: [] };
-    }
+    workbook.SheetNames.forEach(sheetName => {
+      const sheet = workbook.Sheets[sheetName];
+      const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval: '', blankrows: true });
+      const csv = XLSX.utils.sheet_to_csv(sheet, { defval: '', blankrows: true });
 
-    const sheet = workbook.Sheets[sheetName];
-
-    // Prefer sheet_to_json which preserves rows/blankrows and avoids CSV line-splitting issues
-    const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval: '', blankrows: true, raw: false });
-    console.log("sheet_to_json length:", jsonRows.length);
-
-    // Also generate CSV as a fallback for older parsing; keep blank rows
-    const csv = XLSX.utils.sheet_to_csv(sheet, {
-      blankrows: true,
-      FS: ',',
-      RS: '\n',
-      strip: false,
-      rawNumbers: false
+      allSheets[sheetName] = {
+        rows: jsonRows,
+        csv
+      };
     });
 
-    const firstLine = csv.split('\n')[0] || '';
-    const columnCount = (firstLine.match(/,/g) || []).length + 1;
-    console.log(`CSV has ${columnCount} columns`);
-
-    return { type: "xlsx", textContent: csv, rows: jsonRows };
+    return {
+      type: "xlsx",
+      sheets: allSheets
+    };
   } catch (err) {
-    console.error("extractXlsx failed:", err?.message || err);
-    return { type: "xlsx", textContent: "", rows: [], error: String(err?.message || err) };
+    return { type: "xlsx", error: err.message };
   }
 }
 
