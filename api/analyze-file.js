@@ -634,6 +634,43 @@ export default async function handler(req, res) {
     // If extractXlsx returned rows, use them directly for preprocessing to avoid CSV pitfalls
     let preprocessedData = null;
     let category = 'general';
+
+    // Handle XLSX multi-sheet logic (GL uses first sheet, P&L uses all)
+if (extracted.type === "xlsx" && extracted.sheets) {
+
+    // Detect category using the first sheet only
+    const firstSheetName = Object.keys(extracted.sheets)[0];
+    const firstSheet = extracted.sheets[firstSheetName];
+
+    const sampleText = JSON.stringify(firstSheet.rows.slice(0, 20)).toLowerCase();
+    category = detectDocumentCategory(sampleText);
+
+    // GL = only first sheet
+    if (category === "gl") {
+        preprocessedData = preprocessGLData(firstSheet.rows);
+        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
+
+        extracted.textContent = JSON.stringify(firstSheet.rows, null, 2);
+    }
+
+    // P&L = ALL sheets (store-wise P&L)
+    else if (category === "pl") {
+        const sheetData = {};
+        for (const [sheetName, data] of Object.entries(extracted.sheets)) {
+            sheetData[sheetName] = data.rows;
+        }
+
+        // Put ALL sheets into the text content passed to the model
+        extracted.textContent = JSON.stringify(sheetData, null, 2);
+        console.log("P&L multi-sheet extraction: ", Object.keys(sheetData));
+    }
+
+    // General documents
+    else {
+        extracted.textContent = JSON.stringify(firstSheet.rows, null, 2);
+    }
+}
+
     if (extracted.rows) {
       // Detect category using a simple join of first N rows values (best-effort)
       const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
