@@ -554,10 +554,11 @@ function preprocessGLData(textContent) {
   }
 
   summary += `**Financial Summary:**\n`;
-  summary += `- Total Debits: ₹${roundedDebits.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}\n`;
-  summary += `- Total Credits: ₹${roundedCredits.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}\n`;
-  summary += `- Difference: ₹${difference.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}\n`;
-  summary += `- **Balanced:** ${isBalanced ? '✓ YES' : '✗ NO'}\n\n`;
+- Total Debits: $${formatNumber(roundedDebits)}
+- Total Credits: $${formatNumber(roundedCredits)}
+- Difference: $${formatNumber(difference)}
+...
+| ${i+1} | ${acc.account} | ${formatNumber(acc.totalDebit)} | ${formatNumber(acc.totalCredit)} | ${formatNumber(acc.netBalance)} | ${acc.count} |
 
   if (!isBalanced) {
     summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of ₹${Math.abs(difference).toFixed(2)}\n\n`;
