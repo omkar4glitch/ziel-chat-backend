@@ -610,9 +610,14 @@ async function callModel({ fileType, textContent, question, category, preprocess
     console.log("Using preprocessed GL summary");
   }
 
-  const trimmed = content.length > 60000 
-    ? content.slice(0, 60000) + "\n\n[Content truncated]"
-    : content;
+const MAX_CHARS =
+  (process.env.OPENROUTER_MODEL || "").includes("gpt-oss")
+    ? 20000     // GPT-OSS needs MUCH smaller input
+    : 60000;    // DeepSeek is fine
+
+const trimmed = content.length > MAX_CHARS
+  ? content.slice(0, MAX_CHARS) + "\n\n[Content truncated]"
+  : content;
 
   const systemPrompt = getSystemPrompt(category, isPreprocessed, accountCount);
 
@@ -638,7 +643,10 @@ async function callModel({ fileType, textContent, question, category, preprocess
       model: process.env.OPENROUTER_MODEL || "tngtech/deepseek-r1t2-chimera:free",
       messages,
       temperature: 0.2,
-      max_tokens: 4000
+      max_tokens: (process.env.OPENROUTER_MODEL || "").includes("gpt-oss")
+      ? 1500
+      : 4000
+
     })
   });
 
