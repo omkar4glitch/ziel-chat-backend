@@ -610,8 +610,8 @@ async function callModel({ fileType, textContent, question, category, preprocess
     console.log("Using preprocessed GL summary");
   }
 
-  const trimmed = content.length > 60000 
-    ? content.slice(0, 60000) + "\n\n[Content truncated]"
+  const trimmed = content.length > 150000 
+    ? content.slice(0, 150000) + "\n\n[Content truncated]"
     : content;
 
   const systemPrompt = getSystemPrompt(category, isPreprocessed, accountCount);
