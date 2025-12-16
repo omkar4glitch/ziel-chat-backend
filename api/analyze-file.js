@@ -872,28 +872,17 @@ export default async function handler(req, res) {
       });
     }
 
-    // Generate Word document
-    const wordBuffer = generateWordDocument(reply, 'GL Analysis Report');
-    const wordBase64 = wordBuffer.toString('base64');
+
     
     // Create data URI for download
     const wordDataURI = `data:application/vnd.ms-word;base64,${wordBase64}`;
 
     return res.status(200).json({
       ok: true,
-      type: extracted.type,
-      category,
-      reply,
-      preprocessed: preprocessedData?.processed || false,
-      wordDownload: wordDataURI, // Add Word download link
-      debug: {
-        status: httpStatus,
-        category,
-        preprocessed: preprocessedData?.processed || false,
-        stats: preprocessedData?.stats || null,
-        debug_sample: preprocessedData?.debug || null
-      }
+      reply,                  // markdown text
+      wordReady: true          // simple flag
     });
+
   } catch (err) {
     console.error("analyze-file error:", err);
     return res.status(500).json({ 
