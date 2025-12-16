@@ -754,20 +754,27 @@ export default async function handler(req, res) {
       });
     }
 
-    return res.status(200).json({
-      ok: true,
-      type: extracted.type,
-      category,
-      reply,
-      preprocessed: preprocessedData?.processed || false,
-      debug: {
-        status: httpStatus,
-        category,
-        preprocessed: preprocessedData?.processed || false,
-        stats: preprocessedData?.stats || null,
-        debug_sample: preprocessedData?.debug || null
-      }
-    });
+return res.status(200).json({
+  ok: true,
+  type: extracted.type,
+  category,
+
+  // 👇 RAW MARKDOWN STRING (SOURCE OF TRUTH)
+  reply_markdown: reply,
+
+  // (optional) keep this for backward compatibility
+  reply,
+
+  preprocessed: preprocessedData?.processed || false,
+
+  debug: { 
+    status: httpStatus, 
+    category,
+    preprocessed: preprocessedData?.processed || false,
+    stats: preprocessedData?.stats || null
+  }
+});
+
   } catch (err) {
     console.error("analyze-file error:", err);
     return res.status(500).json({ 
