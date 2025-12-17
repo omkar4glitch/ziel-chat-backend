@@ -872,26 +872,32 @@ export default async function handler(req, res) {
       });
     }
 
-    // 🔹 Generate Word document from markdown reply
+    // Generate Word document
     const wordBuffer = generateWordDocument(reply, 'GL Analysis Report');
     const wordBase64 = wordBuffer.toString('base64');
     
-    // Data URI (Word-readable HTML)
-    const wordDataURI = `data:application/vnd.ms-word;base64,${wordBase64}`;
-        
-
-
-    
-    // Create data URI for download
-    const wordDataURI = `data:application/vnd.ms-word;base64,${wordBase64}`;
+    // OPTION 1: Return base64 (client can convert to blob and download)
+    // This works but requires client-side handling
 
     return res.status(200).json({
       ok: true,
-      reply,                 // markdown text (for Markdown component)
-      wordDownload: wordDataURI // Word download link
+      type: extracted.type,
+      category,
+      reply,
+      preprocessed: preprocessedData?.processed || false,
+      wordDownload: {
+        base64: wordBase64,
+        filename: 'GL_Analysis_Report.doc',
+        mimeType: 'application/msword'
+      },
+      debug: {
+        status: httpStatus,
+        category,
+        preprocessed: preprocessedData?.processed || false,
+        stats: preprocessedData?.stats || null,
+        debug_sample: preprocessedData?.debug || null
+      }
     });
-
-
   } catch (err) {
     console.error("analyze-file error:", err);
     return res.status(500).json({ 
