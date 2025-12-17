@@ -872,6 +872,14 @@ export default async function handler(req, res) {
       });
     }
 
+    // 🔹 Generate Word document from markdown reply
+    const wordBuffer = generateWordDocument(reply, 'GL Analysis Report');
+    const wordBase64 = wordBuffer.toString('base64');
+    
+    // Data URI (Word-readable HTML)
+    const wordDataURI = `data:application/vnd.ms-word;base64,${wordBase64}`;
+        
+
 
     
     // Create data URI for download
@@ -879,9 +887,10 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-      reply,                  // markdown text
-      wordReady: true          // simple flag
+      reply,                 // markdown text (for Markdown component)
+      wordDownload: wordDataURI // Word download link
     });
+
 
   } catch (err) {
     console.error("analyze-file error:", err);
