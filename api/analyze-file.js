@@ -874,30 +874,17 @@ export default async function handler(req, res) {
 
     // Generate Word document
     const wordBuffer = generateWordDocument(reply, 'GL Analysis Report');
-    const wordBase64 = wordBuffer.toString('base64');
     
-    // OPTION 1: Return base64 (client can convert to blob and download)
-    // This works but requires client-side handling
+    res.setHeader('Content-Type', 'application/msword');
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="GL_Analysis_Report.doc"'
+    );
+    res.setHeader('Content-Length', wordBuffer.length);
+    
+    // Send file directly
+    return res.status(200).send(wordBuffer);
 
-    return res.status(200).json({
-      ok: true,
-      type: extracted.type,
-      category,
-      reply,
-      preprocessed: preprocessedData?.processed || false,
-      wordDownload: {
-        base64: wordBase64,
-        filename: 'GL_Analysis_Report.doc',
-        mimeType: 'application/msword'
-      },
-      debug: {
-        status: httpStatus,
-        category,
-        preprocessed: preprocessedData?.processed || false,
-        stats: preprocessedData?.stats || null,
-        debug_sample: preprocessedData?.debug || null
-      }
-    });
   } catch (err) {
     console.error("analyze-file error:", err);
     return res.status(500).json({ 
