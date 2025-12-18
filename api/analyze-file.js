@@ -656,47 +656,6 @@ async function callModel({ fileType, textContent, question, category, preprocess
   return { reply, raw: data, httpStatus: r.status };
 }
 
-
-/**
- * Generate Excel file from markdown + optional GL stats
- */
-function generateExcelFromMarkdown(markdown, stats = null) {
-  const wb = XLSX.utils.book_new();
-
-  // ---------- Sheet 1: Markdown Output ----------
-  const markdownLines = markdown.split('\n').map(line => [line]);
-  const wsMarkdown = XLSX.utils.aoa_to_sheet([
-    ['AI Analysis (Markdown Output)'],
-    ...markdownLines
-  ]);
-
-  wsMarkdown['A1'].s = { font: { bold: true } };
-  XLSX.utils.book_append_sheet(wb, wsMarkdown, 'Analysis');
-
-  // ---------- Sheet 2: GL Summary (if exists) ----------
-  if (stats) {
-    const summaryData = [
-      ['Metric', 'Value'],
-      ['Total Debits', stats.totalDebits ?? ''],
-      ['Total Credits', stats.totalCredits ?? ''],
-      ['Difference', stats.difference ?? ''],
-      ['Balanced', stats.isBalanced ? 'YES' : 'NO'],
-      ['Account Count', stats.accountCount ?? ''],
-      ['Entry Count', stats.entryCount ?? ''],
-      ['Date Range', stats.dateRange ?? '']
-    ];
-
-    const wsStats = XLSX.utils.aoa_to_sheet(summaryData);
-    XLSX.utils.book_append_sheet(wb, wsStats, 'GL Summary');
-  }
-
-  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  return buffer;
-}
-
-
-
-
 /**
  * MAIN handler
  */
@@ -795,30 +754,20 @@ export default async function handler(req, res) {
       });
     }
 
-// Generate Excel download from markdown reply
-const excelBuffer = generateExcelFromMarkdown(
-  reply,
-  preprocessedData?.stats || null
-);
-
-const excelBase64 = excelBuffer.toString('base64');
-const excelDownload = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${excelBase64}`;
-
-return res.status(200).json({
-  ok: true,
-  type: extracted.type,
-  category,
-  reply,                 // markdown for Adalo markdown component
-  excelDownload,         // ✅ downloadable Excel file
-  preprocessed: preprocessedData?.processed || false,
-  debug: {
-    status: httpStatus,
-    category,
-    preprocessed: preprocessedData?.processed || false,
-    stats: preprocessedData?.stats || null
-  }
-});
-
+    return res.status(200).json({
+      ok: true,
+      type: extracted.type,
+      category,
+      reply,
+      preprocessed: preprocessedData?.processed || false,
+      debug: {
+        status: httpStatus,
+        category,
+        preprocessed: preprocessedData?.processed || false,
+        stats: preprocessedData?.stats || null,
+        debug_sample: preprocessedData?.debug || null
+      }
+    });
   } catch (err) {
     console.error("analyze-file error:", err);
     return res.status(500).json({ 
