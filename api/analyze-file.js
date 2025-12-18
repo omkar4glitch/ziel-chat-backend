@@ -596,126 +596,8 @@ When totals exist, USE those numbers. Create a markdown table with metrics and i
 }
 
 /**
- * Convert markdown to simple HTML for Word document
+ * Model call
  */
-function markdownToHTML(markdown) {
-  let html = markdown;
-  
-  // Headers
-  html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
-  html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-  html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
-  
-  // Bold
-  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-  
-  // Tables - convert to HTML table
-  const tableRegex = /\|(.+)\|\n\|([-:\s|]+)\|\n((?:\|.+\|\n?)+)/g;
-  html = html.replace(tableRegex, (match, header, separator, rows) => {
-    const headers = header.split('|').map(h => h.trim()).filter(h => h);
-    const rowLines = rows.trim().split('\n');
-    
-    let table = '<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; margin: 10px 0;">';
-    table += '<thead><tr>';
-    headers.forEach(h => table += `<th style="background-color: #4472C4; color: white; padding: 8px; text-align: left;">${h}</th>`);
-    table += '</tr></thead><tbody>';
-    
-    rowLines.forEach(row => {
-      const cells = row.split('|').map(c => c.trim()).filter(c => c);
-      if (cells.length > 0) {
-        table += '<tr>';
-        cells.forEach(cell => table += `<td style="padding: 8px;">${cell}</td>`);
-        table += '</tr>';
-      }
-    });
-    
-    table += '</tbody></table>';
-    return table;
-  });
-  
-  // Line breaks
-  html = html.replace(/\n/g, '<br>');
-  
-  // Remove extra breaks
-  html = html.replace(/(<br>)+/g, '<br>');
-  
-  return html;
-}
-
-/**
- * Generate Word document from markdown content
- */
-function generateWordDocument(content, title = 'Financial Analysis Report') {
-  const htmlContent = markdownToHTML(content);
-  
-  // Create a complete HTML document that Word can open
-  const wordHTML = `
-    <html xmlns:o='urn:schemas-microsoft-com:office:office' 
-          xmlns:w='urn:schemas-microsoft-com:office:word'
-          xmlns='http://www.w3.org/TR/REC-html40'>
-    <head>
-      <meta charset='utf-8'>
-      <title>${title}</title>
-      <style>
-        body {
-          font-family: Calibri, Arial, sans-serif;
-          font-size: 11pt;
-          line-height: 1.5;
-          margin: 1in;
-        }
-        h1 {
-          font-size: 20pt;
-          color: #2E5090;
-          margin-top: 24pt;
-          margin-bottom: 12pt;
-        }
-        h2 {
-          font-size: 16pt;
-          color: #2E5090;
-          margin-top: 18pt;
-          margin-bottom: 10pt;
-        }
-        h3 {
-          font-size: 14pt;
-          color: #2E5090;
-          margin-top: 12pt;
-          margin-bottom: 8pt;
-        }
-        table {
-          border-collapse: collapse;
-          width: 100%;
-          margin: 12pt 0;
-        }
-        th, td {
-          border: 1px solid #BFBFBF;
-          padding: 6pt;
-          text-align: left;
-        }
-        th {
-          background-color: #4472C4;
-          color: white;
-          font-weight: bold;
-        }
-        tr:nth-child(even) {
-          background-color: #F2F2F2;
-        }
-        strong {
-          font-weight: bold;
-          color: #2E5090;
-        }
-        p {
-          margin: 6pt 0;
-        }
-      </style>
-    </head>
-    <body>
-      ${htmlContent}
-    </body>
-    </html>
-  `;
-  
-  return Buffer.from(wordHTML, 'utf-8');
-}
 async function callModel({ fileType, textContent, question, category, preprocessedData }) {
   let content = textContent;
   let isPreprocessed = false;
@@ -872,17 +754,20 @@ export default async function handler(req, res) {
       });
     }
 
-
-    
-    // Create data URI for download
-    const wordDataURI = `data:application/vnd.ms-word;base64,${wordBase64}`;
-
     return res.status(200).json({
       ok: true,
-      reply,                  // markdown text
-      wordReady: true          // simple flag
+      type: extracted.type,
+      category,
+      reply,
+      preprocessed: preprocessedData?.processed || false,
+      debug: {
+        status: httpStatus,
+        category,
+        preprocessed: preprocessedData?.processed || false,
+        stats: preprocessedData?.stats || null,
+        debug_sample: preprocessedData?.debug || null
+      }
     });
-
   } catch (err) {
     console.error("analyze-file error:", err);
     return res.status(500).json({ 
