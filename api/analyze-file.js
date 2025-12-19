@@ -771,7 +771,9 @@ export default async function handler(req, res) {
     }
 
     const body = await parseJsonBody(req);
-    const { fileUrl, question = "", exportExcel = false } = body || {};
+    const { fileUrl, question = "" } = body || {};
+    // Always generate Excel by default
+    const exportExcel = body.exportExcel !== undefined ? body.exportExcel : true;
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
@@ -854,17 +856,15 @@ export default async function handler(req, res) {
       });
     }
 
-    // Generate Excel - ALWAYS generate by default, unless explicitly disabled
+    // ALWAYS generate Excel by default
     let excelBase64 = null;
-    const shouldGenerateExcel = exportExcel !== false && exportExcel !== 'false';
-    
-    if (shouldGenerateExcel) {
-      try {
-        excelBase64 = markdownToExcel(reply);
-        console.log("Excel file generated successfully");
-      } catch (excelError) {
-        console.error("Excel generation error:", excelError);
-      }
+    try {
+      console.log("Starting Excel generation...");
+      excelBase64 = markdownToExcel(reply);
+      console.log("✓ Excel file generated successfully, length:", excelBase64.length);
+    } catch (excelError) {
+      console.error("✗ Excel generation error:", excelError);
+      // Don't fail the whole request if Excel fails
     }
 
     return res.status(200).json({
@@ -873,6 +873,8 @@ export default async function handler(req, res) {
       category,
       reply,
       excelDownload: excelBase64,
+      excelDownloadUrl: excelBase64 ? `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${excelBase64}` : null,
+      excelSize: excelBase64 ? excelBase64.length : 0,
       preprocessed: preprocessedData?.processed || false,
       debug: {
         status: httpStatus,
@@ -880,7 +882,8 @@ export default async function handler(req, res) {
         preprocessed: preprocessedData?.processed || false,
         stats: preprocessedData?.stats || null,
         debug_sample: preprocessedData?.debug || null,
-        hasExcel: !!excelBase64
+        hasExcel: !!excelBase64,
+        excelGenerated: !!excelBase64
       }
     });
   } catch (err) {
