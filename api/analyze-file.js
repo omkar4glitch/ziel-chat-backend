@@ -16,89 +16,7 @@ function cors(res) {
  */
 async function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
-    let preprocessedData = null;
-    let category = 'general';
-    
-    if (extracted.rows) {
-      const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
-      category = detectDocumentCategory(sampleText);
-      if (category === 'gl') {
-        preprocessedData = preprocessGLData(extracted.rows);
-        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
-        if (!preprocessedData.processed) console.log("Preprocessing failed:", preprocessedData.reason);
-      }
-    } else {
-      const textContent = extracted.textContent || '';
-      if (!textContent.trim()) {
-        return res.status(200).json({
-          ok: false,
-          type: extracted.type,
-          reply: "No text could be extracted from this file.",
-          debug: { contentType, bytesReceived }
-        });
-      }
-
-      category = detectDocumentCategory(textContent);
-      console.log(`Category: ${category}`);
-
-      if (category === 'gl') {
-        preprocessedData = preprocessGLData(textContent);
-        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
-        if (!preprocessedData.processed) console.log("Preprocessing failed:", preprocessedData.reason);
-      }
-    }
-
-    const { reply, raw, httpStatus } = await callModel({
-      fileType: extracted.type,
-      textContent: extracted.textContent || '',
-      question,
-      category,
-      preprocessedData
-    });
-
-    if (!reply) {
-      return res.status(200).json({
-        ok: false,
-        type: extracted.type,
-        reply: "(No reply from model)",
-        debug: { status: httpStatus, raw: raw }
-      });
-    }
-
-    // Generate Excel if requested
-    let excelBase64 = null;
-    if (exportExcel === true || exportExcel === 'true') {
-      try {
-        excelBase64 = markdownToExcel(reply);
-        console.log("Excel file generated successfully");
-      } catch (excelError) {
-        console.error("Excel generation error:", excelError);
-      }
-    }
-
-    return res.status(200).json({
-      ok: true,
-      type: extracted.type,
-      category,
-      reply,
-      excelDownload: excelBase64,
-      preprocessed: preprocessedData?.processed || false,
-      debug: {
-        status: httpStatus,
-        category,
-        preprocessed: preprocessedData?.processed || false,
-        stats: preprocessedData?.stats || null,
-        debug_sample: preprocessedData?.debug || null,
-        hasExcel: !!excelBase64
-      }
-    });
-  } catch (err) {
-    console.error("analyze-file error:", err);
-    return res.status(500).json({ 
-      error: String(err?.message || err)
-    });
-  }
-} body = "";
+    let body = "";
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
       if (!body) return resolve({});
@@ -887,12 +805,10 @@ export default async function handler(req, res) {
       });
     }
 
-
-    // If extractXlsx returned rows, use them directly for preprocessing to avoid CSV pitfalls
     let preprocessedData = null;
     let category = 'general';
+    
     if (extracted.rows) {
-      // Detect category using a simple join of first N rows values (best-effort)
       const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
       category = detectDocumentCategory(sampleText);
       if (category === 'gl') {
@@ -938,18 +854,31 @@ export default async function handler(req, res) {
       });
     }
 
+    // Generate Excel if requested
+    let excelBase64 = null;
+    if (exportExcel === true || exportExcel === 'true') {
+      try {
+        excelBase64 = markdownToExcel(reply);
+        console.log("Excel file generated successfully");
+      } catch (excelError) {
+        console.error("Excel generation error:", excelError);
+      }
+    }
+
     return res.status(200).json({
       ok: true,
       type: extracted.type,
       category,
       reply,
+      excelDownload: excelBase64,
       preprocessed: preprocessedData?.processed || false,
       debug: {
         status: httpStatus,
         category,
         preprocessed: preprocessedData?.processed || false,
         stats: preprocessedData?.stats || null,
-        debug_sample: preprocessedData?.debug || null
+        debug_sample: preprocessedData?.debug || null,
+        hasExcel: !!excelBase64
       }
     });
   } catch (err) {
