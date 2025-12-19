@@ -356,6 +356,8 @@ function parseCSV(csvText) {
  * Convert rows (array of objects) into the same structure used by preprocessGLData
  */
 function preprocessGLDataFromRows(rows) {
+  // rows is an array of objects where keys are column headers
+  // We'll reuse logic from preprocessGLData but operate directly on rows
   if (!rows || rows.length === 0) return { processed: false, reason: 'No rows' };
 
   const headers = Object.keys(rows[0]);
@@ -447,6 +449,7 @@ function preprocessGLDataFromRows(rows) {
     accountSummary[account].totalCredit += credit;
     accountSummary[account].count += 1;
 
+    // Debug capture for anomalous entries
     if ((parsedDebit === 0 && parsedCredit === 0) && (debitStr || creditStr)) {
       debugInfo.push({ row: idx + 1, debitStr, creditStr, amountCandidate: row[balanceCol] });
     }
@@ -470,6 +473,7 @@ function preprocessGLDataFromRows(rows) {
   const isBalanced = Math.abs(roundedDebits - roundedCredits) < 0.01;
   const difference = roundedDebits - roundedCredits;
 
+  // Format dates to US format
   const formattedMinDate = formatDateUS(minDate);
   const formattedMaxDate = formatDateUS(maxDate);
 
@@ -520,10 +524,12 @@ function preprocessGLDataFromRows(rows) {
  * PRE-PROCESS GL DATA (accepts CSV string OR rows array)
  */
 function preprocessGLData(textOrRows) {
+  // If it's already an array of rows, use the direct path
   if (Array.isArray(textOrRows)) {
     return preprocessGLDataFromRows(textOrRows);
   }
 
+  // Otherwise assume CSV text
   const rows = parseCSV(textOrRows);
   return preprocessGLDataFromRows(rows);
 }
@@ -590,110 +596,150 @@ When totals exist, USE those numbers. Create a markdown table with metrics and i
 }
 
 /**
- * Convert markdown to Excel workbook
+ * NEW: Convert Markdown to Excel
+ * Parses markdown tables and text into a properly formatted Excel file
  */
-function markdownToExcel(markdownText) {
+function convertMarkdownToExcel(markdownText) {
   const workbook = XLSX.utils.book_new();
-  const sheetData = [];
   
-  const lines = markdownText.split('\n');
+  // Split into sections
+  const sections = markdownText.split(/(?=##)/);
   
-  for (const line of lines) {
-    const trimmed = line.trim();
+  sections.forEach((section, sectionIndex) => {
+    const lines = section.trim().split('\n');
+    if (lines.length === 0) return;
     
-    if (!trimmed) {
-      sheetData.push([]);
-      continue;
-    }
+    const sheetData = [];
+    let currentRow = [];
+    let inTable = false;
+    let tableHeaders = [];
     
-    // Handle headers
-    if (trimmed.startsWith('#')) {
-      const heading = trimmed.replace(/^#+\s*/, '').replace(/\*\*/g, '');
-      sheetData.push([heading]);
-      sheetData.push([]); // Add spacing
-      continue;
-    }
-    
-    // Handle markdown tables
-    if (trimmed.includes('|')) {
-      const cells = trimmed.split('|')
-        .map(cell => cell.trim())
-        .filter(cell => cell !== '');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
       
-      // Skip separator lines (|---|---|)
-      if (cells.every(cell => /^[-:]+$/.test(cell))) continue;
+      // Skip empty lines
+      if (!line) {
+        if (currentRow.length > 0) {
+          sheetData.push(currentRow);
+          currentRow = [];
+        }
+        continue;
+      }
       
-      // Clean cells and parse numbers
-      const cleanCells = cells.map(cell => {
-        let clean = cell.replace(/\*\*/g, '').replace(/\*/g, '').replace(/`/g, '');
+      // Handle headers (##, ###)
+      if (line.startsWith('#')) {
+        if (currentRow.length > 0) {
+          sheetData.push(currentRow);
+          currentRow = [];
+        }
+        const headerText = line.replace(/^#+\s*/, '');
+        sheetData.push([headerText]);
+        sheetData.push([]); // Empty row after header
+        continue;
+      }
+      
+      // Handle markdown tables
+      if (line.startsWith('|')) {
+        const cells = line.split('|')
+          .map(cell => cell.trim())
+          .filter(cell => cell !== '');
         
-        // Parse numbers (remove $ and commas)
-        const numMatch = clean.match(/^\$?([-]?[\d,]+\.?\d*)$/);
-        if (numMatch) {
-          const num = parseFloat(numMatch[1].replace(/,/g, ''));
-          return isNaN(num) ? clean : num;
+        // Check if it's a separator line (|---|---|)
+        if (cells.every(cell => /^[-:]+$/.test(cell))) {
+          inTable = true;
+          continue;
         }
         
-        // Handle checkmarks
-        if (clean === '✓ YES' || clean === 'YES') return 'YES';
-        if (clean === '✗ NO' || clean === 'NO') return 'NO';
-        
-        return clean;
-      });
-      
-      sheetData.push(cleanCells);
-      continue;
-    }
-    
-    // Handle bullet points
-    if (trimmed.startsWith('-') || trimmed.startsWith('*')) {
-      let text = trimmed.replace(/^[-*]\s+/, '').replace(/\*\*/g, '');
-      
-      // Split key: value pairs
-      const kvMatch = text.match(/^(.+?):\s*(.+)$/);
-      if (kvMatch) {
-        let value = kvMatch[2].trim();
-        
-        // Parse numeric values
-        const numMatch = value.match(/^\$?([-]?[\d,]+\.?\d*)/);
-        if (numMatch) {
-          const num = parseFloat(numMatch[1].replace(/,/g, ''));
-          value = isNaN(num) ? value : num;
+        if (!inTable) {
+          // This is the header row
+          tableHeaders = cells;
+          sheetData.push(cells);
+        } else {
+          // This is a data row
+          const processedCells = cells.map(cell => {
+            // Remove markdown formatting
+            cell = cell.replace(/\*\*/g, '').replace(/\*/g, '');
+            
+            // Try to parse as number (remove commas for numbers like 1,234)
+            const numStr = cell.replace(/,/g, '');
+            if (/^-?\d+\.?\d*$/.test(numStr)) {
+              return parseFloat(numStr);
+            }
+            
+            // Check for currency values
+            if (cell.startsWith('$')) {
+              const numStr = cell.substring(1).replace(/,/g, '');
+              if (/^-?\d+\.?\d*$/.test(numStr)) {
+                return parseFloat(numStr);
+              }
+            }
+            
+            return cell;
+          });
+          
+          sheetData.push(processedCells);
         }
-        
-        sheetData.push([kvMatch[1].trim(), value]);
+        continue;
+      }
+      
+      // Handle bullet points and regular text
+      if (line.startsWith('-') || line.startsWith('*')) {
+        if (currentRow.length > 0) {
+          sheetData.push(currentRow);
+          currentRow = [];
+        }
+        const text = line.replace(/^[-*]\s*/, '').replace(/\*\*/g, '');
+        sheetData.push([text]);
       } else {
+        // Regular text
+        if (currentRow.length > 0) {
+          sheetData.push(currentRow);
+          currentRow = [];
+        }
+        const text = line.replace(/\*\*/g, '').replace(/\*/g, '');
         sheetData.push([text]);
       }
-      continue;
+      
+      inTable = false;
     }
     
-    // Regular text
-    const cleanText = trimmed.replace(/\*\*/g, '').replace(/\*/g, '');
-    sheetData.push([cleanText]);
+    if (currentRow.length > 0) {
+      sheetData.push(currentRow);
+    }
+    
+    // Create worksheet from data
+    if (sheetData.length > 0) {
+      const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
+      
+      // Auto-size columns
+      const colWidths = [];
+      sheetData.forEach(row => {
+        row.forEach((cell, colIndex) => {
+          const cellStr = String(cell || '');
+          const width = cellStr.length;
+          if (!colWidths[colIndex] || width > colWidths[colIndex]) {
+            colWidths[colIndex] = Math.min(width + 2, 50);
+          }
+        });
+      });
+      worksheet['!cols'] = colWidths.map(w => ({ wch: w || 10 }));
+      
+      // Create sheet name
+      const sheetName = sectionIndex === 0 ? 'Analysis' : `Section_${sectionIndex}`;
+      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName.substring(0, 31));
+    }
+  });
+  
+  // If no sections were added, create a simple sheet with the raw text
+  if (workbook.SheetNames.length === 0) {
+    const lines = markdownText.split('\n').map(line => [line]);
+    const worksheet = XLSX.utils.aoa_to_sheet(lines);
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Analysis');
   }
   
-  // Create worksheet
-  const ws = XLSX.utils.aoa_to_sheet(sheetData);
-  
-  // Auto-size columns
-  const colWidths = [];
-  sheetData.forEach(row => {
-    row.forEach((cell, idx) => {
-      const len = String(cell || '').length;
-      if (!colWidths[idx] || len > colWidths[idx]) {
-        colWidths[idx] = Math.min(Math.max(len + 2, 10), 60);
-      }
-    });
-  });
-  ws['!cols'] = colWidths.map(w => ({ wch: w }));
-  
-  // Add worksheet to workbook
-  XLSX.utils.book_append_sheet(workbook, ws, 'Analysis Report');
-  
-  // Return base64 encoded Excel file
-  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-  return buffer.toString('base64');
+  // Generate Excel file as buffer
+  const excelBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  return excelBuffer;
 }
 
 /**
@@ -760,31 +806,6 @@ async function callModel({ fileType, textContent, question, category, preprocess
 /**
  * MAIN handler
  */
-
-function markdownToExcelBuffer(markdownText) {
-  const lines = markdownText.split("\n");
-
-  const data = lines.map(line => [line]);
-
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(data);
-
-  // Enable wrap text for readability
-  const range = XLSX.utils.decode_range(ws['!ref']);
-  for (let R = range.s.r; R <= range.e.r; ++R) {
-    const cellRef = XLSX.utils.encode_cell({ r: R, c: 0 });
-    if (!ws[cellRef]) continue;
-    ws[cellRef].s = {
-      alignment: { wrapText: true, vertical: "top" }
-    };
-  }
-
-  XLSX.utils.book_append_sheet(wb, ws, "Markdown");
-
-  return XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
-}
-
-
 export default async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -796,7 +817,7 @@ export default async function handler(req, res) {
     }
 
     const body = await parseJsonBody(req);
-    const { fileUrl, question = "", exportExcel = false } = body || {};
+    const { fileUrl, question = "", exportFormat = "json" } = body || {};
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
@@ -830,10 +851,11 @@ export default async function handler(req, res) {
       });
     }
 
+    // If extractXlsx returned rows, use them directly for preprocessing to avoid CSV pitfalls
     let preprocessedData = null;
     let category = 'general';
-    
     if (extracted.rows) {
+      // Detect category using a simple join of first N rows values (best-effort)
       const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
       category = detectDocumentCategory(sampleText);
       if (category === 'gl') {
@@ -879,31 +901,36 @@ export default async function handler(req, res) {
       });
     }
 
-    // Generate Excel if requested
-    let excelBase64 = null;
-    if (exportExcel === true || exportExcel === 'true') {
+    // Handle Excel export format
+    if (exportFormat === "excel") {
       try {
-        excelBase64 = markdownToExcel(reply);
-        console.log("Excel file generated successfully");
+        const excelBuffer = convertMarkdownToExcel(reply);
+        
+        // Set headers for Excel download
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', 'attachment; filename="accounting_analysis.xlsx"');
+        res.setHeader('Content-Length', excelBuffer.length);
+        
+        return res.status(200).send(excelBuffer);
       } catch (excelError) {
-        console.error("Excel generation error:", excelError);
+        console.error("Excel conversion error:", excelError);
+        // Fall back to JSON with error
+        return res.status(200).json({
+          ok: false,
+          type: extracted.type,
+          reply: reply,
+          error: "Excel conversion failed",
+          debug: { excelError: excelError.message }
+        });
       }
     }
-    
-    // Convert markdown reply to Excel buffer
-    const excelBuffer = markdownToExcelBuffer(reply);
-    
-    // Convert to Base64 for Adalo download
-    const excelBase64 = excelBuffer.toString("base64");
-    
+
+    // Default JSON response
     return res.status(200).json({
       ok: true,
       type: extracted.type,
       category,
-      reply,                 // Still return text for chat UI
-      excelFileBase64: excelBase64,
-      fileName: "analysis_markdown.xlsx",
-      mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      reply,
       preprocessed: preprocessedData?.processed || false,
       debug: {
         status: httpStatus,
@@ -913,11 +940,10 @@ export default async function handler(req, res) {
         debug_sample: preprocessedData?.debug || null
       }
     });
-    
-      } catch (err) {
-        console.error("analyze-file error:", err);
-        return res.status(500).json({ 
-          error: String(err?.message || err)
-        });
-      }
-    }
+  } catch (err) {
+    console.error("analyze-file error:", err);
+    return res.status(500).json({ 
+      error: String(err?.message || err)
+    });
+  }
+}
