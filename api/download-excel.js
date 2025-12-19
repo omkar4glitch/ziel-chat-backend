@@ -1,39 +1,52 @@
+import * as XLSX from "xlsx";
+
 export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     return res.status(200).end();
   }
 
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
   try {
-    const { data } = req.body;
+    const { markdown } = req.body || {};
 
-    if (!data) {
-      return res.status(400).json({ error: "Missing Excel base64 data" });
+    if (!markdown) {
+      return res.status(400).json({
+        ok: false,
+        error: "markdown is required"
+      });
     }
 
-    const buffer = Buffer.from(data, "base64");
+    // Convert markdown to excel (same function logic you already use)
+    const workbook = XLSX.utils.book_new();
+    const sheetData = markdown
+      .split("\n")
+      .map(line => [line.replace(/\*/g, "")]);
 
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    );
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="Financial_Analysis_${Date.now()}.xlsx"`
-    );
-    res.setHeader("Content-Length", buffer.length);
+    const ws = XLSX.utils.aoa_to_sheet(sheetData);
+    XLSX.utils.book_append_sheet(workbook, ws, "Report");
 
-    return res.status(200).send(buffer);
+    const buffer = XLSX.write(workbook, {
+      type: "buffer",
+      bookType: "xlsx"
+    });
+
+    const base64 = buffer.toString("base64");
+
+    return res.status(200).json({
+      ok: true,
+      excelDownloadUrl:
+        "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64," +
+        base64
+    });
 
   } catch (err) {
-    console.error("download-excel error:", err);
-    return res.status(500).json({ error: "Failed to process download" });
+    console.error(err);
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || "Failed to generate excel"
+    });
   }
 }
