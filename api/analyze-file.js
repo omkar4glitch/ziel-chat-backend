@@ -760,6 +760,31 @@ async function callModel({ fileType, textContent, question, category, preprocess
 /**
  * MAIN handler
  */
+
+function markdownToExcelBuffer(markdownText) {
+  const lines = markdownText.split("\n");
+
+  const data = lines.map(line => [line]);
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(data);
+
+  // Enable wrap text for readability
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  for (let R = range.s.r; R <= range.e.r; ++R) {
+    const cellRef = XLSX.utils.encode_cell({ r: R, c: 0 });
+    if (!ws[cellRef]) continue;
+    ws[cellRef].s = {
+      alignment: { wrapText: true, vertical: "top" }
+    };
+  }
+
+  XLSX.utils.book_append_sheet(wb, ws, "Markdown");
+
+  return XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
+}
+
+
 export default async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -865,22 +890,30 @@ export default async function handler(req, res) {
       }
     }
 
-    return res.status(200).json({
-      ok: true,
-      type: extracted.type,
-      category,
-      reply,
-      excelDownload: excelBase64,
-      preprocessed: preprocessedData?.processed || false,
-      debug: {
-        status: httpStatus,
-        category,
-        preprocessed: preprocessedData?.processed || false,
-        stats: preprocessedData?.stats || null,
-        debug_sample: preprocessedData?.debug || null,
-        hasExcel: !!excelBase64
-      }
-    });
+// Convert markdown reply to Excel buffer
+const excelBuffer = markdownToExcelBuffer(reply);
+
+// Convert to Base64 for Adalo download
+const excelBase64 = excelBuffer.toString("base64");
+
+return res.status(200).json({
+  ok: true,
+  type: extracted.type,
+  category,
+  reply,                 // Still return text for chat UI
+  excelFileBase64: excelBase64,
+  fileName: "analysis_markdown.xlsx",
+  mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  preprocessed: preprocessedData?.processed || false,
+  debug: {
+    status: httpStatus,
+    category,
+    preprocessed: preprocessedData?.processed || false,
+    stats: preprocessedData?.stats || null,
+    debug_sample: preprocessedData?.debug || null
+  }
+});
+
   } catch (err) {
     console.error("analyze-file error:", err);
     return res.status(500).json({ 
