@@ -889,35 +889,35 @@ export default async function handler(req, res) {
         console.error("Excel generation error:", excelError);
       }
     }
-
-// Convert markdown reply to Excel buffer
-const excelBuffer = markdownToExcelBuffer(reply);
-
-// Convert to Base64 for Adalo download
-const excelBase64 = excelBuffer.toString("base64");
-
-return res.status(200).json({
-  ok: true,
-  type: extracted.type,
-  category,
-  reply,                 // Still return text for chat UI
-  excelFileBase64: excelBase64,
-  fileName: "analysis_markdown.xlsx",
-  mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  preprocessed: preprocessedData?.processed || false,
-  debug: {
-    status: httpStatus,
-    category,
-    preprocessed: preprocessedData?.processed || false,
-    stats: preprocessedData?.stats || null,
-    debug_sample: preprocessedData?.debug || null
-  }
-});
-
-  } catch (err) {
-    console.error("analyze-file error:", err);
-    return res.status(500).json({ 
-      error: String(err?.message || err)
+    
+    // Convert markdown reply to Excel buffer
+    const excelBuffer = markdownToExcelBuffer(reply);
+    
+    // Convert to Base64 for Adalo download
+    const excelBase64 = excelBuffer.toString("base64");
+    
+    return res.status(200).json({
+      ok: true,
+      type: extracted.type,
+      category,
+      reply,                 // Still return text for chat UI
+      excelFileBase64: excelBase64,
+      fileName: "analysis_markdown.xlsx",
+      mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      preprocessed: preprocessedData?.processed || false,
+      debug: {
+        status: httpStatus,
+        category,
+        preprocessed: preprocessedData?.processed || false,
+        stats: preprocessedData?.stats || null,
+        debug_sample: preprocessedData?.debug || null
+      }
     });
-  }
-}
+    
+      } catch (err) {
+        console.error("analyze-file error:", err);
+        return res.status(500).json({ 
+          error: String(err?.message || err)
+        });
+      }
+    }
