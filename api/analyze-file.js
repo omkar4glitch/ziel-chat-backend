@@ -16,7 +16,89 @@ function cors(res) {
  */
 async function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
-    let body = "";
+    let preprocessedData = null;
+    let category = 'general';
+    
+    if (extracted.rows) {
+      const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
+      category = detectDocumentCategory(sampleText);
+      if (category === 'gl') {
+        preprocessedData = preprocessGLData(extracted.rows);
+        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
+        if (!preprocessedData.processed) console.log("Preprocessing failed:", preprocessedData.reason);
+      }
+    } else {
+      const textContent = extracted.textContent || '';
+      if (!textContent.trim()) {
+        return res.status(200).json({
+          ok: false,
+          type: extracted.type,
+          reply: "No text could be extracted from this file.",
+          debug: { contentType, bytesReceived }
+        });
+      }
+
+      category = detectDocumentCategory(textContent);
+      console.log(`Category: ${category}`);
+
+      if (category === 'gl') {
+        preprocessedData = preprocessGLData(textContent);
+        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
+        if (!preprocessedData.processed) console.log("Preprocessing failed:", preprocessedData.reason);
+      }
+    }
+
+    const { reply, raw, httpStatus } = await callModel({
+      fileType: extracted.type,
+      textContent: extracted.textContent || '',
+      question,
+      category,
+      preprocessedData
+    });
+
+    if (!reply) {
+      return res.status(200).json({
+        ok: false,
+        type: extracted.type,
+        reply: "(No reply from model)",
+        debug: { status: httpStatus, raw: raw }
+      });
+    }
+
+    // Generate Excel if requested
+    let excelBase64 = null;
+    if (exportExcel === true || exportExcel === 'true') {
+      try {
+        excelBase64 = markdownToExcel(reply);
+        console.log("Excel file generated successfully");
+      } catch (excelError) {
+        console.error("Excel generation error:", excelError);
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      type: extracted.type,
+      category,
+      reply,
+      excelDownload: excelBase64,
+      preprocessed: preprocessedData?.processed || false,
+      debug: {
+        status: httpStatus,
+        category,
+        preprocessed: preprocessedData?.processed || false,
+        stats: preprocessedData?.stats || null,
+        debug_sample: preprocessedData?.debug || null,
+        hasExcel: !!excelBase64
+      }
+    });
+  } catch (err) {
+    console.error("analyze-file error:", err);
+    return res.status(500).json({ 
+      error: String(err?.message || err)
+    });
+  }
+} body = "";
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
       if (!body) return resolve({});
@@ -356,8 +438,6 @@ function parseCSV(csvText) {
  * Convert rows (array of objects) into the same structure used by preprocessGLData
  */
 function preprocessGLDataFromRows(rows) {
-  // rows is an array of objects where keys are column headers
-  // We'll reuse logic from preprocessGLData but operate directly on rows
   if (!rows || rows.length === 0) return { processed: false, reason: 'No rows' };
 
   const headers = Object.keys(rows[0]);
@@ -449,7 +529,6 @@ function preprocessGLDataFromRows(rows) {
     accountSummary[account].totalCredit += credit;
     accountSummary[account].count += 1;
 
-    // Debug capture for anomalous entries
     if ((parsedDebit === 0 && parsedCredit === 0) && (debitStr || creditStr)) {
       debugInfo.push({ row: idx + 1, debitStr, creditStr, amountCandidate: row[balanceCol] });
     }
@@ -473,7 +552,6 @@ function preprocessGLDataFromRows(rows) {
   const isBalanced = Math.abs(roundedDebits - roundedCredits) < 0.01;
   const difference = roundedDebits - roundedCredits;
 
-  // Format dates to US format
   const formattedMinDate = formatDateUS(minDate);
   const formattedMaxDate = formatDateUS(maxDate);
 
@@ -524,12 +602,10 @@ function preprocessGLDataFromRows(rows) {
  * PRE-PROCESS GL DATA (accepts CSV string OR rows array)
  */
 function preprocessGLData(textOrRows) {
-  // If it's already an array of rows, use the direct path
   if (Array.isArray(textOrRows)) {
     return preprocessGLDataFromRows(textOrRows);
   }
 
-  // Otherwise assume CSV text
   const rows = parseCSV(textOrRows);
   return preprocessGLDataFromRows(rows);
 }
@@ -596,6 +672,113 @@ When totals exist, USE those numbers. Create a markdown table with metrics and i
 }
 
 /**
+ * Convert markdown to Excel workbook
+ */
+function markdownToExcel(markdownText) {
+  const workbook = XLSX.utils.book_new();
+  const sheetData = [];
+  
+  const lines = markdownText.split('\n');
+  
+  for (const line of lines) {
+    const trimmed = line.trim();
+    
+    if (!trimmed) {
+      sheetData.push([]);
+      continue;
+    }
+    
+    // Handle headers
+    if (trimmed.startsWith('#')) {
+      const heading = trimmed.replace(/^#+\s*/, '').replace(/\*\*/g, '');
+      sheetData.push([heading]);
+      sheetData.push([]); // Add spacing
+      continue;
+    }
+    
+    // Handle markdown tables
+    if (trimmed.includes('|')) {
+      const cells = trimmed.split('|')
+        .map(cell => cell.trim())
+        .filter(cell => cell !== '');
+      
+      // Skip separator lines (|---|---|)
+      if (cells.every(cell => /^[-:]+$/.test(cell))) continue;
+      
+      // Clean cells and parse numbers
+      const cleanCells = cells.map(cell => {
+        let clean = cell.replace(/\*\*/g, '').replace(/\*/g, '').replace(/`/g, '');
+        
+        // Parse numbers (remove $ and commas)
+        const numMatch = clean.match(/^\$?([-]?[\d,]+\.?\d*)$/);
+        if (numMatch) {
+          const num = parseFloat(numMatch[1].replace(/,/g, ''));
+          return isNaN(num) ? clean : num;
+        }
+        
+        // Handle checkmarks
+        if (clean === '✓ YES' || clean === 'YES') return 'YES';
+        if (clean === '✗ NO' || clean === 'NO') return 'NO';
+        
+        return clean;
+      });
+      
+      sheetData.push(cleanCells);
+      continue;
+    }
+    
+    // Handle bullet points
+    if (trimmed.startsWith('-') || trimmed.startsWith('*')) {
+      let text = trimmed.replace(/^[-*]\s+/, '').replace(/\*\*/g, '');
+      
+      // Split key: value pairs
+      const kvMatch = text.match(/^(.+?):\s*(.+)$/);
+      if (kvMatch) {
+        let value = kvMatch[2].trim();
+        
+        // Parse numeric values
+        const numMatch = value.match(/^\$?([-]?[\d,]+\.?\d*)/);
+        if (numMatch) {
+          const num = parseFloat(numMatch[1].replace(/,/g, ''));
+          value = isNaN(num) ? value : num;
+        }
+        
+        sheetData.push([kvMatch[1].trim(), value]);
+      } else {
+        sheetData.push([text]);
+      }
+      continue;
+    }
+    
+    // Regular text
+    const cleanText = trimmed.replace(/\*\*/g, '').replace(/\*/g, '');
+    sheetData.push([cleanText]);
+  }
+  
+  // Create worksheet
+  const ws = XLSX.utils.aoa_to_sheet(sheetData);
+  
+  // Auto-size columns
+  const colWidths = [];
+  sheetData.forEach(row => {
+    row.forEach((cell, idx) => {
+      const len = String(cell || '').length;
+      if (!colWidths[idx] || len > colWidths[idx]) {
+        colWidths[idx] = Math.min(Math.max(len + 2, 10), 60);
+      }
+    });
+  });
+  ws['!cols'] = colWidths.map(w => ({ wch: w }));
+  
+  // Add worksheet to workbook
+  XLSX.utils.book_append_sheet(workbook, ws, 'Analysis Report');
+  
+  // Return base64 encoded Excel file
+  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  return buffer.toString('base64');
+}
+
+/**
  * Model call
  */
 async function callModel({ fileType, textContent, question, category, preprocessedData }) {
@@ -610,8 +793,8 @@ async function callModel({ fileType, textContent, question, category, preprocess
     console.log("Using preprocessed GL summary");
   }
 
-  const trimmed = content.length > 90000 
-    ? content.slice(0, 90000) + "\n\n[Content truncated]"
+  const trimmed = content.length > 60000 
+    ? content.slice(0, 60000) + "\n\n[Content truncated]"
     : content;
 
   const systemPrompt = getSystemPrompt(category, isPreprocessed, accountCount);
@@ -670,7 +853,7 @@ export default async function handler(req, res) {
     }
 
     const body = await parseJsonBody(req);
-    const { fileUrl, question = "" } = body || {};
+    const { fileUrl, question = "", exportExcel = false } = body || {};
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
@@ -703,6 +886,7 @@ export default async function handler(req, res) {
         debug: { ocrNeeded: true }
       });
     }
+
 
     // If extractXlsx returned rows, use them directly for preprocessing to avoid CSV pitfalls
     let preprocessedData = null;
