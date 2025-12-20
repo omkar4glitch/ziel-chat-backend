@@ -1,6 +1,7 @@
 import fetch from "node-fetch";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
+import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
 
 /**
  * CORS helper
@@ -590,161 +591,176 @@ When totals exist, USE those numbers. Create a markdown table with metrics and i
 }
 
 /**
- * Convert markdown to Excel workbook with professional formatting
+ * Convert markdown to Word document with professional formatting
  */
-function markdownToExcel(markdownText) {
-  const workbook = XLSX.utils.book_new();
-  const sheetData = [];
-  const merges = [];
-  const styles = [];
-  
+async function markdownToWord(markdownText) {
+  const sections = [];
   const lines = markdownText.split('\n');
-  let currentRow = 0;
+  let tableData = [];
   let inTable = false;
-  let tableStartRow = -1;
   
-  for (const line of lines) {
-    const trimmed = line.trim();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
     
-    if (!trimmed) {
-      sheetData.push([]);
-      styles.push([]);
-      currentRow++;
+    // Skip empty lines (but add spacing)
+    if (!line) {
+      if (sections.length > 0) {
+        sections.push(new Paragraph({ text: '' }));
+      }
       continue;
     }
     
-    // Handle headers (##, ###)
-    if (trimmed.startsWith('#')) {
-      const level = (trimmed.match(/^#+/) || [''])[0].length;
-      const heading = trimmed.replace(/^#+\s*/, '').replace(/\*\*/g, '');
-      sheetData.push([heading]);
-      styles.push([{ 
-        font: { bold: true, sz: 16 - level * 2 }, 
-        fill: { fgColor: { rgb: level === 2 ? 'E7E6E6' : 'F2F2F2' } },
-        alignment: { vertical: 'center', wrapText: true }
-      }]);
-      currentRow++;
-      sheetData.push([]);
-      styles.push([]);
-      currentRow++;
-      continue;
-    }
-    
-    // Handle markdown tables
-    if (trimmed.includes('|')) {
-      const cells = trimmed.split('|')
-        .map(cell => cell.trim())
-        .filter(cell => cell !== '');
+    // Handle Headers (##, ###, ####)
+    if (line.startsWith('#')) {
+      const level = (line.match(/^#+/) || [''])[0].length;
+      const text = line.replace(/^#+\s*/, '').replace(/\*\*/g, '').replace(/\*/g, '');
       
-      // Skip separator lines
-      if (cells.every(cell => /^[-:]+$/.test(cell))) {
+      sections.push(
+        new Paragraph({
+          text: text,
+          heading: level === 2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
+          spacing: { before: 240, after: 120 },
+          thematicBreak: false
+        })
+      );
+      continue;
+    }
+    
+    // Handle Markdown Tables
+    if (line.includes('|')) {
+      const cells = line.split('|').map(c => c.trim()).filter(c => c !== '');
+      
+      // Skip separator lines (|---|---|)
+      if (cells.every(c => /^[-:]+$/.test(c))) {
         inTable = true;
         continue;
       }
       
-      if (!inTable) {
-        tableStartRow = currentRow;
-        inTable = true;
-      }
-      
-      // Clean and parse cells
-      const cleanCells = cells.map(cell => {
-        let clean = cell.replace(/\*\*/g, '').replace(/\*/g, '').replace(/`/g, '');
-        const numMatch = clean.match(/^\$?([-]?[\d,]+\.?\d*)$/);
-        if (numMatch) {
-          const num = parseFloat(numMatch[1].replace(/,/g, ''));
-          return isNaN(num) ? clean : num;
-        }
-        return clean;
-      });
-      
-      // Apply styles (header row vs data rows)
-      const cellStyles = cleanCells.map((cell, idx) => {
-        const isHeader = currentRow === tableStartRow;
-        const isNumeric = typeof cell === 'number';
-        
-        return {
-          font: { bold: isHeader, sz: 11 },
-          fill: { fgColor: { rgb: isHeader ? '4472C4' : 'FFFFFF' } },
-          font: { bold: isHeader, color: { rgb: isHeader ? 'FFFFFF' : '000000' } },
-          border: {
-            top: { style: 'thin', color: { rgb: '000000' } },
-            bottom: { style: 'thin', color: { rgb: '000000' } },
-            left: { style: 'thin', color: { rgb: '000000' } },
-            right: { style: 'thin', color: { rgb: '000000' } }
-          },
-          alignment: { 
-            horizontal: isNumeric ? 'right' : 'left',
-            vertical: 'center',
-            wrapText: true 
-          },
-          numFmt: isNumeric && !isHeader ? '#,##0' : undefined
-        };
-      });
-      
-      sheetData.push(cleanCells);
-      styles.push(cellStyles);
-      currentRow++;
+      // Clean cells - remove markdown formatting
+      const cleanCells = cells.map(c => c.replace(/\*\*/g, '').replace(/\*/g, '').replace(/`/g, ''));
+      tableData.push(cleanCells);
       continue;
-    } else {
+    } else if (inTable && tableData.length > 0) {
+      // End of table - create the Word table
+      const tableRows = tableData.map((rowData, rowIdx) => {
+        const isHeader = rowIdx === 0;
+        
+        return new TableRow({
+          children: rowData.map(cellText => 
+            new TableCell({
+              children: [
+                new Paragraph({
+                  children: [
+                    new TextRun({
+                      text: cellText,
+                      bold: isHeader,
+                      color: isHeader ? 'FFFFFF' : '000000',
+                      size: 22
+                    })
+                  ],
+                  alignment: AlignmentType.LEFT
+                })
+              ],
+              shading: {
+                fill: isHeader ? '4472C4' : 'FFFFFF'
+              },
+              margins: {
+                top: 100,
+                bottom: 100,
+                left: 100,
+                right: 100
+              }
+            })
+          )
+        });
+      });
+      
+      const table = new Table({
+        rows: tableRows,
+        width: {
+          size: 100,
+          type: WidthType.PERCENTAGE
+        },
+        borders: {
+          top: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
+          bottom: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
+          left: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
+          right: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
+          insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' },
+          insideVertical: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' }
+        }
+      });
+      
+      sections.push(table);
+      sections.push(new Paragraph({ text: '' })); // Spacing after table
+      tableData = [];
       inTable = false;
-      tableStartRow = -1;
     }
     
-    // Handle bullet points
-    if (trimmed.startsWith('-') || trimmed.startsWith('*')) {
-      let text = trimmed.replace(/^[-*]\s+/, '').replace(/\*\*/g, '');
-      const kvMatch = text.match(/^(.+?):\s*(.+)$/);
+    // Handle Bullet Points
+    if (line.startsWith('-') || line.startsWith('*')) {
+      let text = line.replace(/^[-*]\s+/, '');
       
-      if (kvMatch) {
-        let value = kvMatch[2].trim();
-        const numMatch = value.match(/^\$?([-]?[\d,]+\.?\d*)/);
-        if (numMatch) {
-          const num = parseFloat(numMatch[1].replace(/,/g, ''));
-          value = isNaN(num) ? value : num;
+      // Parse bold text within bullets
+      const textRuns = [];
+      const parts = text.split(/(\*\*[^*]+\*\*)/g);
+      
+      parts.forEach(part => {
+        if (part.startsWith('**') && part.endsWith('**')) {
+          textRuns.push(new TextRun({
+            text: part.replace(/\*\*/g, ''),
+            bold: true
+          }));
+        } else if (part) {
+          textRuns.push(new TextRun({ text: part }));
         }
-        
-        sheetData.push([kvMatch[1].trim(), value]);
-        styles.push([
-          { font: { bold: true, sz: 11 }, alignment: { wrapText: true } },
-          { font: { sz: 11 }, alignment: { horizontal: typeof value === 'number' ? 'right' : 'left', wrapText: true } }
-        ]);
-      } else {
-        sheetData.push(['• ' + text]);
-        styles.push([{ font: { sz: 11 }, alignment: { wrapText: true } }]);
-      }
-      currentRow++;
+      });
+      
+      sections.push(
+        new Paragraph({
+          children: textRuns,
+          bullet: { level: 0 },
+          spacing: { before: 60, after: 60 }
+        })
+      );
       continue;
     }
     
-    // Regular text
-    const cleanText = trimmed.replace(/\*\*/g, '').replace(/\*/g, '');
-    sheetData.push([cleanText]);
-    styles.push([{ font: { sz: 11 }, alignment: { wrapText: true } }]);
-    currentRow++;
-  }
-  
-  // Create worksheet
-  const ws = XLSX.utils.aoa_to_sheet(sheetData);
-  
-  // Apply styles (note: SheetJS community version has limited styling support)
-  // For full styling, you'd need SheetJS Pro or use a different library
-  
-  // Auto-size columns
-  const colWidths = [];
-  sheetData.forEach(row => {
-    row.forEach((cell, idx) => {
-      const len = String(cell || '').length;
-      if (!colWidths[idx] || len > colWidths[idx]) {
-        colWidths[idx] = Math.min(Math.max(len + 2, 12), 60);
+    // Handle Regular Text with Bold Formatting
+    const textRuns = [];
+    const parts = line.split(/(\*\*[^*]+\*\*)/g);
+    
+    parts.forEach(part => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        textRuns.push(new TextRun({
+          text: part.replace(/\*\*/g, ''),
+          bold: true
+        }));
+      } else if (part) {
+        textRuns.push(new TextRun({ text: part }));
       }
     });
+    
+    if (textRuns.length > 0) {
+      sections.push(
+        new Paragraph({
+          children: textRuns,
+          spacing: { before: 60, after: 60 }
+        })
+      );
+    }
+  }
+  
+  // Create the Word document
+  const doc = new Document({
+    sections: [{
+      properties: {},
+      children: sections
+    }]
   });
-  ws['!cols'] = colWidths.map(w => ({ wch: w }));
   
-  XLSX.utils.book_append_sheet(workbook, ws, 'Analysis Report');
-  
-  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  // Generate buffer and convert to base64
+  const buffer = await Packer.toBuffer(doc);
   return buffer.toString('base64');
 }
 
@@ -908,15 +924,15 @@ export default async function handler(req, res) {
       });
     }
 
-    // ALWAYS generate Excel by default
-    let excelBase64 = null;
+    // ALWAYS generate Word document by default
+    let wordBase64 = null;
     try {
-      console.log("Starting Excel generation...");
-      excelBase64 = markdownToExcel(reply);
-      console.log("✓ Excel file generated successfully, length:", excelBase64.length);
-    } catch (excelError) {
-      console.error("✗ Excel generation error:", excelError);
-      // Don't fail the whole request if Excel fails
+      console.log("Starting Word document generation...");
+      wordBase64 = await markdownToWord(reply);
+      console.log("✓ Word document generated successfully, length:", wordBase64.length);
+    } catch (wordError) {
+      console.error("✗ Word generation error:", wordError);
+      // Don't fail the whole request if Word generation fails
     }
 
     return res.status(200).json({
@@ -924,11 +940,10 @@ export default async function handler(req, res) {
       type: extracted.type,
       category,
       reply,
-      excelDownload: excelBase64,
-      // Add a ready-to-use download URL
-      downloadUrl: excelBase64 ? `/api/download-excel?data=${encodeURIComponent(excelBase64.substring(0, 100))}` : null,
-      excelDownloadUrl: excelBase64 ? `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${excelBase64}` : null,
-      excelSize: excelBase64 ? excelBase64.length : 0,
+      wordDownload: wordBase64,
+      // Direct download URL for Word document
+      downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
+      wordSize: wordBase64 ? wordBase64.length : 0,
       preprocessed: preprocessedData?.processed || false,
       debug: {
         status: httpStatus,
@@ -936,8 +951,8 @@ export default async function handler(req, res) {
         preprocessed: preprocessedData?.processed || false,
         stats: preprocessedData?.stats || null,
         debug_sample: preprocessedData?.debug || null,
-        hasExcel: !!excelBase64,
-        excelGenerated: !!excelBase64
+        hasWord: !!wordBase64,
+        wordGenerated: !!wordBase64
       }
     });
   } catch (err) {
