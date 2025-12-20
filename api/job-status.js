@@ -45,7 +45,8 @@ export default async function handler(req, res) {
       jobId: job.id,
       status: job.status,
       result: job.result,
-      chatId: job.chat_id
+      chatId: job.chat_id,
+      raw_result:job.raw_result
     });
   } catch (err) {
     console.error("job-status error:", err);
