@@ -590,27 +590,43 @@ When totals exist, USE those numbers. Create a markdown table with metrics and i
 }
 
 /**
- * Convert markdown to Excel workbook
+ * Convert markdown to Excel workbook with professional formatting
  */
 function markdownToExcel(markdownText) {
   const workbook = XLSX.utils.book_new();
   const sheetData = [];
+  const merges = [];
+  const styles = [];
   
   const lines = markdownText.split('\n');
+  let currentRow = 0;
+  let inTable = false;
+  let tableStartRow = -1;
   
   for (const line of lines) {
     const trimmed = line.trim();
     
     if (!trimmed) {
       sheetData.push([]);
+      styles.push([]);
+      currentRow++;
       continue;
     }
     
-    // Handle headers
+    // Handle headers (##, ###)
     if (trimmed.startsWith('#')) {
+      const level = (trimmed.match(/^#+/) || [''])[0].length;
       const heading = trimmed.replace(/^#+\s*/, '').replace(/\*\*/g, '');
       sheetData.push([heading]);
-      sheetData.push([]); // Add spacing
+      styles.push([{ 
+        font: { bold: true, sz: 16 - level * 2 }, 
+        fill: { fgColor: { rgb: level === 2 ? 'E7E6E6' : 'F2F2F2' } },
+        alignment: { vertical: 'center', wrapText: true }
+      }]);
+      currentRow++;
+      sheetData.push([]);
+      styles.push([]);
+      currentRow++;
       continue;
     }
     
@@ -620,41 +636,68 @@ function markdownToExcel(markdownText) {
         .map(cell => cell.trim())
         .filter(cell => cell !== '');
       
-      // Skip separator lines (|---|---|)
-      if (cells.every(cell => /^[-:]+$/.test(cell))) continue;
+      // Skip separator lines
+      if (cells.every(cell => /^[-:]+$/.test(cell))) {
+        inTable = true;
+        continue;
+      }
       
-      // Clean cells and parse numbers
+      if (!inTable) {
+        tableStartRow = currentRow;
+        inTable = true;
+      }
+      
+      // Clean and parse cells
       const cleanCells = cells.map(cell => {
         let clean = cell.replace(/\*\*/g, '').replace(/\*/g, '').replace(/`/g, '');
-        
-        // Parse numbers (remove $ and commas)
         const numMatch = clean.match(/^\$?([-]?[\d,]+\.?\d*)$/);
         if (numMatch) {
           const num = parseFloat(numMatch[1].replace(/,/g, ''));
           return isNaN(num) ? clean : num;
         }
-        
-        // Handle checkmarks
-        if (clean === '✓ YES' || clean === 'YES') return 'YES';
-        if (clean === '✗ NO' || clean === 'NO') return 'NO';
-        
         return clean;
       });
       
+      // Apply styles (header row vs data rows)
+      const cellStyles = cleanCells.map((cell, idx) => {
+        const isHeader = currentRow === tableStartRow;
+        const isNumeric = typeof cell === 'number';
+        
+        return {
+          font: { bold: isHeader, sz: 11 },
+          fill: { fgColor: { rgb: isHeader ? '4472C4' : 'FFFFFF' } },
+          font: { bold: isHeader, color: { rgb: isHeader ? 'FFFFFF' : '000000' } },
+          border: {
+            top: { style: 'thin', color: { rgb: '000000' } },
+            bottom: { style: 'thin', color: { rgb: '000000' } },
+            left: { style: 'thin', color: { rgb: '000000' } },
+            right: { style: 'thin', color: { rgb: '000000' } }
+          },
+          alignment: { 
+            horizontal: isNumeric ? 'right' : 'left',
+            vertical: 'center',
+            wrapText: true 
+          },
+          numFmt: isNumeric && !isHeader ? '#,##0' : undefined
+        };
+      });
+      
       sheetData.push(cleanCells);
+      styles.push(cellStyles);
+      currentRow++;
       continue;
+    } else {
+      inTable = false;
+      tableStartRow = -1;
     }
     
     // Handle bullet points
     if (trimmed.startsWith('-') || trimmed.startsWith('*')) {
       let text = trimmed.replace(/^[-*]\s+/, '').replace(/\*\*/g, '');
-      
-      // Split key: value pairs
       const kvMatch = text.match(/^(.+?):\s*(.+)$/);
+      
       if (kvMatch) {
         let value = kvMatch[2].trim();
-        
-        // Parse numeric values
         const numMatch = value.match(/^\$?([-]?[\d,]+\.?\d*)/);
         if (numMatch) {
           const num = parseFloat(numMatch[1].replace(/,/g, ''));
@@ -662,19 +705,30 @@ function markdownToExcel(markdownText) {
         }
         
         sheetData.push([kvMatch[1].trim(), value]);
+        styles.push([
+          { font: { bold: true, sz: 11 }, alignment: { wrapText: true } },
+          { font: { sz: 11 }, alignment: { horizontal: typeof value === 'number' ? 'right' : 'left', wrapText: true } }
+        ]);
       } else {
-        sheetData.push([text]);
+        sheetData.push(['• ' + text]);
+        styles.push([{ font: { sz: 11 }, alignment: { wrapText: true } }]);
       }
+      currentRow++;
       continue;
     }
     
     // Regular text
     const cleanText = trimmed.replace(/\*\*/g, '').replace(/\*/g, '');
     sheetData.push([cleanText]);
+    styles.push([{ font: { sz: 11 }, alignment: { wrapText: true } }]);
+    currentRow++;
   }
   
   // Create worksheet
   const ws = XLSX.utils.aoa_to_sheet(sheetData);
+  
+  // Apply styles (note: SheetJS community version has limited styling support)
+  // For full styling, you'd need SheetJS Pro or use a different library
   
   // Auto-size columns
   const colWidths = [];
@@ -682,16 +736,14 @@ function markdownToExcel(markdownText) {
     row.forEach((cell, idx) => {
       const len = String(cell || '').length;
       if (!colWidths[idx] || len > colWidths[idx]) {
-        colWidths[idx] = Math.min(Math.max(len + 2, 10), 60);
+        colWidths[idx] = Math.min(Math.max(len + 2, 12), 60);
       }
     });
   });
   ws['!cols'] = colWidths.map(w => ({ wch: w }));
   
-  // Add worksheet to workbook
   XLSX.utils.book_append_sheet(workbook, ws, 'Analysis Report');
   
-  // Return base64 encoded Excel file
   const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
   return buffer.toString('base64');
 }
@@ -873,6 +925,8 @@ export default async function handler(req, res) {
       category,
       reply,
       excelDownload: excelBase64,
+      // Add a ready-to-use download URL
+      downloadUrl: excelBase64 ? `/api/download-excel?data=${encodeURIComponent(excelBase64.substring(0, 100))}` : null,
       excelDownloadUrl: excelBase64 ? `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${excelBase64}` : null,
       excelSize: excelBase64 ? excelBase64.length : 0,
       preprocessed: preprocessedData?.processed || false,
