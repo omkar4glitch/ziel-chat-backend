@@ -326,28 +326,39 @@ function extractXlsx(buffer) {
  */
 async function extractDocx(buffer) {
   try {
-    // Read DOCX as a ZIP file using XLSX library
-    const zip = XLSX.read(buffer, { type: "buffer" });
+    // DOCX files are ZIP archives containing XML files
+    // Convert buffer to string and extract text from XML
+    const bufferStr = buffer.toString('binary');
     
-    // DOCX files contain document.xml with the content
-    // This is a simple extraction - for production use a proper library
-    const bufferStr = buffer.toString('utf8', 0, Math.min(buffer.length, 500000));
-    
+    // Look for document.xml content - the main document body
     // Extract text between <w:t> tags (Word text elements)
-    const textMatches = bufferStr.match(/<w:t[^>]*>([^<]+)<\/w:t>/g);
+    const textPattern = /<w:t(?:\s[^>]*)?>(.*?)<\/w:t>/gs;
+    const matches = bufferStr.matchAll(textPattern);
     
-    if (textMatches && textMatches.length > 0) {
-      const text = textMatches
-        .map(match => match.replace(/<\/?w:t[^>]*>/g, ''))
-        .filter(t => t.trim())
-        .join(' ');
-      
-      if (text.length > 10) {
-        return { type: "docx", textContent: text };
+    let extractedText = [];
+    for (const match of matches) {
+      if (match[1] && match[1].trim()) {
+        extractedText.push(match[1].trim());
       }
     }
     
-    return { type: "docx", textContent: "", error: "No text found in Word document" };
+    if (extractedText.length === 0) {
+      // Try alternative approach - look for any readable text
+      const readableText = bufferStr
+        .replace(/[^\x20-\x7E\n\r]/g, ' ') // Keep only printable ASCII
+        .split(/\s+/)
+        .filter(word => word.length > 2 && /[a-zA-Z0-9]/.test(word))
+        .join(' ');
+      
+      if (readableText.length > 50) {
+        return { type: "docx", textContent: readableText };
+      }
+      
+      return { type: "docx", textContent: "", error: "No text found in Word document" };
+    }
+    
+    const text = extractedText.join(' ');
+    return { type: "docx", textContent: text };
   } catch (err) {
     console.error("extractDocx failed:", err?.message || err);
     return { type: "docx", textContent: "", error: String(err?.message || err) };
@@ -387,6 +398,16 @@ async function extractPptx(buffer) {
  */
 async function extractImage(buffer, fileType) {
   try {
+    // Check if API key exists
+    if (!process.env.ANTHROPIC_API_KEY) {
+      console.error("Missing ANTHROPIC_API_KEY for image processing");
+      return { 
+        type: fileType, 
+        textContent: "", 
+        error: "Image processing requires ANTHROPIC_API_KEY environment variable"
+      };
+    }
+    
     const base64Image = buffer.toString('base64');
     
     let mediaType = 'image/jpeg';
@@ -394,11 +415,14 @@ async function extractImage(buffer, fileType) {
     else if (fileType === 'gif') mediaType = 'image/gif';
     else if (fileType === 'webp') mediaType = 'image/webp';
     
-    // Call Claude Vision API
+    console.log(`Calling Vision API for ${fileType} image...`);
+    
+    // Call Claude Vision API with proper authentication
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
         "anthropic-version": "2023-06-01"
       },
       body: JSON.stringify({
@@ -427,11 +451,12 @@ async function extractImage(buffer, fileType) {
     });
     
     if (!response.ok) {
-      console.error("Vision API error:", response.status, response.statusText);
+      const errorText = await response.text().catch(() => "");
+      console.error("Vision API error:", response.status, errorText);
       return { 
         type: fileType, 
         textContent: "", 
-        error: `Vision API failed: ${response.status}`
+        error: `Vision API failed: ${response.status}. Please ensure ANTHROPIC_API_KEY is set correctly.`
       };
     }
     
@@ -445,6 +470,8 @@ async function extractImage(buffer, fileType) {
         error: "Could not extract text from image"
       };
     }
+    
+    console.log(`Successfully extracted ${extractedText.length} characters from image`);
     
     return { 
       type: fileType, 
