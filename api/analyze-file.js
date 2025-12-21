@@ -1,7 +1,26 @@
-import fetch from "node-fetch";
+/**
+ * Extract PDF
+ */
+async function extractPdf(buffer) {
+  try {
+    const data = await pdf(buffer);
+    const text = (data && data.text) ? data.text.trim() : "";
+
+    if (!text || text.length < 50) {
+      return { type: "pdf", textContent: "", ocrNeeded: true };
+    }
+
+    return { type: "pdf", textContent: text, ocrNeeded: false };
+  } catch (err) {
+    console.error("extractPdf failed:", err?.message || err);
+    return { type: "pdf", textContent: "", error: String(err?.message || err) };
+  }
+}import fetch from "node-fetch";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
+import mammoth from "mammoth";
+import * as pptxParser from "pptx-parse";
 
 /**
  * CORS helper
@@ -95,12 +114,36 @@ function detectFileType(fileUrl, contentType, buffer) {
   const lowerType = (contentType || "").toLowerCase();
 
   if (buffer && buffer.length >= 4) {
-    if (buffer[0] === 0x50 && buffer[1] === 0x4b) return "xlsx";
+    // Check magic numbers
+    if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
+      // PK header - could be XLSX, DOCX, or PPTX
+      if (lowerUrl.includes('.docx') || lowerType.includes('wordprocessing')) return "docx";
+      if (lowerUrl.includes('.pptx') || lowerType.includes('presentation')) return "pptx";
+      return "xlsx";
+    }
     if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46)
       return "pdf";
+    // PNG signature
+    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47)
+      return "png";
+    // JPEG signature
+    if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF)
+      return "jpg";
+    // GIF signature
+    if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46)
+      return "gif";
   }
 
+  // Check by URL/content-type
   if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) return "pdf";
+  
+  // Office documents
+  if (lowerUrl.endsWith(".docx") || lowerType.includes("wordprocessing")) return "docx";
+  if (lowerUrl.endsWith(".doc")) return "doc";
+  if (lowerUrl.endsWith(".pptx") || lowerType.includes("presentation")) return "pptx";
+  if (lowerUrl.endsWith(".ppt")) return "ppt";
+  
+  // Spreadsheets
   if (
     lowerUrl.endsWith(".xlsx") ||
     lowerUrl.endsWith(".xls") ||
@@ -108,7 +151,15 @@ function detectFileType(fileUrl, contentType, buffer) {
     lowerType.includes("sheet") ||
     lowerType.includes("excel")
   ) return "xlsx";
+  
   if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv")) return "csv";
+  
+  // Images
+  if (lowerUrl.endsWith(".png") || lowerType.includes("image/png")) return "png";
+  if (lowerUrl.endsWith(".jpg") || lowerUrl.endsWith(".jpeg") || lowerType.includes("image/jpeg")) return "jpg";
+  if (lowerUrl.endsWith(".gif") || lowerType.includes("image/gif")) return "gif";
+  if (lowerUrl.endsWith(".bmp") || lowerType.includes("image/bmp")) return "bmp";
+  if (lowerUrl.endsWith(".webp") || lowerType.includes("image/webp")) return "webp";
 
   return "csv";
 }
@@ -273,21 +324,131 @@ function extractXlsx(buffer) {
 }
 
 /**
- * Extract PDF
+ * Extract Word Document (.docx)
  */
-async function extractPdf(buffer) {
+async function extractDocx(buffer) {
   try {
-    const data = await pdf(buffer);
-    const text = (data && data.text) ? data.text.trim() : "";
-
-    if (!text || text.length < 50) {
-      return { type: "pdf", textContent: "", ocrNeeded: true };
+    const result = await mammoth.extractRawText({ buffer: buffer });
+    const text = result.value.trim();
+    
+    if (!text || text.length < 10) {
+      return { type: "docx", textContent: "", error: "No text found in document" };
     }
-
-    return { type: "pdf", textContent: text, ocrNeeded: false };
+    
+    return { type: "docx", textContent: text };
   } catch (err) {
-    console.error("extractPdf failed:", err?.message || err);
-    return { type: "pdf", textContent: "", error: String(err?.message || err) };
+    console.error("extractDocx failed:", err?.message || err);
+    return { type: "docx", textContent: "", error: String(err?.message || err) };
+  }
+}
+
+/**
+ * Extract PowerPoint (.pptx)
+ */
+async function extractPptx(buffer) {
+  try {
+    // Parse PPTX as a zip file
+    const workbook = XLSX.read(buffer, { type: "buffer" });
+    
+    // PPTX files contain XML, we'll extract text from slide XML files
+    let allText = "";
+    
+    // This is a simplified approach - for production, use a proper PPTX parser
+    // For now, we'll try to extract any text content
+    const bufferStr = buffer.toString('utf8', 0, Math.min(buffer.length, 100000));
+    
+    // Simple regex to find text between XML tags
+    const textMatches = bufferStr.match(/<a:t>([^<]+)<\/a:t>/g);
+    
+    if (textMatches && textMatches.length > 0) {
+      allText = textMatches
+        .map(match => match.replace(/<\/?a:t>/g, ''))
+        .filter(text => text.trim())
+        .join('\n');
+    }
+    
+    if (!allText || allText.length < 10) {
+      return { type: "pptx", textContent: "", error: "No text found in presentation" };
+    }
+    
+    return { type: "pptx", textContent: allText };
+  } catch (err) {
+    console.error("extractPptx failed:", err?.message || err);
+    return { type: "pptx", textContent: "", error: String(err?.message || err) };
+  }
+}
+
+/**
+ * Extract Image (PNG, JPG, etc.) - Using OCR via API
+ */
+async function extractImage(buffer, fileType) {
+  try {
+    // Convert buffer to base64 for sending to Claude API
+    const base64Image = buffer.toString('base64');
+    
+    // Determine media type
+    let mediaType = 'image/jpeg';
+    if (fileType === 'png') mediaType = 'image/png';
+    else if (fileType === 'gif') mediaType = 'image/gif';
+    else if (fileType === 'webp') mediaType = 'image/webp';
+    
+    // Use Claude API for image analysis (vision capability)
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 2000,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: mediaType,
+                  data: base64Image
+                }
+              },
+              {
+                type: "text",
+                text: "Extract all text, numbers, tables, and financial data from this image. If it contains financial statements, invoices, receipts, or accounting documents, extract all relevant information in a structured format."
+              }
+            ]
+          }
+        ]
+      })
+    });
+    
+    const data = await response.json();
+    const extractedText = data?.content?.[0]?.text || "";
+    
+    if (!extractedText || extractedText.length < 10) {
+      return { 
+        type: fileType, 
+        textContent: "", 
+        requiresVision: true,
+        error: "Could not extract text from image"
+      };
+    }
+    
+    return { 
+      type: fileType, 
+      textContent: extractedText,
+      isImageExtraction: true
+    };
+  } catch (err) {
+    console.error("extractImage failed:", err?.message || err);
+    return { 
+      type: fileType, 
+      textContent: "", 
+      requiresVision: true,
+      error: String(err?.message || err) 
+    };
   }
 }
 
@@ -849,11 +1010,20 @@ export default async function handler(req, res) {
     const detectedType = detectFileType(fileUrl, contentType, buffer);
 
     let extracted = { type: detectedType, textContent: "" };
+    
+    // Route to appropriate extractor based on file type
     if (detectedType === "pdf") {
       extracted = await extractPdf(buffer);
+    } else if (detectedType === "docx") {
+      extracted = await extractDocx(buffer);
+    } else if (detectedType === "pptx") {
+      extracted = await extractPptx(buffer);
     } else if (detectedType === "xlsx") {
       extracted = extractXlsx(buffer);
+    } else if (["png", "jpg", "jpeg", "gif", "bmp", "webp"].includes(detectedType)) {
+      extracted = await extractImage(buffer, detectedType);
     } else {
+      // Default to CSV
       extracted = extractCsv(buffer);
     }
 
@@ -872,6 +1042,15 @@ export default async function handler(req, res) {
         type: "pdf",
         reply: "This PDF requires OCR to extract text.",
         debug: { ocrNeeded: true }
+      });
+    }
+    
+    if (extracted.requiresVision) {
+      return res.status(200).json({
+        ok: false,
+        type: extracted.type,
+        reply: "Could not extract text from image. Please ensure the image contains clear, readable text.",
+        debug: { requiresVision: true }
       });
     }
 
