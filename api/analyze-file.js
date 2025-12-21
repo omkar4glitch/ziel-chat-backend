@@ -19,8 +19,6 @@ async function extractPdf(buffer) {
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
-import mammoth from "mammoth";
-import * as pptxParser from "pptx-parse";
 
 /**
  * CORS helper
@@ -328,14 +326,28 @@ function extractXlsx(buffer) {
  */
 async function extractDocx(buffer) {
   try {
-    const result = await mammoth.extractRawText({ buffer: buffer });
-    const text = result.value.trim();
+    // Read DOCX as a ZIP file using XLSX library
+    const zip = XLSX.read(buffer, { type: "buffer" });
     
-    if (!text || text.length < 10) {
-      return { type: "docx", textContent: "", error: "No text found in document" };
+    // DOCX files contain document.xml with the content
+    // This is a simple extraction - for production use a proper library
+    const bufferStr = buffer.toString('utf8', 0, Math.min(buffer.length, 500000));
+    
+    // Extract text between <w:t> tags (Word text elements)
+    const textMatches = bufferStr.match(/<w:t[^>]*>([^<]+)<\/w:t>/g);
+    
+    if (textMatches && textMatches.length > 0) {
+      const text = textMatches
+        .map(match => match.replace(/<\/?w:t[^>]*>/g, ''))
+        .filter(t => t.trim())
+        .join(' ');
+      
+      if (text.length > 10) {
+        return { type: "docx", textContent: text };
+      }
     }
     
-    return { type: "docx", textContent: text };
+    return { type: "docx", textContent: "", error: "No text found in Word document" };
   } catch (err) {
     console.error("extractDocx failed:", err?.message || err);
     return { type: "docx", textContent: "", error: String(err?.message || err) };
@@ -347,31 +359,23 @@ async function extractDocx(buffer) {
  */
 async function extractPptx(buffer) {
   try {
-    // Parse PPTX as a zip file
-    const workbook = XLSX.read(buffer, { type: "buffer" });
+    const bufferStr = buffer.toString('utf8', 0, Math.min(buffer.length, 500000));
     
-    // PPTX files contain XML, we'll extract text from slide XML files
-    let allText = "";
-    
-    // This is a simplified approach - for production, use a proper PPTX parser
-    // For now, we'll try to extract any text content
-    const bufferStr = buffer.toString('utf8', 0, Math.min(buffer.length, 100000));
-    
-    // Simple regex to find text between XML tags
+    // PPTX text is in <a:t> tags
     const textMatches = bufferStr.match(/<a:t>([^<]+)<\/a:t>/g);
     
     if (textMatches && textMatches.length > 0) {
-      allText = textMatches
+      const text = textMatches
         .map(match => match.replace(/<\/?a:t>/g, ''))
-        .filter(text => text.trim())
+        .filter(t => t.trim())
         .join('\n');
+      
+      if (text.length > 10) {
+        return { type: "pptx", textContent: text };
+      }
     }
     
-    if (!allText || allText.length < 10) {
-      return { type: "pptx", textContent: "", error: "No text found in presentation" };
-    }
-    
-    return { type: "pptx", textContent: allText };
+    return { type: "pptx", textContent: "", error: "No text found in PowerPoint" };
   } catch (err) {
     console.error("extractPptx failed:", err?.message || err);
     return { type: "pptx", textContent: "", error: String(err?.message || err) };
@@ -379,20 +383,18 @@ async function extractPptx(buffer) {
 }
 
 /**
- * Extract Image (PNG, JPG, etc.) - Using OCR via API
+ * Extract Image (PNG, JPG, etc.) - Using Vision API
  */
 async function extractImage(buffer, fileType) {
   try {
-    // Convert buffer to base64 for sending to Claude API
     const base64Image = buffer.toString('base64');
     
-    // Determine media type
     let mediaType = 'image/jpeg';
     if (fileType === 'png') mediaType = 'image/png';
     else if (fileType === 'gif') mediaType = 'image/gif';
     else if (fileType === 'webp') mediaType = 'image/webp';
     
-    // Use Claude API for image analysis (vision capability)
+    // Call Claude Vision API
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -424,6 +426,15 @@ async function extractImage(buffer, fileType) {
       })
     });
     
+    if (!response.ok) {
+      console.error("Vision API error:", response.status, response.statusText);
+      return { 
+        type: fileType, 
+        textContent: "", 
+        error: `Vision API failed: ${response.status}`
+      };
+    }
+    
     const data = await response.json();
     const extractedText = data?.content?.[0]?.text || "";
     
@@ -431,7 +442,6 @@ async function extractImage(buffer, fileType) {
       return { 
         type: fileType, 
         textContent: "", 
-        requiresVision: true,
         error: "Could not extract text from image"
       };
     }
@@ -446,7 +456,6 @@ async function extractImage(buffer, fileType) {
     return { 
       type: fileType, 
       textContent: "", 
-      requiresVision: true,
       error: String(err?.message || err) 
     };
   }
@@ -1050,7 +1059,7 @@ export default async function handler(req, res) {
         ok: false,
         type: extracted.type,
         reply: "Could not extract text from image. Please ensure the image contains clear, readable text.",
-        debug: { requiresVision: true }
+        debug: { requiresVision: true, error: extracted.error }
       });
     }
 
