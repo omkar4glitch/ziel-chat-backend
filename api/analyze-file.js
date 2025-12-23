@@ -322,92 +322,165 @@ function extractXlsx(buffer) {
 }
 
 /**
- * Extract Word Document (.docx)
+ * Extract Word Document (.docx) - Improved extraction
  */
 async function extractDocx(buffer) {
   try {
-    // DOCX files are ZIP archives containing XML files
-    // Convert buffer to string and extract text from XML
-    const bufferStr = buffer.toString('binary');
+    // DOCX is a ZIP file containing XML - extract as string
+    let allText = [];
     
-    // Look for document.xml content - the main document body
-    // Extract text between <w:t> tags (Word text elements)
-    const textPattern = /<w:t(?:\s[^>]*)?>(.*?)<\/w:t>/gs;
-    const matches = bufferStr.matchAll(textPattern);
+    // Method 1: Try to find readable text in the binary
+    const str = buffer.toString('latin1');
     
-    let extractedText = [];
-    for (const match of matches) {
-      if (match[1] && match[1].trim()) {
-        extractedText.push(match[1].trim());
+    // Find all text between XML tags that contain actual content
+    const xmlTextPattern = /<w:t[^>]*>([^<]+)<\/w:t>/g;
+    let match;
+    
+    while ((match = xmlTextPattern.exec(str)) !== null) {
+      const text = match[1];
+      // Decode XML entities and clean up
+      const cleaned = text
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .trim();
+      
+      if (cleaned && cleaned.length > 0) {
+        allText.push(cleaned);
       }
     }
     
-    if (extractedText.length === 0) {
-      // Try alternative approach - look for any readable text
-      const readableText = bufferStr
-        .replace(/[^\x20-\x7E\n\r]/g, ' ') // Keep only printable ASCII
-        .split(/\s+/)
-        .filter(word => word.length > 2 && /[a-zA-Z0-9]/.test(word))
-        .join(' ');
+    // Method 2: If method 1 didn't work, try extracting readable ASCII
+    if (allText.length === 0) {
+      console.log("Trying alternative DOCX extraction method...");
       
-      if (readableText.length > 50) {
-        return { type: "docx", textContent: readableText };
-      }
+      // Extract readable text (letters, numbers, basic punctuation)
+      const readableChunks = str.match(/[a-zA-Z0-9\s\.,!?\-\$%\(\)]+/g);
       
-      return { type: "docx", textContent: "", error: "No text found in Word document" };
-    }
-    
-    const text = extractedText.join(' ');
-    return { type: "docx", textContent: text };
-  } catch (err) {
-    console.error("extractDocx failed:", err?.message || err);
-    return { type: "docx", textContent: "", error: String(err?.message || err) };
-  }
-}
-
-/**
- * Extract PowerPoint (.pptx)
- */
-async function extractPptx(buffer) {
-  try {
-    const bufferStr = buffer.toString('utf8', 0, Math.min(buffer.length, 500000));
-    
-    // PPTX text is in <a:t> tags
-    const textMatches = bufferStr.match(/<a:t>([^<]+)<\/a:t>/g);
-    
-    if (textMatches && textMatches.length > 0) {
-      const text = textMatches
-        .map(match => match.replace(/<\/?a:t>/g, ''))
-        .filter(t => t.trim())
-        .join('\n');
-      
-      if (text.length > 10) {
-        return { type: "pptx", textContent: text };
+      if (readableChunks) {
+        allText = readableChunks
+          .filter(chunk => {
+            // Filter out XML tags and keep meaningful text
+            return chunk.length > 3 && 
+                   !/^[0-9]+$/.test(chunk) && 
+                   /[a-zA-Z]/.test(chunk);
+          })
+          .map(chunk => chunk.trim());
       }
     }
     
-    return { type: "pptx", textContent: "", error: "No text found in PowerPoint" };
-  } catch (err) {
-    console.error("extractPptx failed:", err?.message || err);
-    return { type: "pptx", textContent: "", error: String(err?.message || err) };
-  }
-}
-
-/**
- * Extract Image (PNG, JPG, etc.) - Using Vision API
- */
-async function extractImage(buffer, fileType) {
-  try {
-    // Check if API key exists
-    if (!process.env.ANTHROPIC_API_KEY) {
-      console.error("Missing ANTHROPIC_API_KEY for image processing");
+    if (allText.length === 0) {
       return { 
-        type: fileType, 
+        type: "docx", 
         textContent: "", 
-        error: "Image processing requires ANTHROPIC_API_KEY environment variable"
+        error: "Could not extract text from Word document. Please try converting to PDF or TXT format." 
       };
     }
     
+    const finalText = allText.join(' ').trim();
+    
+    console.log(`Extracted ${finalText.length} characters from DOCX`);
+    
+    if (finalText.length < 20) {
+      return { 
+        type: "docx", 
+        textContent: "", 
+        error: "Document appears to be empty or unreadable" 
+      };
+    }
+    
+    return { type: "docx", textContent: finalText };
+  } catch (err) {
+    console.error("extractDocx failed:", err?.message || err);
+    return { 
+      type: "docx", 
+      textContent: "", 
+      error: `Failed to extract Word document: ${err?.message || err}` 
+    };
+  }
+}
+
+/**
+ * Extract PowerPoint (.pptx) - Improved extraction
+ */
+async function extractPptx(buffer) {
+  try {
+    const bufferStr = buffer.toString('latin1');
+    
+    // PPTX text is in <a:t> tags
+    const textPattern = /<a:t[^>]*>([^<]+)<\/a:t>/g;
+    let match;
+    let allText = [];
+    
+    while ((match = textPattern.exec(bufferStr)) !== null) {
+      const text = match[1];
+      const cleaned = text
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .trim();
+      
+      if (cleaned && cleaned.length > 0) {
+        allText.push(cleaned);
+      }
+    }
+    
+    // Alternative: also look for <a:p> paragraph tags
+    if (allText.length < 5) {
+      const paraPattern = /<a:p[^>]*>(.*?)<\/a:p>/gs;
+      const paraMatches = bufferStr.matchAll(paraPattern);
+      
+      for (const match of paraMatches) {
+        const innerText = match[1].replace(/<[^>]+>/g, ' ').trim();
+        if (innerText.length > 2) {
+          allText.push(innerText);
+        }
+      }
+    }
+    
+    if (allText.length === 0) {
+      return { 
+        type: "pptx", 
+        textContent: "", 
+        error: "No text found in PowerPoint. Please try exporting as PDF." 
+      };
+    }
+    
+    const text = allText.join('\n').trim();
+    
+    console.log(`Extracted ${text.length} characters from PPTX`);
+    
+    if (text.length < 20) {
+      return { 
+        type: "pptx", 
+        textContent: "", 
+        error: "Presentation appears to be empty or contains mostly images" 
+      };
+    }
+    
+    return { type: "pptx", textContent: text };
+  } catch (err) {
+    console.error("extractPptx failed:", err?.message || err);
+    return { 
+      type: "pptx", 
+      textContent: "", 
+      error: String(err?.message || err) 
+    };
+  }
+}
+
+/**
+ * Extract Image (PNG, JPG, etc.) - FREE alternative using base64 data URL
+ * Note: For true OCR, users should convert images to PDF first or use external OCR tools
+ */
+async function extractImage(buffer, fileType) {
+  try {
+    // Since we can't use paid OCR services, we'll return the image as base64
+    // and let the user know they need to use OCR tools or convert to text
     const base64Image = buffer.toString('base64');
     
     let mediaType = 'image/jpeg';
@@ -415,75 +488,38 @@ async function extractImage(buffer, fileType) {
     else if (fileType === 'gif') mediaType = 'image/gif';
     else if (fileType === 'webp') mediaType = 'image/webp';
     
-    console.log(`Calling Vision API for ${fileType} image...`);
-    
-    // Call Claude Vision API with proper authentication
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01"
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 2000,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: mediaType,
-                  data: base64Image
-                }
-              },
-              {
-                type: "text",
-                text: "Extract all text, numbers, tables, and financial data from this image. If it contains financial statements, invoices, receipts, or accounting documents, extract all relevant information in a structured format."
-              }
-            ]
-          }
-        ]
-      })
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => "");
-      console.error("Vision API error:", response.status, errorText);
-      return { 
-        type: fileType, 
-        textContent: "", 
-        error: `Vision API failed: ${response.status}. Please ensure ANTHROPIC_API_KEY is set correctly.`
-      };
-    }
-    
-    const data = await response.json();
-    const extractedText = data?.content?.[0]?.text || "";
-    
-    if (!extractedText || extractedText.length < 10) {
-      return { 
-        type: fileType, 
-        textContent: "", 
-        error: "Could not extract text from image"
-      };
-    }
-    
-    console.log(`Successfully extracted ${extractedText.length} characters from image`);
+    // Return helpful message
+    const message = `This is an image file (${fileType.toUpperCase()}). 
+
+For best results with financial documents:
+1. Convert the image to PDF format first
+2. Use online OCR tools (like Google Drive's OCR feature - free)
+3. Or manually extract the text and upload as CSV/Excel
+
+Image information:
+- Type: ${fileType.toUpperCase()}
+- Size: ${(buffer.length / 1024).toFixed(2)} KB
+- Format: ${mediaType}
+
+If this is a scanned financial document, please:
+- Take a clearer photo with good lighting
+- Ensure text is readable and not blurry
+- Convert to PDF using your phone's scanner app (most are free)
+- Then upload the PDF instead`;
     
     return { 
       type: fileType, 
-      textContent: extractedText,
-      isImageExtraction: true
+      textContent: message,
+      isImage: true,
+      requiresManualProcessing: true,
+      imageData: base64Image.substring(0, 100) + "..." // Just a preview
     };
   } catch (err) {
     console.error("extractImage failed:", err?.message || err);
     return { 
       type: fileType, 
       textContent: "", 
-      error: String(err?.message || err) 
+      error: `Image processing error: ${err?.message || err}. Please convert image to PDF or text format.`
     };
   }
 }
@@ -1081,12 +1117,18 @@ export default async function handler(req, res) {
       });
     }
     
-    if (extracted.requiresVision) {
+    if (extracted.requiresVision || extracted.requiresManualProcessing) {
       return res.status(200).json({
-        ok: false,
+        ok: true,
         type: extracted.type,
-        reply: "Could not extract text from image. Please ensure the image contains clear, readable text.",
-        debug: { requiresVision: true, error: extracted.error }
+        reply: extracted.textContent || "This file type requires manual processing. Please see the message below for instructions.",
+        category: "image",
+        preprocessed: false,
+        debug: { 
+          requiresManualProcessing: true, 
+          isImage: extracted.isImage || false,
+          message: "Images cannot be processed automatically. Please convert to PDF or text format."
+        }
       });
     }
 
