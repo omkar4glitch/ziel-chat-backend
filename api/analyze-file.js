@@ -783,39 +783,32 @@ function detectDocumentCategory(textContent) {
  * Get system prompt
  */
 function getSystemPrompt(category, isPreprocessed = false, accountCount = 0) {
-  if (category === 'gl' && isPreprocessed) {
-    return `You are an expert accounting assistant. You've been given PRE-CALCULATED GL data.
-
-**CRITICAL INSTRUCTIONS:**
-1. The data is ALREADY CALCULATED - do NOT recalculate
-2. Use the exact numbers provided in the summary table
-3. ALL ${accountCount} accounts are included - reference any account by name
-4. Your job is to INTERPRET and PROVIDE INSIGHTS
-5. All amounts are in USD ($) and already rounded to whole dollars
-6. For percentages in your analysis, use 2 decimal places (e.g., 25.50%)
-
-**Your Response Format:**
-1. Start with "**General Ledger Analysis**"
-2. Present key statistics (Total Debits, Credits, Balance status)
-3. Reference the account summary table
-4. Add observations:
-   - Highest activity accounts
-   - Balance verification
-   - Account type breakdown (Assets, Liabilities, Revenue, Expenses)
-   - Any anomalies or unusual entries
-5. Add recommendations:
-   - Reconciliation needs
-   - Potential errors
-   - Compliance considerations
-
-DO NOT make up numbers. Use ONLY the data provided.
-Respond in clean markdown format.`;
-  }
-
   if (category === 'gl') {
     return `You are an expert accounting assistant analyzing General Ledger entries.
 
-Parse the data, group by account, sum debits/credits, and present findings in markdown.`;
+**INSTRUCTIONS:**
+1. You have access to the FULL, COMPLETE General Ledger data - analyze ALL entries in detail
+2. DO NOT summarize - examine every transaction, every account, every entry
+3. If multiple sheets are present (e.g., Bank Statement + General Ledger), compare them thoroughly
+4. Identify ALL unmatched items, discrepancies, missing entries, or reconciliation issues
+5. For bank reconciliation: Match each bank transaction with corresponding GL entries
+6. Highlight any transactions that appear in one sheet but not the other
+7. Calculate totals, but also show individual problematic transactions
+
+**Your Response Should Include:**
+1. Overview of all sheets/data sources
+2. Complete reconciliation analysis (if applicable)
+3. List of ALL unmatched/problematic items with transaction details
+4. Account-by-account analysis where relevant
+5. Specific recommendations for each issue found
+
+Respond in clean markdown format with detailed tables showing problematic transactions.`;
+  }
+
+  if (category === 'pl') {
+    return `You are an expert accounting assistant analyzing Profit & Loss statements.
+
+Analyze the complete data and provide insights with observations and recommendations in markdown format.`;
   }
 
   return `You are an expert accounting assistant analyzing financial statements.
@@ -1000,33 +993,31 @@ async function markdownToWord(markdownText) {
 /**
  * Model call
  */
-async function callModel({ fileType, textContent, question, category, preprocessedData }) {
+async function callModel({ fileType, textContent, question, category, preprocessedData, fullData }) {
+  // Use full data for GL files, not the preprocessed summary
   let content = textContent;
-  let isPreprocessed = false;
-  let accountCount = 0;
-
-  if (preprocessedData && preprocessedData.processed) {
-    content = preprocessedData.summary;
-    isPreprocessed = true;
-    accountCount = preprocessedData.stats?.accountCount || 0;
-    console.log("Using preprocessed GL summary");
+  
+  // For GL files, send the complete data instead of summary
+  if (category === 'gl' && fullData) {
+    content = fullData;
+    console.log("Using FULL GL data for detailed analysis");
   }
 
-  const trimmed = content.length > 60000 
-    ? content.slice(0, 60000) + "\n\n[Content truncated]"
+  const trimmed = content.length > 100000 
+    ? content.slice(0, 100000) + "\n\n[Content truncated due to length]"
     : content;
 
-  const systemPrompt = getSystemPrompt(category, isPreprocessed, accountCount);
+  const systemPrompt = getSystemPrompt(category, false, 0);
 
   const messages = [
     { role: "system", content: systemPrompt },
     { 
       role: "user", 
-      content: `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\n${trimmed}`
+      content: `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\nData contains ${content.length} characters.\n\n${trimmed}`
     },
     {
       role: "user",
-      content: question || "Analyze this data and provide insights with observations and recommendations."
+      content: question || "Analyze this data in complete detail. If there are multiple sheets, perform reconciliation and identify ALL unmatched items."
     }
   ];
 
@@ -1134,14 +1125,42 @@ export default async function handler(req, res) {
 
     let preprocessedData = null;
     let category = 'general';
+    let fullDataForGL = null;
     
     if (extracted.rows) {
       const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
       category = detectDocumentCategory(sampleText);
+      
+      // Store full data for GL analysis
       if (category === 'gl') {
+        // Convert rows to CSV format with ALL data
+        const headers = Object.keys(extracted.rows[0] || {}).filter(h => h !== '__sheet_name');
+        const csvLines = [headers.join(',')];
+        
+        let currentSheet = null;
+        extracted.rows.forEach(row => {
+          // Add sheet separator if it changes
+          if (row.__sheet_name && row.__sheet_name !== currentSheet) {
+            currentSheet = row.__sheet_name;
+            csvLines.push(`\n### Sheet: ${currentSheet} ###`);
+          }
+          
+          const values = headers.map(h => {
+            const val = row[h] || '';
+            // Escape commas and quotes in CSV
+            return typeof val === 'string' && (val.includes(',') || val.includes('"')) 
+              ? `"${val.replace(/"/g, '""')}"` 
+              : val;
+          });
+          csvLines.push(values.join(','));
+        });
+        
+        fullDataForGL = csvLines.join('\n');
+        console.log(`Prepared full GL data: ${fullDataForGL.length} characters, ${extracted.rows.length} rows`);
+        
+        // Still preprocess for statistics (but won't use for AI)
         preprocessedData = preprocessGLData(extracted.rows);
         console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
-        if (!preprocessedData.processed) console.log("Preprocessing failed:", preprocessedData.reason);
       }
     } else {
       const textContent = extracted.textContent || '';
@@ -1158,9 +1177,9 @@ export default async function handler(req, res) {
       console.log(`Category: ${category}`);
 
       if (category === 'gl') {
+        fullDataForGL = textContent; // Use full CSV text
         preprocessedData = preprocessGLData(textContent);
         console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
-        if (!preprocessedData.processed) console.log("Preprocessing failed:", preprocessedData.reason);
       }
     }
 
@@ -1169,7 +1188,8 @@ export default async function handler(req, res) {
       textContent: extracted.textContent || '',
       question,
       category,
-      preprocessedData
+      preprocessedData,
+      fullData: fullDataForGL // Pass full data for GL files
     });
 
     if (!reply) {
