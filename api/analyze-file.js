@@ -322,82 +322,132 @@ function extractXlsx(buffer) {
 }
 
 /**
- * Extract Word Document (.docx) - Improved extraction
+ * Extract Word Document (.docx) - Complete rewrite with proper extraction
  */
 async function extractDocx(buffer) {
   try {
-    // DOCX is a ZIP file containing XML - extract as string
-    let allText = [];
+    // DOCX is a ZIP file - we need to parse it properly
+    // Use XLSX to read the ZIP structure
+    const AdmZip = require('adm-zip');
     
-    // Method 1: Try to find readable text in the binary
-    const str = buffer.toString('latin1');
-    
-    // Find all text between XML tags that contain actual content
-    const xmlTextPattern = /<w:t[^>]*>([^<]+)<\/w:t>/g;
-    let match;
-    
-    while ((match = xmlTextPattern.exec(str)) !== null) {
-      const text = match[1];
-      // Decode XML entities and clean up
-      const cleaned = text
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&')
-        .replace(/&quot;/g, '"')
-        .replace(/&apos;/g, "'")
-        .trim();
+    try {
+      const zip = new AdmZip(buffer);
+      const zipEntries = zip.getEntries();
       
-      if (cleaned && cleaned.length > 0) {
-        allText.push(cleaned);
+      // Find document.xml which contains the main content
+      const documentXml = zipEntries.find(entry => 
+        entry.entryName === 'word/document.xml'
+      );
+      
+      if (!documentXml) {
+        console.log("document.xml not found, trying alternative extraction");
+        return extractDocxFallback(buffer);
       }
-    }
-    
-    // Method 2: If method 1 didn't work, try extracting readable ASCII
-    if (allText.length === 0) {
-      console.log("Trying alternative DOCX extraction method...");
       
-      // Extract readable text (letters, numbers, basic punctuation)
-      const readableChunks = str.match(/[a-zA-Z0-9\s\.,!?\-\$%\(\)]+/g);
+      // Get the XML content
+      const xmlContent = documentXml.getData().toString('utf8');
       
-      if (readableChunks) {
-        allText = readableChunks
-          .filter(chunk => {
-            // Filter out XML tags and keep meaningful text
-            return chunk.length > 3 && 
-                   !/^[0-9]+$/.test(chunk) && 
-                   /[a-zA-Z]/.test(chunk);
-          })
-          .map(chunk => chunk.trim());
+      // Extract text from <w:t> tags
+      const textMatches = xmlContent.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g);
+      const textParts = [];
+      
+      for (const match of textMatches) {
+        if (match[1]) {
+          // Decode XML entities
+          const decoded = match[1]
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&amp;/g, '&')
+            .replace(/&quot;/g, '"')
+            .replace(/&apos;/g, "'");
+          
+          if (decoded.trim()) {
+            textParts.push(decoded);
+          }
+        }
       }
+      
+      // Also extract from tables if present
+      const tableMatches = xmlContent.matchAll(/<w:tbl>(.*?)<\/w:tbl>/gs);
+      for (const tableMatch of tableMatches) {
+        const tableCells = tableMatch[1].matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g);
+        for (const cell of tableCells) {
+          if (cell[1] && cell[1].trim()) {
+            textParts.push(cell[1].trim());
+          }
+        }
+      }
+      
+      if (textParts.length === 0) {
+        return { 
+          type: "docx", 
+          textContent: "", 
+          error: "No readable text found in Word document" 
+        };
+      }
+      
+      const fullText = textParts.join(' ');
+      
+      console.log(`Extracted ${fullText.length} characters from DOCX (${textParts.length} text elements)`);
+      
+      return { type: "docx", textContent: fullText };
+      
+    } catch (zipError) {
+      console.log("ZIP extraction failed, trying fallback:", zipError.message);
+      return extractDocxFallback(buffer);
     }
     
-    if (allText.length === 0) {
-      return { 
-        type: "docx", 
-        textContent: "", 
-        error: "Could not extract text from Word document. Please try converting to PDF or TXT format." 
-      };
-    }
-    
-    const finalText = allText.join(' ').trim();
-    
-    console.log(`Extracted ${finalText.length} characters from DOCX`);
-    
-    if (finalText.length < 20) {
-      return { 
-        type: "docx", 
-        textContent: "", 
-        error: "Document appears to be empty or unreadable" 
-      };
-    }
-    
-    return { type: "docx", textContent: finalText };
   } catch (err) {
     console.error("extractDocx failed:", err?.message || err);
     return { 
       type: "docx", 
       textContent: "", 
-      error: `Failed to extract Word document: ${err?.message || err}` 
+      error: `Failed to read Word document: ${err?.message || err}. Please try converting to PDF or TXT format.` 
+    };
+  }
+}
+
+/**
+ * Fallback method for DOCX extraction
+ */
+function extractDocxFallback(buffer) {
+  try {
+    // Simple string-based extraction as fallback
+    const str = buffer.toString('utf8');
+    
+    // Find text between w:t tags with more flexible regex
+    const allMatches = [];
+    const regex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
+    let match;
+    
+    while ((match = regex.exec(str)) !== null) {
+      const text = match[1]
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+        .trim();
+      
+      if (text && text.length > 0 && /[a-zA-Z0-9]/.test(text)) {
+        allMatches.push(text);
+      }
+    }
+    
+    if (allMatches.length > 0) {
+      const result = allMatches.join(' ');
+      console.log(`Fallback extraction: ${result.length} characters`);
+      return { type: "docx", textContent: result };
+    }
+    
+    return { 
+      type: "docx", 
+      textContent: "", 
+      error: "Could not extract text from Word document. Please save as .txt or .pdf" 
+    };
+  } catch (err) {
+    return { 
+      type: "docx", 
+      textContent: "", 
+      error: String(err?.message || err) 
     };
   }
 }
