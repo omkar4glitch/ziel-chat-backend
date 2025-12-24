@@ -1,354 +1,31 @@
 /**
- * Extract PDF
- */
-async function extractPdf(buffer) {
-  try {
-    const data = await pdf(buffer);
-    const text = (data && data.text) ? data.text.trim() : "";
-
-    if (!text || text.length < 50) {
-      return { type: "pdf", textContent: "", ocrNeeded: true };
-    }
-
-    return { type: "pdf", textContent: text, ocrNeeded: false };
-  } catch (err) {
-    console.error("extractPdf failed:", err?.message || err);
-    return { type: "pdf", textContent: "", error: String(err?.message || err) };
-  }
-}import fetch from "node-fetch";
-import pdf from "pdf-parse";
-import * as XLSX from "xlsx";
-import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
-
-/**
- * CORS helper
- */
-function cors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-}
-
-/**
- * Tolerant body parser
- */
-async function parseJsonBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
-      if (!body) return resolve({});
-      const contentType =
-        (req.headers && (req.headers["content-type"] || req.headers["Content-Type"])) || "";
-      if (contentType.includes("application/json")) {
-        try {
-          const parsed = JSON.parse(body);
-          return resolve(parsed);
-        } catch (err) {
-          return resolve({ userMessage: body });
-        }
-      }
-      try {
-        const parsed = JSON.parse(body);
-        return resolve(parsed);
-      } catch {
-        return resolve({ userMessage: body });
-      }
-    });
-    req.on("error", reject);
-  });
-}
-
-/**
- * Download remote file into Buffer
- */
-async function downloadFileToBuffer(
-  url,
-  maxBytes = 30 * 1024 * 1024,
-  timeoutMs = 20000
-) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  let r;
-  try {
-    r = await fetch(url, { signal: controller.signal });
-  } catch (err) {
-    clearTimeout(timer);
-    throw new Error(`Download failed or timed out: ${err.message || err}`);
-  }
-  clearTimeout(timer);
-
-  if (!r.ok) throw new Error(`Failed to download file: ${r.status} ${r.statusText}`);
-
-  const contentType = r.headers.get("content-type") || "";
-  const chunks = [];
-  let total = 0;
-
-  try {
-    for await (const chunk of r.body) {
-      total += chunk.length;
-      if (total > maxBytes) {
-        const allowed = maxBytes - (total - chunk.length);
-        if (allowed > 0) chunks.push(chunk.slice(0, allowed));
-        break;
-      } else {
-        chunks.push(chunk);
-      }
-    }
-  } catch (err) {
-    throw new Error(`Error reading download stream: ${err.message || err}`);
-  }
-
-  console.log(`Downloaded ${total} bytes, content-type: ${contentType}`);
-  return { buffer: Buffer.concat(chunks), contentType, bytesReceived: total };
-}
-
-/**
- * Detect file type
- */
-function detectFileType(fileUrl, contentType, buffer) {
-  const lowerUrl = (fileUrl || "").toLowerCase();
-  const lowerType = (contentType || "").toLowerCase();
-
-  if (buffer && buffer.length >= 4) {
-    // Check magic numbers
-    if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
-      // PK header - could be XLSX, DOCX, or PPTX
-      if (lowerUrl.includes('.docx') || lowerType.includes('wordprocessing')) return "docx";
-      if (lowerUrl.includes('.pptx') || lowerType.includes('presentation')) return "pptx";
-      return "xlsx";
-    }
-    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46)
-      return "pdf";
-    // PNG signature
-    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47)
-      return "png";
-    // JPEG signature
-    if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF)
-      return "jpg";
-    // GIF signature
-    if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46)
-      return "gif";
-  }
-
-  // Check by URL/content-type
-  if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) return "pdf";
-  
-  // Office documents
-  if (lowerUrl.endsWith(".docx") || lowerType.includes("wordprocessing")) return "docx";
-  if (lowerUrl.endsWith(".doc")) return "doc";
-  if (lowerUrl.endsWith(".pptx") || lowerType.includes("presentation")) return "pptx";
-  if (lowerUrl.endsWith(".ppt")) return "ppt";
-  
-  // Spreadsheets
-  if (
-    lowerUrl.endsWith(".xlsx") ||
-    lowerUrl.endsWith(".xls") ||
-    lowerType.includes("spreadsheet") ||
-    lowerType.includes("sheet") ||
-    lowerType.includes("excel")
-  ) return "xlsx";
-  
-  if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv")) return "csv";
-  
-  // Images
-  if (lowerUrl.endsWith(".png") || lowerType.includes("image/png")) return "png";
-  if (lowerUrl.endsWith(".jpg") || lowerUrl.endsWith(".jpeg") || lowerType.includes("image/jpeg")) return "jpg";
-  if (lowerUrl.endsWith(".gif") || lowerType.includes("image/gif")) return "gif";
-  if (lowerUrl.endsWith(".bmp") || lowerType.includes("image/bmp")) return "bmp";
-  if (lowerUrl.endsWith(".webp") || lowerType.includes("image/webp")) return "webp";
-
-  return "csv";
-}
-
-/**
- * Convert buffer to UTF-8 text
- */
-function bufferToText(buffer) {
-  if (!buffer) return "";
-  let text = buffer.toString("utf8");
-  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-  return text;
-}
-
-/**
- * Extract CSV
- */
-function extractCsv(buffer) {
-  const text = bufferToText(buffer);
-  return { type: "csv", textContent: text };
-}
-
-/**
- * Robust numeric parser for accounting amounts
- */
-function parseAmount(s) {
-  if (s === null || s === undefined) return 0;
-  let str = String(s).trim();
-
-  if (!str) return 0;
-
-  // If parentheses -> negative
-  const parenMatch = str.match(/^\s*\((.*)\)\s*$/);
-  if (parenMatch) str = '-' + parenMatch[1];
-
-  // Trailing minus like "123-" or "123 -"
-  const trailingMinus = str.match(/^(.*?)[\s-]+$/);
-  if (trailingMinus && !/^-/.test(str)) {
-    str = '-' + trailingMinus[1];
-  }
-
-  // Detect CR/DR tokens (case-insensitive)
-  const crMatch = str.match(/\bCR\b/i);
-  const drMatch = str.match(/\bDR\b/i);
-  if (crMatch && !drMatch) {
-    if (!str.includes('-')) str = '-' + str;
-  } else if (drMatch && !crMatch) {
-    str = str.replace('-', '');
-  }
-
-  // Remove currency symbols, letters and keep digits, dot, minus
-  str = str.replace(/[^0-9.\-]/g, '');
-  // If multiple dots, keep first
-  const parts = str.split('.');
-  if (parts.length > 2) {
-    str = parts.shift() + '.' + parts.join('');
-  }
-
-  const n = parseFloat(str);
-  if (Number.isNaN(n)) return 0;
-  return n;
-}
-
-/**
- * Format date to US format (MM/DD/YYYY)
- */
-function formatDateUS(dateStr) {
-  if (!dateStr) return dateStr;
-  
-  // Try to parse Excel serial date number
-  const num = parseFloat(dateStr);
-  if (!isNaN(num) && num > 40000 && num < 50000) {
-    // Excel date serial number (days since 1900-01-01)
-    const date = new Date((num - 25569) * 86400 * 1000);
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const year = date.getFullYear();
-    return `${month}/${day}/${year}`;
-  }
-  
-  // Try to parse ISO date or other formats
-  const date = new Date(dateStr);
-  if (!isNaN(date.getTime())) {
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const year = date.getFullYear();
-    return `${month}/${day}/${year}`;
-  }
-  
-  return dateStr;
-}
-
-/**
- * Extract XLSX using sheet_to_json (reliable row preservation)
- * NOW READS ALL SHEETS and combines them
- */
-function extractXlsx(buffer) {
-  try {
-    console.log("Starting XLSX extraction...");
-    const workbook = XLSX.read(buffer, {
-      type: "buffer",
-      cellDates: false,
-      cellNF: false,
-      cellText: true,
-      raw: false,
-      defval: ''
-    });
-
-    console.log(`XLSX has ${workbook.SheetNames.length} sheets:`, workbook.SheetNames);
-
-    if (workbook.SheetNames.length === 0) {
-      console.log("No sheets found");
-      return { type: "xlsx", textContent: "", rows: [] };
-    }
-
-    // Read ALL sheets and combine rows
-    let allRows = [];
-    let allCsv = '';
-
-    workbook.SheetNames.forEach((sheetName, index) => {
-      console.log(`Processing sheet ${index + 1}/${workbook.SheetNames.length}: "${sheetName}"`);
-      
-      const sheet = workbook.Sheets[sheetName];
-      
-      // Get rows from this sheet
-      const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval: '', blankrows: true, raw: false });
-      console.log(`  - Sheet "${sheetName}" has ${jsonRows.length} rows`);
-      
-      // Add sheet name to each row for reference
-      const rowsWithSheetName = jsonRows.map(row => ({
-        ...row,
-        __sheet_name: sheetName
-      }));
-      
-      allRows = allRows.concat(rowsWithSheetName);
-      
-      // Also generate CSV for this sheet
-      const csv = XLSX.utils.sheet_to_csv(sheet, {
-        blankrows: true,
-        FS: ',',
-        RS: '\n',
-        strip: false,
-        rawNumbers: false
-      });
-      
-      // Add sheet separator in CSV
-      if (index > 0) allCsv += '\n\n';
-      allCsv += `Sheet: ${sheetName}\n${csv}`;
-    });
-
-    console.log(`Total rows from all sheets: ${allRows.length}`);
-
-    const firstLine = allCsv.split('\n')[0] || '';
-    const columnCount = (firstLine.match(/,/g) || []).length + 1;
-    console.log(`Combined CSV has ${columnCount} columns`);
-
-    return { type: "xlsx", textContent: allCsv, rows: allRows, sheetCount: workbook.SheetNames.length };
-  } catch (err) {
-    console.error("extractXlsx failed:", err?.message || err);
-    return { type: "xlsx", textContent: "", rows: [], error: String(err?.message || err) };
-  }
-}
-
-/**
- * Extract Word Document (.docx) - Complete rewrite with proper extraction
+ * Extract Word Document (.docx) - Fixed version without require()
  */
 async function extractDocx(buffer) {
   try {
-    // DOCX is a ZIP file - we need to parse it properly
-    // Use XLSX to read the ZIP structure
-    const AdmZip = require('adm-zip');
+    // DOCX files are ZIP archives - we can extract using XLSX library
+    const XLSX = await import('xlsx');
     
     try {
-      const zip = new AdmZip(buffer);
-      const zipEntries = zip.getEntries();
+      // Read as ZIP using XLSX (which can handle ZIP format)
+      const zip = XLSX.read(buffer, { type: 'buffer' });
       
-      // Find document.xml which contains the main content
-      const documentXml = zipEntries.find(entry => 
-        entry.entryName === 'word/document.xml'
-      );
+      // DOCX structure: word/document.xml contains the main content
+      // We need to extract and parse the XML
       
-      if (!documentXml) {
+      // Convert buffer to string and look for document.xml content
+      const bufferStr = buffer.toString('binary');
+      
+      // Find document.xml content within the ZIP
+      const docXmlStart = bufferStr.indexOf('word/document.xml');
+      
+      if (docXmlStart === -1) {
         console.log("document.xml not found, trying alternative extraction");
         return extractDocxFallback(buffer);
       }
       
-      // Get the XML content
-      const xmlContent = documentXml.getData().toString('utf8');
-      
-      // Extract text from <w:t> tags
-      const textMatches = xmlContent.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g);
+      // Extract text between <w:t> tags (Word text elements)
+      const textMatches = bufferStr.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g);
       const textParts = [];
       
       for (const match of textMatches) {
@@ -359,21 +36,31 @@ async function extractDocx(buffer) {
             .replace(/&gt;/g, '>')
             .replace(/&amp;/g, '&')
             .replace(/&quot;/g, '"')
-            .replace(/&apos;/g, "'");
+            .replace(/&apos;/g, "'")
+            .trim();
           
-          if (decoded.trim()) {
+          if (decoded && decoded.length > 0) {
             textParts.push(decoded);
           }
         }
       }
       
-      // Also extract from tables if present
-      const tableMatches = xmlContent.matchAll(/<w:tbl>(.*?)<\/w:tbl>/gs);
-      for (const tableMatch of tableMatches) {
-        const tableCells = tableMatch[1].matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g);
-        for (const cell of tableCells) {
-          if (cell[1] && cell[1].trim()) {
-            textParts.push(cell[1].trim());
+      // Also try to extract from paragraph tags as fallback
+      if (textParts.length < 5) {
+        const paraMatches = bufferStr.matchAll(/<w:p[^>]*>(.*?)<\/w:p>/gs);
+        
+        for (const match of paraMatches) {
+          // Remove all XML tags and get text content
+          const innerText = match[1]
+            .replace(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g, '$1')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&amp;/g, '&')
+            .trim();
+          
+          if (innerText && innerText.length > 2) {
+            textParts.push(innerText);
           }
         }
       }
@@ -382,18 +69,30 @@ async function extractDocx(buffer) {
         return { 
           type: "docx", 
           textContent: "", 
-          error: "No readable text found in Word document" 
+          error: "No readable text found in Word document. The document may be empty or contain only images." 
         };
       }
       
-      const fullText = textParts.join(' ');
+      // Join with spaces and clean up
+      const fullText = textParts
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
       
-      console.log(`Extracted ${fullText.length} characters from DOCX (${textParts.length} text elements)`);
+      console.log(`✓ Extracted ${fullText.length} characters from DOCX (${textParts.length} text elements)`);
+      
+      if (fullText.length < 20) {
+        return { 
+          type: "docx", 
+          textContent: fullText, 
+          error: "Document appears to be mostly empty or contains very little text" 
+        };
+      }
       
       return { type: "docx", textContent: fullText };
       
     } catch (zipError) {
-      console.log("ZIP extraction failed, trying fallback:", zipError.message);
+      console.log("Primary extraction failed, trying fallback:", zipError.message);
       return extractDocxFallback(buffer);
     }
     
@@ -408,884 +107,116 @@ async function extractDocx(buffer) {
 }
 
 /**
- * Fallback method for DOCX extraction
+ * Fallback method for DOCX extraction - More aggressive text extraction
  */
 function extractDocxFallback(buffer) {
   try {
-    // Simple string-based extraction as fallback
-    const str = buffer.toString('utf8');
+    console.log("Using fallback DOCX extraction method...");
     
-    // Find text between w:t tags with more flexible regex
-    const allMatches = [];
-    const regex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
-    let match;
+    // Convert to string with different encodings to maximize text capture
+    const utf8Str = buffer.toString('utf8');
+    const latinStr = buffer.toString('latin1');
     
-    while ((match = regex.exec(str)) !== null) {
-      const text = match[1]
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&')
-        .trim();
+    // Method 1: Extract from <w:t> tags
+    const extractFromWt = (str) => {
+      const matches = [];
+      const regex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
+      let match;
       
-      if (text && text.length > 0 && /[a-zA-Z0-9]/.test(text)) {
-        allMatches.push(text);
+      while ((match = regex.exec(str)) !== null) {
+        const text = match[1]
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&amp;/g, '&')
+          .replace(/&quot;/g, '"')
+          .replace(/&apos;/g, "'")
+          .trim();
+        
+        if (text && text.length > 0 && /[a-zA-Z0-9]/.test(text)) {
+          matches.push(text);
+        }
+      }
+      return matches;
+    };
+    
+    // Method 2: Extract from paragraph blocks
+    const extractFromParagraphs = (str) => {
+      const matches = [];
+      const regex = /<w:p[^>]*>(.*?)<\/w:p>/gs;
+      let match;
+      
+      while ((match = regex.exec(str)) !== null) {
+        const innerXml = match[1];
+        // Extract all <w:t> content from this paragraph
+        const textRegex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
+        let textMatch;
+        const paraText = [];
+        
+        while ((textMatch = textRegex.exec(innerXml)) !== null) {
+          const text = textMatch[1]
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&amp;/g, '&')
+            .trim();
+          
+          if (text && text.length > 0) {
+            paraText.push(text);
+          }
+        }
+        
+        if (paraText.length > 0) {
+          matches.push(paraText.join(' '));
+        }
+      }
+      return matches;
+    };
+    
+    // Try both methods on both encodings
+    let allText = [
+      ...extractFromWt(utf8Str),
+      ...extractFromWt(latinStr),
+      ...extractFromParagraphs(utf8Str),
+      ...extractFromParagraphs(latinStr)
+    ];
+    
+    // Remove duplicates while preserving order
+    allText = [...new Set(allText)];
+    
+    // Method 3: If still no text, try brute force extraction of readable text
+    if (allText.length === 0) {
+      console.log("Trying brute force text extraction...");
+      
+      // Look for any readable ASCII text sequences
+      const readableText = latinStr.match(/[a-zA-Z0-9\s\.,;:!\?'"()-]{10,}/g);
+      if (readableText) {
+        allText = readableText
+          .map(t => t.trim())
+          .filter(t => t.length > 10 && /[a-zA-Z]/.test(t));
       }
     }
     
-    if (allMatches.length > 0) {
-      const result = allMatches.join(' ');
-      console.log(`Fallback extraction: ${result.length} characters`);
+    if (allText.length > 0) {
+      const result = allText
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      
+      console.log(`✓ Fallback extraction successful: ${result.length} characters`);
       return { type: "docx", textContent: result };
     }
     
     return { 
       type: "docx", 
       textContent: "", 
-      error: "Could not extract text from Word document. Please save as .txt or .pdf" 
+      error: "Could not extract text from Word document. Please try:\n1. Saving as .txt or .pdf format\n2. Copy-pasting the content directly\n3. Ensuring the document actually contains text (not just images)" 
     };
+    
   } catch (err) {
+    console.error("Fallback extraction failed:", err);
     return { 
       type: "docx", 
       textContent: "", 
-      error: String(err?.message || err) 
+      error: `Document extraction failed: ${err?.message || err}` 
     };
-  }
-}
-
-/**
- * Extract PowerPoint (.pptx) - Improved extraction
- */
-async function extractPptx(buffer) {
-  try {
-    const bufferStr = buffer.toString('latin1');
-    
-    // PPTX text is in <a:t> tags
-    const textPattern = /<a:t[^>]*>([^<]+)<\/a:t>/g;
-    let match;
-    let allText = [];
-    
-    while ((match = textPattern.exec(bufferStr)) !== null) {
-      const text = match[1];
-      const cleaned = text
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&')
-        .replace(/&quot;/g, '"')
-        .replace(/&apos;/g, "'")
-        .trim();
-      
-      if (cleaned && cleaned.length > 0) {
-        allText.push(cleaned);
-      }
-    }
-    
-    // Alternative: also look for <a:p> paragraph tags
-    if (allText.length < 5) {
-      const paraPattern = /<a:p[^>]*>(.*?)<\/a:p>/gs;
-      const paraMatches = bufferStr.matchAll(paraPattern);
-      
-      for (const match of paraMatches) {
-        const innerText = match[1].replace(/<[^>]+>/g, ' ').trim();
-        if (innerText.length > 2) {
-          allText.push(innerText);
-        }
-      }
-    }
-    
-    if (allText.length === 0) {
-      return { 
-        type: "pptx", 
-        textContent: "", 
-        error: "No text found in PowerPoint. Please try exporting as PDF." 
-      };
-    }
-    
-    const text = allText.join('\n').trim();
-    
-    console.log(`Extracted ${text.length} characters from PPTX`);
-    
-    if (text.length < 20) {
-      return { 
-        type: "pptx", 
-        textContent: "", 
-        error: "Presentation appears to be empty or contains mostly images" 
-      };
-    }
-    
-    return { type: "pptx", textContent: text };
-  } catch (err) {
-    console.error("extractPptx failed:", err?.message || err);
-    return { 
-      type: "pptx", 
-      textContent: "", 
-      error: String(err?.message || err) 
-    };
-  }
-}
-
-/**
- * Extract Image (PNG, JPG, etc.) - FREE alternative using base64 data URL
- * Note: For true OCR, users should convert images to PDF first or use external OCR tools
- */
-async function extractImage(buffer, fileType) {
-  try {
-    // Since we can't use paid OCR services, we'll return the image as base64
-    // and let the user know they need to use OCR tools or convert to text
-    const base64Image = buffer.toString('base64');
-    
-    let mediaType = 'image/jpeg';
-    if (fileType === 'png') mediaType = 'image/png';
-    else if (fileType === 'gif') mediaType = 'image/gif';
-    else if (fileType === 'webp') mediaType = 'image/webp';
-    
-    // Return helpful message
-    const message = `This is an image file (${fileType.toUpperCase()}). 
-
-For best results with financial documents:
-1. Convert the image to PDF format first
-2. Use online OCR tools (like Google Drive's OCR feature - free)
-3. Or manually extract the text and upload as CSV/Excel
-
-Image information:
-- Type: ${fileType.toUpperCase()}
-- Size: ${(buffer.length / 1024).toFixed(2)} KB
-- Format: ${mediaType}
-
-If this is a scanned financial document, please:
-- Take a clearer photo with good lighting
-- Ensure text is readable and not blurry
-- Convert to PDF using your phone's scanner app (most are free)
-- Then upload the PDF instead`;
-    
-    return { 
-      type: fileType, 
-      textContent: message,
-      isImage: true,
-      requiresManualProcessing: true,
-      imageData: base64Image.substring(0, 100) + "..." // Just a preview
-    };
-  } catch (err) {
-    console.error("extractImage failed:", err?.message || err);
-    return { 
-      type: fileType, 
-      textContent: "", 
-      error: `Image processing error: ${err?.message || err}. Please convert image to PDF or text format.`
-    };
-  }
-}
-
-/**
- * Parse CSV to array of objects (fallback)
- */
-function parseCSV(csvText) {
-  const lines = csvText.trim().split('\n');
-  if (lines.length < 2) return [];
-
-  const parseCSVLine = (line) => {
-    const result = [];
-    let current = '';
-    let inQuotes = false;
-
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      const nextChar = line[i + 1];
-
-      if (char === '"') {
-        if (inQuotes && nextChar === '"') {
-          current += '"';
-          i++;
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (char === ',' && !inQuotes) {
-        result.push(current.trim());
-        current = '';
-      } else {
-        current += char;
-      }
-    }
-    result.push(current.trim());
-    return result;
-  };
-
-  const headers = parseCSVLine(lines[0]);
-  const headerCount = headers.length;
-  const rows = [];
-
-  console.log(`CSV has ${lines.length} lines total (including header)`);
-  console.log(`Headers (${headerCount} columns):`, headers);
-
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-
-    if (!line || line.trim() === '' || line.trim() === ','.repeat(headerCount - 1)) {
-      continue;
-    }
-
-    const values = parseCSVLine(line);
-
-    const row = {};
-    headers.forEach((h, idx) => {
-      row[h] = values[idx] !== undefined ? values[idx] : '';
-    });
-
-    rows.push(row);
-  }
-
-  console.log(`✓ Parsed ${rows.length} data rows (should match Excel row count minus header)`);
-  return rows;
-}
-
-/**
- * Convert rows (array of objects) into the same structure used by preprocessGLData
- */
-function preprocessGLDataFromRows(rows) {
-  if (!rows || rows.length === 0) return { processed: false, reason: 'No rows' };
-
-  const headers = Object.keys(rows[0]);
-
-  const findColumn = (possibleNames) => {
-    for (const name of possibleNames) {
-      const found = headers.find(h => h.toLowerCase().includes(name.toLowerCase()));
-      if (found) return found;
-    }
-    return null;
-  };
-
-  const accountCol = findColumn(['account', 'acc', 'gl account', 'account name', 'ledger', 'account desc']);
-  const debitCol = findColumn(['debit', 'dr', 'debit amount', 'dr amount']);
-  const creditCol = findColumn(['credit', 'cr', 'credit amount', 'cr amount']);
-  const dateCol = findColumn(['date', 'trans date', 'transaction date', 'posting date', 'entry date']);
-  const referenceCol = findColumn(['reference', 'ref', 'entry', 'journal', 'voucher', 'transaction']);
-  const balanceCol = findColumn(['balance', 'net', 'amount']);
-
-  if (!accountCol || (!debitCol && !creditCol && !balanceCol)) {
-    return { processed: false, reason: 'Could not identify required columns', headers };
-  }
-
-  const accountSummary = {};
-  let totalDebits = 0;
-  let totalCredits = 0;
-  let skippedRows = 0;
-  let processedRows = 0;
-  let minDate = null;
-  let maxDate = null;
-  let reversalEntries = 0;
-
-  let debugInfo = [];
-
-  rows.forEach((row, idx) => {
-    const account = (row[accountCol] || '').toString().trim();
-    if (!account) {
-      skippedRows++;
-      return;
-    }
-
-    const debitStr = debitCol ? (row[debitCol] || '').toString().trim() : '';
-    const creditStr = creditCol ? (row[creditCol] || '').toString().trim() : '';
-
-    let debit = 0;
-    let credit = 0;
-
-    const parsedDebit = parseAmount(debitStr || '');
-    const parsedCredit = parseAmount(creditStr || '');
-
-    if (parsedDebit !== 0 || parsedCredit !== 0) {
-      if (parsedDebit < 0) {
-        credit = Math.abs(parsedDebit);
-        reversalEntries++;
-      } else {
-        debit = parsedDebit;
-      }
-
-      if (parsedCredit < 0) {
-        debit = debit + Math.abs(parsedCredit);
-        reversalEntries++;
-      } else {
-        credit = credit + parsedCredit;
-      }
-    } else {
-      const amountColCandidate = balanceCol || (headers.find(h => /amount|amt|value/i.test(h)) || null);
-      if (amountColCandidate && row[amountColCandidate] !== undefined) {
-        const amt = parseAmount(row[amountColCandidate]);
-        if (amt < 0) {
-          credit = Math.abs(amt);
-          reversalEntries++;
-        } else {
-          debit = amt;
-        }
-      }
-    }
-
-    if (dateCol && row[dateCol]) {
-      const dateStr = row[dateCol].toString().trim();
-      if (!minDate || dateStr < minDate) minDate = dateStr;
-      if (!maxDate || dateStr > maxDate) maxDate = dateStr;
-    }
-
-    if (!accountSummary[account]) {
-      accountSummary[account] = { account, totalDebit: 0, totalCredit: 0, count: 0 };
-    }
-
-    accountSummary[account].totalDebit += debit;
-    accountSummary[account].totalCredit += credit;
-    accountSummary[account].count += 1;
-
-    if ((parsedDebit === 0 && parsedCredit === 0) && (debitStr || creditStr)) {
-      debugInfo.push({ row: idx + 1, debitStr, creditStr, amountCandidate: row[balanceCol] });
-    }
-
-    totalDebits += debit;
-    totalCredits += credit;
-    processedRows++;
-  });
-
-  const accounts = Object.values(accountSummary).map(acc => ({
-    account: acc.account,
-    totalDebit: acc.totalDebit,
-    totalCredit: acc.totalCredit,
-    netBalance: acc.totalDebit - acc.totalCredit,
-    totalActivity: acc.totalDebit + acc.totalCredit,
-    count: acc.count
-  })).sort((a,b) => b.totalActivity - a.totalActivity);
-
-  const roundedDebits = Number(totalDebits.toFixed(2));
-  const roundedCredits = Number(totalCredits.toFixed(2));
-  const isBalanced = Math.abs(roundedDebits - roundedCredits) < 0.01;
-  const difference = roundedDebits - roundedCredits;
-
-  const formattedMinDate = formatDateUS(minDate);
-  const formattedMaxDate = formatDateUS(maxDate);
-
-  let summary = `## Pre-Processed GL Summary\n\n`;
-  summary += `**Data Quality:**\n`;
-  summary += `- Total Rows: ${rows.length}\n`;
-  summary += `- Processed: ${processedRows} entries\n`;
-  summary += `- Skipped: ${skippedRows} entries\n`;
-  if (reversalEntries > 0) summary += `- Reversal Entries: ${reversalEntries} (negative amounts auto-corrected)\n`;
-  summary += `- Unique Accounts: ${accounts.length}\n\n`;
-  if (formattedMinDate && formattedMaxDate) summary += `**Period:** ${formattedMinDate} to ${formattedMaxDate}\n\n`;
-
-  summary += `**Financial Summary:**\n`;
-  summary += `- Total Debits: $${Math.round(roundedDebits).toLocaleString('en-US')}\n`;
-  summary += `- Total Credits: $${Math.round(roundedCredits).toLocaleString('en-US')}\n`;
-  summary += `- Difference: $${Math.round(difference).toLocaleString('en-US')}\n`;
-  summary += `- **Balanced:** ${isBalanced ? '✓ YES' : '✗ NO'}\n\n`;
-  if (!isBalanced) summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of $${Math.round(Math.abs(difference)).toLocaleString('en-US')}\n\n`;
-
-  summary += `### Account-wise Summary (All ${accounts.length} Accounts)\n\n`;
-  summary += `| # | Account Name | Total Debit ($) | Total Credit ($) | Net Balance ($) | Entries |\n`;
-  summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
-  accounts.forEach((acc,i) => {
-    summary += `| ${i+1} | ${acc.account} | ${Math.round(acc.totalDebit).toLocaleString('en-US')} | ${Math.round(acc.totalCredit).toLocaleString('en-US')} | ${Math.round(acc.netBalance).toLocaleString('en-US')} | ${acc.count} |\n`;
-  });
-
-  return {
-    processed: true,
-    summary,
-    stats: {
-      totalDebits: roundedDebits,
-      totalCredits: roundedCredits,
-      difference,
-      isBalanced,
-      accountCount: accounts.length,
-      entryCount: rows.length,
-      processedCount: processedRows,
-      skippedCount: skippedRows,
-      reversalCount: reversalEntries,
-      dateRange: formattedMinDate && formattedMaxDate ? `${formattedMinDate} to ${formattedMaxDate}` : 'Unknown'
-    },
-    accounts,
-    debug: { sampleUnparsed: debugInfo.slice(0,10) }
-  };
-}
-
-/**
- * PRE-PROCESS GL DATA (accepts CSV string OR rows array)
- */
-function preprocessGLData(textOrRows) {
-  if (Array.isArray(textOrRows)) {
-    return preprocessGLDataFromRows(textOrRows);
-  }
-
-  const rows = parseCSV(textOrRows);
-  return preprocessGLDataFromRows(rows);
-}
-
-/**
- * Detect document category
- */
-function detectDocumentCategory(textContent) {
-  const lower = textContent.toLowerCase();
-
-  const glScore = (lower.match(/debit|credit|journal|gl entry/g) || []).length;
-  const plScore = (lower.match(/revenue|profit|loss|income|expenses|ebitda/g) || []).length;
-
-  console.log(`Category scores - GL: ${glScore}, P&L: ${plScore}`);
-
-  if (glScore > plScore && glScore > 3) return 'gl';
-  if (plScore > glScore && plScore > 3) return 'pl';
-
-  return 'general';
-}
-
-/**
- * Get system prompt
- */
-function getSystemPrompt(category, isPreprocessed = false, accountCount = 0) {
-  if (category === 'gl') {
-    return `You are an expert accounting assistant analyzing General Ledger entries.
-
-**INSTRUCTIONS:**
-1. You have access to the FULL, COMPLETE General Ledger data - analyze ALL entries in detail
-2. DO NOT summarize - examine every transaction, every account, every entry
-3. If multiple sheets are present (e.g., Bank Statement + General Ledger), compare them thoroughly
-4. Identify ALL unmatched items, discrepancies, missing entries, or reconciliation issues
-5. For bank reconciliation: Match each bank transaction with corresponding GL entries
-6. Highlight any transactions that appear in one sheet but not the other
-7. Calculate totals, but also show individual problematic transactions
-
-**Your Response Should Include:**
-1. Overview of all sheets/data sources
-2. Complete reconciliation analysis (if applicable)
-3. List of ALL unmatched/problematic items with transaction details
-4. Account-by-account analysis where relevant
-5. Specific recommendations for each issue found
-
-Respond in clean markdown format with detailed tables showing problematic transactions.`;
-  }
-
-  if (category === 'pl') {
-    return `You are an expert accounting assistant analyzing Profit & Loss statements.
-
-Analyze the complete data and provide insights with observations and recommendations in markdown format.`;
-  }
-
-  return `You are an expert accounting assistant analyzing financial statements.
-
-When totals exist, USE those numbers. Create a markdown table with metrics and insights.`;
-}
-
-/**
- * Convert markdown to Word document with professional formatting
- */
-async function markdownToWord(markdownText) {
-  const sections = [];
-  const lines = markdownText.split('\n');
-  let tableData = [];
-  let inTable = false;
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    
-    // Skip empty lines (but add spacing)
-    if (!line) {
-      if (sections.length > 0) {
-        sections.push(new Paragraph({ text: '' }));
-      }
-      continue;
-    }
-    
-    // Handle Headers (##, ###, ####)
-    if (line.startsWith('#')) {
-      const level = (line.match(/^#+/) || [''])[0].length;
-      const text = line.replace(/^#+\s*/, '').replace(/\*\*/g, '').replace(/\*/g, '');
-      
-      sections.push(
-        new Paragraph({
-          text: text,
-          heading: level === 2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
-          spacing: { before: 240, after: 120 },
-          thematicBreak: false
-        })
-      );
-      continue;
-    }
-    
-    // Handle Markdown Tables
-    if (line.includes('|')) {
-      const cells = line.split('|').map(c => c.trim()).filter(c => c !== '');
-      
-      // Skip separator lines (|---|---|)
-      if (cells.every(c => /^[-:]+$/.test(c))) {
-        inTable = true;
-        continue;
-      }
-      
-      // Clean cells - remove markdown formatting
-      const cleanCells = cells.map(c => c.replace(/\*\*/g, '').replace(/\*/g, '').replace(/`/g, ''));
-      tableData.push(cleanCells);
-      continue;
-    } else if (inTable && tableData.length > 0) {
-      // End of table - create the Word table
-      const tableRows = tableData.map((rowData, rowIdx) => {
-        const isHeader = rowIdx === 0;
-        
-        return new TableRow({
-          children: rowData.map(cellText => 
-            new TableCell({
-              children: [
-                new Paragraph({
-                  children: [
-                    new TextRun({
-                      text: cellText,
-                      bold: isHeader,
-                      color: isHeader ? 'FFFFFF' : '000000',
-                      size: 22
-                    })
-                  ],
-                  alignment: AlignmentType.LEFT
-                })
-              ],
-              shading: {
-                fill: isHeader ? '4472C4' : 'FFFFFF'
-              },
-              margins: {
-                top: 100,
-                bottom: 100,
-                left: 100,
-                right: 100
-              }
-            })
-          )
-        });
-      });
-      
-      const table = new Table({
-        rows: tableRows,
-        width: {
-          size: 100,
-          type: WidthType.PERCENTAGE
-        },
-        borders: {
-          top: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          bottom: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          left: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          right: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' },
-          insideVertical: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' }
-        }
-      });
-      
-      sections.push(table);
-      sections.push(new Paragraph({ text: '' })); // Spacing after table
-      tableData = [];
-      inTable = false;
-    }
-    
-    // Handle Bullet Points
-    if (line.startsWith('-') || line.startsWith('*')) {
-      let text = line.replace(/^[-*]\s+/, '');
-      
-      // Parse bold text within bullets
-      const textRuns = [];
-      const parts = text.split(/(\*\*[^*]+\*\*)/g);
-      
-      parts.forEach(part => {
-        if (part.startsWith('**') && part.endsWith('**')) {
-          textRuns.push(new TextRun({
-            text: part.replace(/\*\*/g, ''),
-            bold: true
-          }));
-        } else if (part) {
-          textRuns.push(new TextRun({ text: part }));
-        }
-      });
-      
-      sections.push(
-        new Paragraph({
-          children: textRuns,
-          bullet: { level: 0 },
-          spacing: { before: 60, after: 60 }
-        })
-      );
-      continue;
-    }
-    
-    // Handle Regular Text with Bold Formatting
-    const textRuns = [];
-    const parts = line.split(/(\*\*[^*]+\*\*)/g);
-    
-    parts.forEach(part => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        textRuns.push(new TextRun({
-          text: part.replace(/\*\*/g, ''),
-          bold: true
-        }));
-      } else if (part) {
-        textRuns.push(new TextRun({ text: part }));
-      }
-    });
-    
-    if (textRuns.length > 0) {
-      sections.push(
-        new Paragraph({
-          children: textRuns,
-          spacing: { before: 60, after: 60 }
-        })
-      );
-    }
-  }
-  
-  // Create the Word document
-  const doc = new Document({
-    sections: [{
-      properties: {},
-      children: sections
-    }]
-  });
-  
-  // Generate buffer and convert to base64
-  const buffer = await Packer.toBuffer(doc);
-  return buffer.toString('base64');
-}
-
-/**
- * Model call
- */
-async function callModel({ fileType, textContent, question, category, preprocessedData, fullData }) {
-  // Use full data for GL files, not the preprocessed summary
-  let content = textContent;
-  
-  // For GL files, send the complete data instead of summary
-  if (category === 'gl' && fullData) {
-    content = fullData;
-    console.log("Using FULL GL data for detailed analysis");
-  }
-
-  const trimmed = content.length > 100000 
-    ? content.slice(0, 100000) + "\n\n[Content truncated due to length]"
-    : content;
-
-  const systemPrompt = getSystemPrompt(category, false, 0);
-
-  const messages = [
-    { role: "system", content: systemPrompt },
-    { 
-      role: "user", 
-      content: `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\nData contains ${content.length} characters.\n\n${trimmed}`
-    },
-    {
-      role: "user",
-      content: question || "Analyze this data in complete detail. If there are multiple sheets, perform reconciliation and identify ALL unmatched items."
-    }
-  ];
-
-  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: process.env.OPENROUTER_MODEL || "tngtech/deepseek-r1t2-chimera:free",
-      messages,
-      temperature: 0.2,
-      max_tokens: 4000
-    })
-  });
-
-  let data;
-  try {
-    data = await r.json();
-  } catch (err) {
-    const raw = await r.text().catch(() => "");
-    console.error("Model returned non-JSON:", raw.slice(0, 1000));
-    return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
-  }
-
-  const reply = data?.choices?.[0]?.message?.content || data?.reply || null;
-
-  return { reply, raw: data, httpStatus: r.status };
-}
-
-/**
- * MAIN handler
- */
-export default async function handler(req, res) {
-  cors(res);
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-
-  try {
-    if (!process.env.OPENROUTER_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENROUTER_API_KEY" });
-    }
-
-    const body = await parseJsonBody(req);
-    const { fileUrl, question = "" } = body || {};
-    // Always generate Excel by default
-    const exportExcel = body.exportExcel !== undefined ? body.exportExcel : true;
-
-    if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
-
-    const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
-    const detectedType = detectFileType(fileUrl, contentType, buffer);
-
-    let extracted = { type: detectedType, textContent: "" };
-    
-    // Route to appropriate extractor based on file type
-    if (detectedType === "pdf") {
-      extracted = await extractPdf(buffer);
-    } else if (detectedType === "docx") {
-      extracted = await extractDocx(buffer);
-    } else if (detectedType === "pptx") {
-      extracted = await extractPptx(buffer);
-    } else if (detectedType === "xlsx") {
-      extracted = extractXlsx(buffer);
-    } else if (["png", "jpg", "jpeg", "gif", "bmp", "webp"].includes(detectedType)) {
-      extracted = await extractImage(buffer, detectedType);
-    } else {
-      // Default to CSV
-      extracted = extractCsv(buffer);
-    }
-
-    if (extracted.error) {
-      return res.status(200).json({
-        ok: false,
-        type: extracted.type,
-        reply: `Failed to parse file: ${extracted.error}`,
-        debug: { error: extracted.error }
-      });
-    }
-
-    if (extracted.ocrNeeded) {
-      return res.status(200).json({
-        ok: false,
-        type: "pdf",
-        reply: "This PDF requires OCR to extract text.",
-        debug: { ocrNeeded: true }
-      });
-    }
-    
-    if (extracted.requiresVision || extracted.requiresManualProcessing) {
-      return res.status(200).json({
-        ok: true,
-        type: extracted.type,
-        reply: extracted.textContent || "This file type requires manual processing. Please see the message below for instructions.",
-        category: "image",
-        preprocessed: false,
-        debug: { 
-          requiresManualProcessing: true, 
-          isImage: extracted.isImage || false,
-          message: "Images cannot be processed automatically. Please convert to PDF or text format."
-        }
-      });
-    }
-
-    let preprocessedData = null;
-    let category = 'general';
-    let fullDataForGL = null;
-    
-    if (extracted.rows) {
-      const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
-      category = detectDocumentCategory(sampleText);
-      
-      // Store full data for GL analysis
-      if (category === 'gl') {
-        // Convert rows to CSV format with ALL data
-        const headers = Object.keys(extracted.rows[0] || {}).filter(h => h !== '__sheet_name');
-        const csvLines = [headers.join(',')];
-        
-        let currentSheet = null;
-        extracted.rows.forEach(row => {
-          // Add sheet separator if it changes
-          if (row.__sheet_name && row.__sheet_name !== currentSheet) {
-            currentSheet = row.__sheet_name;
-            csvLines.push(`\n### Sheet: ${currentSheet} ###`);
-          }
-          
-          const values = headers.map(h => {
-            const val = row[h] || '';
-            // Escape commas and quotes in CSV
-            return typeof val === 'string' && (val.includes(',') || val.includes('"')) 
-              ? `"${val.replace(/"/g, '""')}"` 
-              : val;
-          });
-          csvLines.push(values.join(','));
-        });
-        
-        fullDataForGL = csvLines.join('\n');
-        console.log(`Prepared full GL data: ${fullDataForGL.length} characters, ${extracted.rows.length} rows`);
-        
-        // Still preprocess for statistics (but won't use for AI)
-        preprocessedData = preprocessGLData(extracted.rows);
-        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
-      }
-    } else {
-      const textContent = extracted.textContent || '';
-      if (!textContent.trim()) {
-        return res.status(200).json({
-          ok: false,
-          type: extracted.type,
-          reply: "No text could be extracted from this file.",
-          debug: { contentType, bytesReceived }
-        });
-      }
-
-      category = detectDocumentCategory(textContent);
-      console.log(`Category: ${category}`);
-
-      if (category === 'gl') {
-        fullDataForGL = textContent; // Use full CSV text
-        preprocessedData = preprocessGLData(textContent);
-        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
-      }
-    }
-
-    const { reply, raw, httpStatus } = await callModel({
-      fileType: extracted.type,
-      textContent: extracted.textContent || '',
-      question,
-      category,
-      preprocessedData,
-      fullData: fullDataForGL // Pass full data for GL files
-    });
-
-    if (!reply) {
-      return res.status(200).json({
-        ok: false,
-        type: extracted.type,
-        reply: "(No reply from model)",
-        debug: { status: httpStatus, raw: raw }
-      });
-    }
-
-    // ALWAYS generate Word document by default
-    let wordBase64 = null;
-    try {
-      console.log("Starting Word document generation...");
-      wordBase64 = await markdownToWord(reply);
-      console.log("✓ Word document generated successfully, length:", wordBase64.length);
-    } catch (wordError) {
-      console.error("✗ Word generation error:", wordError);
-      // Don't fail the whole request if Word generation fails
-    }
-
-    return res.status(200).json({
-      ok: true,
-      type: extracted.type,
-      category,
-      reply,
-      wordDownload: wordBase64,
-      // Direct download URL for Word document
-      downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
-      wordSize: wordBase64 ? wordBase64.length : 0,
-      preprocessed: preprocessedData?.processed || false,
-      debug: {
-        status: httpStatus,
-        category,
-        preprocessed: preprocessedData?.processed || false,
-        stats: preprocessedData?.stats || null,
-        debug_sample: preprocessedData?.debug || null,
-        hasWord: !!wordBase64,
-        wordGenerated: !!wordBase64
-      }
-    });
-  } catch (err) {
-    console.error("analyze-file error:", err);
-    return res.status(500).json({ 
-      error: String(err?.message || err)
-    });
   }
 }
