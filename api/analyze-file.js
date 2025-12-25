@@ -322,80 +322,137 @@ function extractXlsx(buffer) {
 }
 
 /**
- * Extract Word Document (.docx) - Complete rewrite with proper extraction
+ * Extract Word Document (.docx) - Pure JavaScript extraction without external deps
  */
 async function extractDocx(buffer) {
   try {
-    // DOCX is a ZIP file - we need to parse it properly
-    // Use XLSX to read the ZIP structure
-    const AdmZip = require('adm-zip');
+    console.log("Starting DOCX extraction...");
     
-    try {
-      const zip = new AdmZip(buffer);
-      const zipEntries = zip.getEntries();
+    // DOCX is a ZIP file - parse it manually
+    // Look for the PK ZIP signature
+    if (buffer[0] !== 0x50 || buffer[1] !== 0x4B) {
+      return { 
+        type: "docx", 
+        textContent: "", 
+        error: "Invalid DOCX file format" 
+      };
+    }
+    
+    // Convert buffer to string for text extraction
+    const bufferStr = buffer.toString('binary');
+    
+    // Method 1: Look for document.xml content within the ZIP
+    // The document.xml contains all the text in <w:t> tags
+    const docXmlMatch = bufferStr.match(/word\/document\.xml[\s\S]{0,1000}?<w:document[\s\S]*?<\/w:document>/);
+    
+    let textParts = [];
+    
+    if (docXmlMatch) {
+      console.log("Found document.xml content");
+      const xmlContent = docXmlMatch[0];
       
-      // Find document.xml which contains the main content
-      const documentXml = zipEntries.find(entry => 
-        entry.entryName === 'word/document.xml'
-      );
+      // Extract all <w:t> tags
+      const textRegex = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g;
+      let match;
       
-      if (!documentXml) {
-        console.log("document.xml not found, trying alternative extraction");
-        return extractDocxFallback(buffer);
-      }
-      
-      // Get the XML content
-      const xmlContent = documentXml.getData().toString('utf8');
-      
-      // Extract text from <w:t> tags
-      const textMatches = xmlContent.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g);
-      const textParts = [];
-      
-      for (const match of textMatches) {
+      while ((match = textRegex.exec(xmlContent)) !== null) {
         if (match[1]) {
-          // Decode XML entities
-          const decoded = match[1]
+          const text = match[1]
             .replace(/&lt;/g, '<')
             .replace(/&gt;/g, '>')
             .replace(/&amp;/g, '&')
             .replace(/&quot;/g, '"')
-            .replace(/&apos;/g, "'");
+            .replace(/&apos;/g, "'")
+            .trim();
           
-          if (decoded.trim()) {
-            textParts.push(decoded);
+          if (text && /[a-zA-Z0-9]/.test(text)) {
+            textParts.push(text);
           }
         }
       }
-      
-      // Also extract from tables if present
-      const tableMatches = xmlContent.matchAll(/<w:tbl>(.*?)<\/w:tbl>/gs);
-      for (const tableMatch of tableMatches) {
-        const tableCells = tableMatch[1].matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g);
-        for (const cell of tableCells) {
-          if (cell[1] && cell[1].trim()) {
-            textParts.push(cell[1].trim());
-          }
-        }
-      }
-      
-      if (textParts.length === 0) {
-        return { 
-          type: "docx", 
-          textContent: "", 
-          error: "No readable text found in Word document" 
-        };
-      }
-      
-      const fullText = textParts.join(' ');
-      
-      console.log(`Extracted ${fullText.length} characters from DOCX (${textParts.length} text elements)`);
-      
-      return { type: "docx", textContent: fullText };
-      
-    } catch (zipError) {
-      console.log("ZIP extraction failed, trying fallback:", zipError.message);
-      return extractDocxFallback(buffer);
     }
+    
+    // Method 2: Broader search across entire buffer
+    if (textParts.length < 5) {
+      console.log("Trying broader text extraction...");
+      
+      // Look for all <w:t> patterns in the entire file
+      const allTextRegex = /<w:t(?:\s[^>]*)?>([^<]+)<\/w:t>/g;
+      let match;
+      const foundTexts = new Set(); // Avoid duplicates
+      
+      while ((match = allTextRegex.exec(bufferStr)) !== null) {
+        if (match[1]) {
+          const text = match[1]
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&amp;/g, '&')
+            .replace(/&quot;/g, '"')
+            .replace(/&apos;/g, "'")
+            .replace(/[^\x20-\x7E\s]/g, '') // Remove non-printable chars
+            .trim();
+          
+          if (text && text.length > 1 && /[a-zA-Z0-9]/.test(text)) {
+            foundTexts.add(text);
+          }
+        }
+      }
+      
+      textParts = Array.from(foundTexts);
+    }
+    
+    // Method 3: Extract any readable text as fallback
+    if (textParts.length < 5) {
+      console.log("Using fallback: extracting readable strings...");
+      
+      // Look for sequences of readable characters
+      const readablePattern = /[a-zA-Z][a-zA-Z0-9\s\.,\$\%\-\(\)]{4,}/g;
+      const matches = bufferStr.match(readablePattern);
+      
+      if (matches) {
+        const filtered = matches
+          .map(m => m.trim())
+          .filter(m => {
+            // Filter out XML/metadata noise
+            return m.length > 5 && 
+                   !/^(word|document|xml|rels|theme|style|font|color)/i.test(m) &&
+                   /[a-zA-Z].*[a-zA-Z]/.test(m); // Has at least 2 letters
+          });
+        
+        if (filtered.length > textParts.length) {
+          textParts = filtered;
+        }
+      }
+    }
+    
+    if (textParts.length === 0) {
+      return { 
+        type: "docx", 
+        textContent: "", 
+        error: "No readable text found in Word document. Please ensure the document contains text content." 
+      };
+    }
+    
+    // Join all text parts
+    const fullText = textParts.join(' ').trim();
+    
+    // Clean up extra whitespace
+    const cleanedText = fullText
+      .replace(/\s+/g, ' ')
+      .replace(/\s([,\.\!\?])/g, '$1')
+      .trim();
+    
+    console.log(`Successfully extracted ${cleanedText.length} characters from DOCX (${textParts.length} text elements)`);
+    
+    if (cleanedText.length < 10) {
+      return { 
+        type: "docx", 
+        textContent: "", 
+        error: "Document appears to be empty or contains very little text" 
+      };
+    }
+    
+    return { type: "docx", textContent: cleanedText };
     
   } catch (err) {
     console.error("extractDocx failed:", err?.message || err);
@@ -408,49 +465,8 @@ async function extractDocx(buffer) {
 }
 
 /**
- * Fallback method for DOCX extraction
+ * Fallback method removed - now integrated into main function
  */
-function extractDocxFallback(buffer) {
-  try {
-    // Simple string-based extraction as fallback
-    const str = buffer.toString('utf8');
-    
-    // Find text between w:t tags with more flexible regex
-    const allMatches = [];
-    const regex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
-    let match;
-    
-    while ((match = regex.exec(str)) !== null) {
-      const text = match[1]
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&')
-        .trim();
-      
-      if (text && text.length > 0 && /[a-zA-Z0-9]/.test(text)) {
-        allMatches.push(text);
-      }
-    }
-    
-    if (allMatches.length > 0) {
-      const result = allMatches.join(' ');
-      console.log(`Fallback extraction: ${result.length} characters`);
-      return { type: "docx", textContent: result };
-    }
-    
-    return { 
-      type: "docx", 
-      textContent: "", 
-      error: "Could not extract text from Word document. Please save as .txt or .pdf" 
-    };
-  } catch (err) {
-    return { 
-      type: "docx", 
-      textContent: "", 
-      error: String(err?.message || err) 
-    };
-  }
-}
 
 /**
  * Extract PowerPoint (.pptx) - Improved extraction
