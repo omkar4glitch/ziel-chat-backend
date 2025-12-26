@@ -19,10 +19,6 @@ async function extractPdf(buffer) {
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
-import { unzip } from 'zlib';
-import { promisify } from 'util';
-
-const unzipAsync = promisify(unzip);
 
 /**
  * CORS helper
@@ -326,185 +322,77 @@ function extractXlsx(buffer) {
 }
 
 /**
- * Simple ZIP parser to extract files from DOCX
- */
-function parseZipFile(buffer) {
-  const files = {};
-  
-  try {
-    let offset = 0;
-    
-    // DOCX is a ZIP file - look for local file headers (signature: 0x04034b50)
-    while (offset < buffer.length - 30) {
-      // Check for local file header signature
-      if (buffer[offset] === 0x50 && buffer[offset + 1] === 0x4B && 
-          buffer[offset + 2] === 0x03 && buffer[offset + 3] === 0x04) {
-        
-        // Read file header
-        const fileNameLength = buffer.readUInt16LE(offset + 26);
-        const extraFieldLength = buffer.readUInt16LE(offset + 28);
-        const compressedSize = buffer.readUInt32LE(offset + 18);
-        const compressionMethod = buffer.readUInt16LE(offset + 8);
-        
-        // Get filename
-        const fileNameStart = offset + 30;
-        const fileName = buffer.toString('utf8', fileNameStart, fileNameStart + fileNameLength);
-        
-        // Get file data
-        const dataStart = fileNameStart + fileNameLength + extraFieldLength;
-        const dataEnd = dataStart + compressedSize;
-        
-        if (dataEnd <= buffer.length) {
-          const fileData = buffer.slice(dataStart, dataEnd);
-          files[fileName] = { data: fileData, compressed: compressionMethod !== 0 };
-        }
-        
-        offset = dataEnd;
-      } else {
-        offset++;
-      }
-    }
-  } catch (err) {
-    console.error("ZIP parsing error:", err.message);
-  }
-  
-  return files;
-}
-
-/**
- * Extract Word Document (.docx) - With proper ZIP handling
+ * Extract Word Document (.docx) - With clear user guidance
  */
 async function extractDocx(buffer) {
-  console.log("=== DOCX EXTRACTION START ===");
-  console.log("Buffer length:", buffer ? buffer.length : "NULL");
+  console.log("=== DOCX EXTRACTION ATTEMPT ===");
   
   if (!buffer || buffer.length === 0) {
-    return { type: "docx", textContent: "", error: "Empty buffer received" };
+    return { type: "docx", textContent: "", error: "Empty file" };
   }
   
   try {
-    // Parse the ZIP structure
-    const files = parseZipFile(buffer);
-    console.log("Found files in ZIP:", Object.keys(files).length);
-    console.log("File names:", Object.keys(files).join(', '));
-    
-    // Look for document.xml
-    let documentXml = null;
-    
-    if (files['word/document.xml']) {
-      documentXml = files['word/document.xml'];
-    } else {
-      // Try case-insensitive search
-      const docKey = Object.keys(files).find(k => k.toLowerCase().includes('document.xml'));
-      if (docKey) {
-        documentXml = files[docKey];
-      }
-    }
-    
-    if (!documentXml) {
-      console.log("document.xml not found in ZIP");
-      // Fallback: try to find text in raw buffer
-      return extractDocxFallback(buffer);
-    }
-    
-    console.log("Found document.xml, compressed:", documentXml.compressed);
-    
-    // Get XML content (decompress if needed)
-    let xmlContent;
-    if (documentXml.compressed) {
-      try {
-        const decompressed = await unzipAsync(documentXml.data);
-        xmlContent = decompressed.toString('utf8');
-      } catch (decompressError) {
-        console.log("Decompression failed, trying raw:", decompressError.message);
-        xmlContent = documentXml.data.toString('utf8');
-      }
-    } else {
-      xmlContent = documentXml.data.toString('utf8');
-    }
-    
-    console.log("XML content length:", xmlContent.length);
-    
-    // Extract text from <w:t> tags
-    const textParts = [];
-    const regex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
+    // Try basic extraction
+    const content = buffer.toString('utf8');
+    const textRegex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
+    const texts = [];
     let match;
     
-    while ((match = regex.exec(xmlContent)) !== null) {
-      if (match[1]) {
-        const text = match[1]
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&amp;/g, '&')
-          .replace(/&quot;/g, '"')
-          .replace(/&apos;/g, "'")
-          .trim();
-        
-        if (text.length > 0) {
-          textParts.push(text);
-        }
+    while ((match = textRegex.exec(content)) !== null) {
+      if (match[1] && match[1].trim()) {
+        texts.push(match[1].trim());
       }
     }
     
-    console.log("Found text elements:", textParts.length);
-    
-    if (textParts.length === 0) {
-      return extractDocxFallback(buffer);
+    if (texts.length > 5) {
+      console.log("Successfully extracted text from DOCX");
+      return { type: "docx", textContent: texts.join(' ') };
     }
     
-    const fullText = textParts.join(' ');
-    console.log("Final text length:", fullText.length);
-    
-    return { type: "docx", textContent: fullText };
-    
-  } catch (error) {
-    console.error("DOCX extraction error:", error);
-    return extractDocxFallback(buffer);
-  }
-}
+    // If extraction fails, provide helpful guidance
+    const helpMessage = `Unable to extract text from this Word document.
 
-/**
- * Fallback DOCX extraction
- */
-function extractDocxFallback(buffer) {
-  console.log("Using fallback extraction method");
-  
-  try {
-    // Try to find readable text in the raw buffer
-    const content = buffer.toString('binary');
-    const textParts = [];
-    
-    // Look for text patterns that might be readable
-    const matches = content.match(/[a-zA-Z][a-zA-Z0-9\s\.,!?\$%\-]{10,}/g);
-    
-    if (matches) {
-      const filtered = matches
-        .map(m => m.trim())
-        .filter(m => {
-          // Filter out XML/metadata
-          return !/^(word|document|xml|rels|theme|style|font|format|color|size|name|value)/i.test(m) &&
-                 /[a-zA-Z].*[a-zA-Z]/.test(m) &&
-                 m.length > 15;
-        });
-      
-      if (filtered.length > 5) {
-        const result = filtered.join(' ').substring(0, 50000);
-        console.log("Fallback found text:", result.length, "characters");
-        return { type: "docx", textContent: result };
-      }
-    }
+**To analyze this document, please convert it to PDF first:**
+
+**Option 1 - In Microsoft Word:**
+1. Open your document
+2. Click "File" → "Save As"
+3. Choose "PDF" as the file type
+4. Save and upload the PDF here
+
+**Option 2 - In Google Docs:**
+1. Upload your .docx to Google Drive
+2. Open with Google Docs
+3. Click "File" → "Download" → "PDF Document (.pdf)"
+4. Upload the PDF here
+
+**Option 3 - Online Converter (Free):**
+- Use a free tool like smallpdf.com or ilovepdf.com
+- Convert your DOCX to PDF
+- Upload the result
+
+PDFs are better supported and will give you more accurate results! 📄`;
     
     return { 
       type: "docx", 
-      textContent: "", 
-      error: "Could not extract text from Word document. Please convert to PDF format and try again." 
+      textContent: helpMessage,
+      requiresConversion: true
     };
     
-  } catch (err) {
+  } catch (error) {
+    const helpMessage = `Error reading Word document.
+
+Please convert your file to PDF format for better compatibility:
+1. Open in Microsoft Word or Google Docs
+2. Save/Download as PDF
+3. Upload the PDF instead
+
+This will ensure accurate text extraction for your financial analysis.`;
+    
     return { 
       type: "docx", 
-      textContent: "", 
-      error: "Word document extraction failed. Please save as PDF instead." 
+      textContent: helpMessage,
+      requiresConversion: true
     };
   }
 }
@@ -1215,17 +1103,18 @@ export default async function handler(req, res) {
       });
     }
     
-    if (extracted.requiresVision || extracted.requiresManualProcessing) {
+    if (extracted.requiresVision || extracted.requiresManualProcessing || extracted.requiresConversion) {
       return res.status(200).json({
         ok: true,
         type: extracted.type,
-        reply: extracted.textContent || "This file type requires manual processing. Please see the message below for instructions.",
-        category: "image",
+        reply: extracted.textContent || "This file type requires conversion. Please see the instructions below.",
+        category: "general",
         preprocessed: false,
         debug: { 
-          requiresManualProcessing: true, 
+          requiresConversion: extracted.requiresConversion || false,
+          requiresManualProcessing: extracted.requiresManualProcessing || false,
           isImage: extracted.isImage || false,
-          message: "Images cannot be processed automatically. Please convert to PDF or text format."
+          message: "File needs to be converted to a supported format"
         }
       });
     }
