@@ -19,6 +19,10 @@ async function extractPdf(buffer) {
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
+import { unzip } from 'zlib';
+import { promisify } from 'util';
+
+const unzipAsync = promisify(unzip);
 
 /**
  * CORS helper
@@ -322,7 +326,53 @@ function extractXlsx(buffer) {
 }
 
 /**
- * Extract Word Document (.docx) - Maximum simplicity
+ * Simple ZIP parser to extract files from DOCX
+ */
+function parseZipFile(buffer) {
+  const files = {};
+  
+  try {
+    let offset = 0;
+    
+    // DOCX is a ZIP file - look for local file headers (signature: 0x04034b50)
+    while (offset < buffer.length - 30) {
+      // Check for local file header signature
+      if (buffer[offset] === 0x50 && buffer[offset + 1] === 0x4B && 
+          buffer[offset + 2] === 0x03 && buffer[offset + 3] === 0x04) {
+        
+        // Read file header
+        const fileNameLength = buffer.readUInt16LE(offset + 26);
+        const extraFieldLength = buffer.readUInt16LE(offset + 28);
+        const compressedSize = buffer.readUInt32LE(offset + 18);
+        const compressionMethod = buffer.readUInt16LE(offset + 8);
+        
+        // Get filename
+        const fileNameStart = offset + 30;
+        const fileName = buffer.toString('utf8', fileNameStart, fileNameStart + fileNameLength);
+        
+        // Get file data
+        const dataStart = fileNameStart + fileNameLength + extraFieldLength;
+        const dataEnd = dataStart + compressedSize;
+        
+        if (dataEnd <= buffer.length) {
+          const fileData = buffer.slice(dataStart, dataEnd);
+          files[fileName] = { data: fileData, compressed: compressionMethod !== 0 };
+        }
+        
+        offset = dataEnd;
+      } else {
+        offset++;
+      }
+    }
+  } catch (err) {
+    console.error("ZIP parsing error:", err.message);
+  }
+  
+  return files;
+}
+
+/**
+ * Extract Word Document (.docx) - With proper ZIP handling
  */
 async function extractDocx(buffer) {
   console.log("=== DOCX EXTRACTION START ===");
@@ -333,43 +383,128 @@ async function extractDocx(buffer) {
   }
   
   try {
-    // Convert buffer to UTF-8 string
-    let content = buffer.toString('utf8');
-    console.log("Converted to string, length:", content.length);
+    // Parse the ZIP structure
+    const files = parseZipFile(buffer);
+    console.log("Found files in ZIP:", Object.keys(files).length);
+    console.log("File names:", Object.keys(files).join(', '));
     
-    // Find all text in <w:t> XML tags
-    let results = [];
-    const regex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
-    let m;
+    // Look for document.xml
+    let documentXml = null;
     
-    while ((m = regex.exec(content)) !== null) {
-      if (m[1]) {
-        results.push(m[1].trim());
+    if (files['word/document.xml']) {
+      documentXml = files['word/document.xml'];
+    } else {
+      // Try case-insensitive search
+      const docKey = Object.keys(files).find(k => k.toLowerCase().includes('document.xml'));
+      if (docKey) {
+        documentXml = files[docKey];
       }
     }
     
-    console.log("Found text elements:", results.length);
-    
-    if (results.length > 0) {
-      const text = results.join(' ').trim();
-      console.log("Final text length:", text.length);
-      return { type: "docx", textContent: text };
+    if (!documentXml) {
+      console.log("document.xml not found in ZIP");
+      // Fallback: try to find text in raw buffer
+      return extractDocxFallback(buffer);
     }
     
-    // If no <w:t> tags found, return helpful error
-    console.log("No <w:t> tags found");
-    return { 
-      type: "docx", 
-      textContent: "", 
-      error: "Could not extract text. Please save your Word document as PDF and try again." 
-    };
+    console.log("Found document.xml, compressed:", documentXml.compressed);
+    
+    // Get XML content (decompress if needed)
+    let xmlContent;
+    if (documentXml.compressed) {
+      try {
+        const decompressed = await unzipAsync(documentXml.data);
+        xmlContent = decompressed.toString('utf8');
+      } catch (decompressError) {
+        console.log("Decompression failed, trying raw:", decompressError.message);
+        xmlContent = documentXml.data.toString('utf8');
+      }
+    } else {
+      xmlContent = documentXml.data.toString('utf8');
+    }
+    
+    console.log("XML content length:", xmlContent.length);
+    
+    // Extract text from <w:t> tags
+    const textParts = [];
+    const regex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
+    let match;
+    
+    while ((match = regex.exec(xmlContent)) !== null) {
+      if (match[1]) {
+        const text = match[1]
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&amp;/g, '&')
+          .replace(/&quot;/g, '"')
+          .replace(/&apos;/g, "'")
+          .trim();
+        
+        if (text.length > 0) {
+          textParts.push(text);
+        }
+      }
+    }
+    
+    console.log("Found text elements:", textParts.length);
+    
+    if (textParts.length === 0) {
+      return extractDocxFallback(buffer);
+    }
+    
+    const fullText = textParts.join(' ');
+    console.log("Final text length:", fullText.length);
+    
+    return { type: "docx", textContent: fullText };
     
   } catch (error) {
     console.error("DOCX extraction error:", error);
+    return extractDocxFallback(buffer);
+  }
+}
+
+/**
+ * Fallback DOCX extraction
+ */
+function extractDocxFallback(buffer) {
+  console.log("Using fallback extraction method");
+  
+  try {
+    // Try to find readable text in the raw buffer
+    const content = buffer.toString('binary');
+    const textParts = [];
+    
+    // Look for text patterns that might be readable
+    const matches = content.match(/[a-zA-Z][a-zA-Z0-9\s\.,!?\$%\-]{10,}/g);
+    
+    if (matches) {
+      const filtered = matches
+        .map(m => m.trim())
+        .filter(m => {
+          // Filter out XML/metadata
+          return !/^(word|document|xml|rels|theme|style|font|format|color|size|name|value)/i.test(m) &&
+                 /[a-zA-Z].*[a-zA-Z]/.test(m) &&
+                 m.length > 15;
+        });
+      
+      if (filtered.length > 5) {
+        const result = filtered.join(' ').substring(0, 50000);
+        console.log("Fallback found text:", result.length, "characters");
+        return { type: "docx", textContent: result };
+      }
+    }
+    
     return { 
       type: "docx", 
       textContent: "", 
-      error: "Extraction failed: " + (error.message || "unknown error")
+      error: "Could not extract text from Word document. Please convert to PDF format and try again." 
+    };
+    
+  } catch (err) {
+    return { 
+      type: "docx", 
+      textContent: "", 
+      error: "Word document extraction failed. Please save as PDF instead." 
     };
   }
 }
