@@ -19,6 +19,7 @@ async function extractPdf(buffer) {
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
+import JSZip from "jszip";
 
 /**
  * CORS helper
@@ -322,77 +323,77 @@ function extractXlsx(buffer) {
 }
 
 /**
- * Extract Word Document (.docx) - With clear user guidance
+ * Extract Word Document (.docx) - Using JSZip library
  */
 async function extractDocx(buffer) {
-  console.log("=== DOCX EXTRACTION ATTEMPT ===");
-  
-  if (!buffer || buffer.length === 0) {
-    return { type: "docx", textContent: "", error: "Empty file" };
-  }
+  console.log("=== DOCX EXTRACTION with JSZip ===");
   
   try {
-    // Try basic extraction
-    const content = buffer.toString('utf8');
+    // Load the DOCX file (which is a ZIP) using JSZip
+    const zip = await JSZip.loadAsync(buffer);
+    console.log("ZIP loaded, files:", Object.keys(zip.files).join(', '));
+    
+    // Get the document.xml file which contains the text
+    const documentXml = zip.files['word/document.xml'];
+    
+    if (!documentXml) {
+      console.log("document.xml not found");
+      return { 
+        type: "docx", 
+        textContent: "", 
+        error: "Invalid Word document structure" 
+      };
+    }
+    
+    // Extract the XML content
+    const xmlContent = await documentXml.async('text');
+    console.log("XML content length:", xmlContent.length);
+    
+    // Extract text from <w:t> tags
     const textRegex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
-    const texts = [];
+    const textParts = [];
     let match;
     
-    while ((match = textRegex.exec(content)) !== null) {
-      if (match[1] && match[1].trim()) {
-        texts.push(match[1].trim());
+    while ((match = textRegex.exec(xmlContent)) !== null) {
+      if (match[1]) {
+        const text = match[1]
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&amp;/g, '&')
+          .replace(/&quot;/g, '"')
+          .replace(/&apos;/g, "'")
+          .trim();
+        
+        if (text.length > 0) {
+          textParts.push(text);
+        }
       }
     }
     
-    if (texts.length > 5) {
-      console.log("Successfully extracted text from DOCX");
-      return { type: "docx", textContent: texts.join(' ') };
+    console.log("Extracted text elements:", textParts.length);
+    
+    if (textParts.length === 0) {
+      return { 
+        type: "docx", 
+        textContent: "", 
+        error: "No text found in Word document. Document may be empty or contain only images." 
+      };
     }
     
-    // If extraction fails, provide helpful guidance
-    const helpMessage = `Unable to extract text from this Word document.
-
-**To analyze this document, please convert it to PDF first:**
-
-**Option 1 - In Microsoft Word:**
-1. Open your document
-2. Click "File" → "Save As"
-3. Choose "PDF" as the file type
-4. Save and upload the PDF here
-
-**Option 2 - In Google Docs:**
-1. Upload your .docx to Google Drive
-2. Open with Google Docs
-3. Click "File" → "Download" → "PDF Document (.pdf)"
-4. Upload the PDF here
-
-**Option 3 - Online Converter (Free):**
-- Use a free tool like smallpdf.com or ilovepdf.com
-- Convert your DOCX to PDF
-- Upload the result
-
-PDFs are better supported and will give you more accurate results! 📄`;
+    const fullText = textParts.join(' ');
+    console.log("Final text length:", fullText.length);
     
     return { 
       type: "docx", 
-      textContent: helpMessage,
-      requiresConversion: true
+      textContent: fullText 
     };
     
   } catch (error) {
-    const helpMessage = `Error reading Word document.
-
-Please convert your file to PDF format for better compatibility:
-1. Open in Microsoft Word or Google Docs
-2. Save/Download as PDF
-3. Upload the PDF instead
-
-This will ensure accurate text extraction for your financial analysis.`;
-    
+    console.error("DOCX extraction error:", error.message);
     return { 
       type: "docx", 
-      textContent: helpMessage,
-      requiresConversion: true
+      textContent: "", 
+      error: `Failed to read Word document: ${error.message}` 
     };
   }
 }
