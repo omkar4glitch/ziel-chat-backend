@@ -1,13 +1,24 @@
 /**
- * Extract PDF
+ * Extract PDF - Enhanced to handle scanned PDFs with OCR
  */
 async function extractPdf(buffer) {
   try {
     const data = await pdf(buffer);
     const text = (data && data.text) ? data.text.trim() : "";
 
+    // Check if PDF has extractable text
     if (!text || text.length < 50) {
-      return { type: "pdf", textContent: "", ocrNeeded: true };
+      console.log("PDF appears to be scanned or image-based, attempting OCR...");
+      
+      // This is likely a scanned PDF - we need OCR
+      // For now, return indication that OCR is needed
+      // In future, we could convert PDF pages to images and OCR them
+      return { 
+        type: "pdf", 
+        textContent: "", 
+        ocrNeeded: true,
+        error: "This PDF appears to be scanned (image-based). Please try uploading the original image files (PNG/JPG) instead, or use a PDF with selectable text."
+      };
     }
 
     return { type: "pdf", textContent: text, ocrNeeded: false };
@@ -20,6 +31,7 @@ import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
 import JSZip from "jszip";
+import Tesseract from "tesseract.js";
 
 /**
  * CORS helper
@@ -470,52 +482,68 @@ async function extractPptx(buffer) {
 }
 
 /**
- * Extract Image (PNG, JPG, etc.) - FREE alternative using base64 data URL
- * Note: For true OCR, users should convert images to PDF first or use external OCR tools
+ * Extract Image (PNG, JPG, etc.) - Using FREE Tesseract.js OCR
  */
 async function extractImage(buffer, fileType) {
   try {
-    // Since we can't use paid OCR services, we'll return the image as base64
-    // and let the user know they need to use OCR tools or convert to text
-    const base64Image = buffer.toString('base64');
+    console.log(`Starting OCR extraction for ${fileType} image...`);
     
+    // Convert buffer to base64 data URL for Tesseract
     let mediaType = 'image/jpeg';
     if (fileType === 'png') mediaType = 'image/png';
     else if (fileType === 'gif') mediaType = 'image/gif';
     else if (fileType === 'webp') mediaType = 'image/webp';
+    else if (fileType === 'bmp') mediaType = 'image/bmp';
     
-    // Return helpful message
-    const message = `This is an image file (${fileType.toUpperCase()}). 
-
-For best results with financial documents:
-1. Convert the image to PDF format first
-2. Use online OCR tools (like Google Drive's OCR feature - free)
-3. Or manually extract the text and upload as CSV/Excel
-
-Image information:
-- Type: ${fileType.toUpperCase()}
-- Size: ${(buffer.length / 1024).toFixed(2)} KB
-- Format: ${mediaType}
-
-If this is a scanned financial document, please:
-- Take a clearer photo with good lighting
-- Ensure text is readable and not blurry
-- Convert to PDF using your phone's scanner app (most are free)
-- Then upload the PDF instead`;
+    const base64Image = buffer.toString('base64');
+    const dataUrl = `data:${mediaType};base64,${base64Image}`;
+    
+    console.log(`Image size: ${(buffer.length / 1024).toFixed(2)} KB`);
+    
+    // Perform OCR using Tesseract.js
+    const result = await Tesseract.recognize(
+      dataUrl,
+      'eng', // Language: English
+      {
+        logger: m => {
+          if (m.status === 'recognizing text') {
+            console.log(`OCR progress: ${(m.progress * 100).toFixed(0)}%`);
+          }
+        }
+      }
+    );
+    
+    const extractedText = result.data.text.trim();
+    
+    console.log(`OCR completed. Extracted ${extractedText.length} characters`);
+    console.log(`Confidence: ${result.data.confidence.toFixed(2)}%`);
+    
+    if (!extractedText || extractedText.length < 10) {
+      return { 
+        type: fileType, 
+        textContent: "", 
+        error: "Could not extract text from image. The image may be too blurry, low quality, or contain no readable text."
+      };
+    }
+    
+    // Add metadata about OCR quality
+    const ocrInfo = `[OCR Extracted - Confidence: ${result.data.confidence.toFixed(1)}%]\n\n${extractedText}`;
     
     return { 
       type: fileType, 
-      textContent: message,
-      isImage: true,
-      requiresManualProcessing: true,
-      imageData: base64Image.substring(0, 100) + "..." // Just a preview
+      textContent: ocrInfo,
+      isOCRExtraction: true,
+      confidence: result.data.confidence
     };
+    
   } catch (err) {
-    console.error("extractImage failed:", err?.message || err);
+    console.error("OCR extraction failed:", err?.message || err);
+    
+    // Return helpful error message
     return { 
       type: fileType, 
       textContent: "", 
-      error: `Image processing error: ${err?.message || err}. Please convert image to PDF or text format.`
+      error: `OCR processing failed: ${err?.message || 'unknown error'}. Please ensure the image contains clear, readable text. For best results, use high-resolution scans with good lighting.`
     };
   }
 }
@@ -1099,8 +1127,8 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ok: false,
         type: "pdf",
-        reply: "This PDF requires OCR to extract text.",
-        debug: { ocrNeeded: true }
+        reply: "This PDF appears to be scanned (image-based) and requires OCR. Please upload the scanned document as an image file (PNG, JPG) instead - our OCR system works better with direct image files than scanned PDFs.",
+        debug: { ocrNeeded: true, error: extracted.error }
       });
     }
     
