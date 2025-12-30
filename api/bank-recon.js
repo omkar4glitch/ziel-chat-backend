@@ -90,10 +90,12 @@ function detectColumns(rows) {
 function toDate(d) {
   if (!d) return null;
   
-  // Handle Excel serial dates
-  if (typeof d === 'number') {
-    const date = XLSX.SSF.parse_date_code(d);
-    return new Date(date.y, date.m - 1, date.d);
+  // Handle Excel serial dates (days since 1900-01-01)
+  if (typeof d === 'number' && d > 0 && d < 100000) {
+    // Excel date serial number
+    const excelEpoch = new Date(1899, 11, 30); // Dec 30, 1899
+    const date = new Date(excelEpoch.getTime() + d * 86400000);
+    return isNaN(date.getTime()) ? null : date;
   }
   
   const val = new Date(d);
