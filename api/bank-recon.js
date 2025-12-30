@@ -290,6 +290,7 @@ function toMarkdown(result, debug) {
   let md = `# 🏦 Bank Reconciliation Report\n\n`;
   md += `**Generated:** ${new Date().toLocaleString('en-US')}\n\n`;
 
+  md += `---\n\n`;
   md += `## 📊 Summary\n\n`;
   md += `| Metric | Count |\n`;
   md += `|--------|-------|\n`;
@@ -306,7 +307,8 @@ function toMarkdown(result, debug) {
 
   // Matched Transactions
   if (matched.length > 0) {
-    md += `---\n\n## ✅ Matched Transactions (${matched.length})\n\n`;
+    md += `---\n\n`;
+    md += `## ✅ Matched Transactions (${matched.length})\n\n`;
     md += `| Bank Date | Ledger Date | Amount | Days Diff | Confidence | Bank Ref | Ledger Ref |\n`;
     md += `|-----------|-------------|--------|-----------|------------|----------|------------|\n`;
     matched.forEach(m => {
@@ -314,71 +316,89 @@ function toMarkdown(result, debug) {
       const ledgerDate = formatDate(m.ledger.date);
       const amount = formatAmount(m.bank.amount);
       const conf = m.confidence === "HIGH" ? "🟢 High" : "🟡 Medium";
-      md += `| ${bankDate} | ${ledgerDate} | ${amount} | ${m.dateDiff} | ${conf} | ${m.bank.reference || "-"} | ${m.ledger.reference || "-"} |\n`;
+      const bankRef = (m.bank.reference || "-").substring(0, 30);
+      const ledgerRef = (m.ledger.reference || "-").substring(0, 30);
+      md += `| ${bankDate} | ${ledgerDate} | ${amount} | ${m.dateDiff} | ${conf} | ${bankRef} | ${ledgerRef} |\n`;
     });
     md += `\n`;
   }
 
   // Ambiguous Transactions
   if (ambiguous.length > 0) {
-    md += `---\n\n## ⚠️ Ambiguous Transactions - Manual Review Required (${ambiguous.length})\n\n`;
+    md += `---\n\n`;
+    md += `## ⚠️ Ambiguous Transactions - Manual Review Required (${ambiguous.length})\n\n`;
     md += `**These transactions have multiple possible matches and require manual review.**\n\n`;
     ambiguous.forEach((a, idx) => {
-      md += `### ${idx + 1}. Bank Entry\n`;
+      md += `### ${idx + 1}. Bank Entry\n\n`;
       md += `- **Date:** ${formatDate(a.bank.date)}\n`;
       md += `- **Amount:** ${formatAmount(a.bank.amount)}\n`;
       md += `- **Reference:** ${a.bank.reference || "-"}\n`;
       md += `- **Reason:** ${a.reason}\n\n`;
       if (a.possibleMatches && a.possibleMatches.length > 0) {
-        md += `**Possible Matches:**\n`;
+        md += `**Possible Matches:**\n\n`;
+        md += `| # | Date | Amount | Reference |\n`;
+        md += `|---|------|--------|----------|\n`;
         a.possibleMatches.forEach((pm, pmIdx) => {
-          md += `${pmIdx + 1}. ${pm.date} - ${pm.amount} - ${pm.reference || "-"}\n`;
+          const ref = (pm.reference || "-").substring(0, 40);
+          md += `| ${pmIdx + 1} | ${pm.date} | ${pm.amount} | ${ref} |\n`;
         });
+        md += `\n`;
       }
-      md += `\n`;
     });
   }
 
   // Bank Unreconciled
   if (bankUnrec.length > 0) {
-    md += `---\n\n## ❌ Bank Unreconciled (${bankUnrec.length})\n\n`;
+    md += `---\n\n`;
+    md += `## ❌ Bank Unreconciled (${bankUnrec.length})\n\n`;
     md += `**These transactions appear in the bank statement but not in the ledger.**\n\n`;
     md += `| Date | Amount | Reference | Reason |\n`;
     md += `|------|--------|-----------|--------|\n`;
     bankUnrec.forEach(b => {
-      md += `| ${formatDate(b.bank.date)} | ${formatAmount(b.bank.amount)} | ${b.bank.reference || "-"} | ${b.reason || "-"} |\n`;
+      const ref = (b.bank.reference || "-").substring(0, 40);
+      const reason = (b.reason || "-").substring(0, 50);
+      md += `| ${formatDate(b.bank.date)} | ${formatAmount(b.bank.amount)} | ${ref} | ${reason} |\n`;
     });
     md += `\n`;
   }
 
   // Ledger Unreconciled
   if (ledgerUnrec.length > 0) {
-    md += `---\n\n## ❌ Ledger Unreconciled (${ledgerUnrec.length})\n\n`;
+    md += `---\n\n`;
+    md += `## ❌ Ledger Unreconciled (${ledgerUnrec.length})\n\n`;
     md += `**These transactions appear in the ledger but not in the bank statement.**\n\n`;
     md += `| Date | Amount | Reference | Reason |\n`;
     md += `|------|--------|-----------|--------|\n`;
     ledgerUnrec.forEach(l => {
-      md += `| ${formatDate(l.ledger.date)} | ${formatAmount(l.ledger.amount)} | ${l.ledger.reference || "-"} | ${l.reason || "-"} |\n`;
+      const ref = (l.ledger.reference || "-").substring(0, 40);
+      const reason = (l.reason || "-").substring(0, 50);
+      md += `| ${formatDate(l.ledger.date)} | ${formatAmount(l.ledger.amount)} | ${ref} | ${reason} |\n`;
     });
     md += `\n`;
   }
 
   // Invalid Entries
   if (invalid.length > 0) {
-    md += `---\n\n## 🚫 Invalid Entries (${invalid.length})\n\n`;
+    md += `---\n\n`;
+    md += `## 🚫 Invalid Entries (${invalid.length})\n\n`;
     md += `| Date | Amount | Reference | Reason |\n`;
     md += `|------|--------|-----------|--------|\n`;
     invalid.forEach(i => {
-      md += `| ${formatDate(i.bank.date)} | ${formatAmount(i.bank.amount || 0)} | ${i.bank.reference || "-"} | ${i.reason} |\n`;
+      const ref = (i.bank.reference || "-").substring(0, 40);
+      const reason = (i.reason || "-").substring(0, 50);
+      md += `| ${formatDate(i.bank.date)} | ${formatAmount(i.bank.amount || 0)} | ${ref} | ${reason} |\n`;
     });
     md += `\n`;
   }
 
-  md += `---\n\n## 🔧 Debug Information\n\n`;
-  md += `- **Bank Sheet:** ${debug.bankSheet}\n`;
-  md += `- **Ledger Sheet:** ${debug.ledgerSheet}\n`;
-  md += `- **Date Tolerance:** ±${debug.dateTolerance} days\n`;
-  md += `- **Amount Tolerance:** ${debug.amountTolerance === 0 ? "Exact match" : `$${debug.amountTolerance}`}\n`;
+  md += `---\n\n`;
+  md += `## 🔧 Configuration\n\n`;
+  md += `| Setting | Value |\n`;
+  md += `|---------|-------|\n`;
+  md += `| Bank Sheet | ${debug.bankSheet} |\n`;
+  md += `| Ledger Sheet | ${debug.ledgerSheet} |\n`;
+  md += `| Date Tolerance | ±${debug.dateTolerance} days |\n`;
+  md += `| Amount Tolerance | ${debug.amountTolerance === 0 ? "Exact match" : `${debug.amountTolerance}`} |\n`;
 
   return md;
 }
