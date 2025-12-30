@@ -31,7 +31,6 @@ import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
 import JSZip from "jszip";
-import Tesseract from "tesseract.js";
 
 /**
  * CORS helper
@@ -482,68 +481,61 @@ async function extractPptx(buffer) {
 }
 
 /**
- * Extract Image (PNG, JPG, etc.) - Using FREE Tesseract.js OCR
+ * Extract Image (PNG, JPG, etc.) - Provide helpful OCR alternatives
  */
 async function extractImage(buffer, fileType) {
   try {
-    console.log(`Starting OCR extraction for ${fileType} image...`);
+    console.log(`Image upload detected: ${fileType}, size: ${(buffer.length / 1024).toFixed(2)} KB`);
     
-    // Convert buffer to base64 data URL for Tesseract
-    let mediaType = 'image/jpeg';
-    if (fileType === 'png') mediaType = 'image/png';
-    else if (fileType === 'gif') mediaType = 'image/gif';
-    else if (fileType === 'webp') mediaType = 'image/webp';
-    else if (fileType === 'bmp') mediaType = 'image/bmp';
-    
-    const base64Image = buffer.toString('base64');
-    const dataUrl = `data:${mediaType};base64,${base64Image}`;
-    
-    console.log(`Image size: ${(buffer.length / 1024).toFixed(2)} KB`);
-    
-    // Perform OCR using Tesseract.js
-    const result = await Tesseract.recognize(
-      dataUrl,
-      'eng', // Language: English
-      {
-        logger: m => {
-          if (m.status === 'recognizing text') {
-            console.log(`OCR progress: ${(m.progress * 100).toFixed(0)}%`);
-          }
-        }
-      }
-    );
-    
-    const extractedText = result.data.text.trim();
-    
-    console.log(`OCR completed. Extracted ${extractedText.length} characters`);
-    console.log(`Confidence: ${result.data.confidence.toFixed(2)}%`);
-    
-    if (!extractedText || extractedText.length < 10) {
-      return { 
-        type: fileType, 
-        textContent: "", 
-        error: "Could not extract text from image. The image may be too blurry, low quality, or contain no readable text."
-      };
-    }
-    
-    // Add metadata about OCR quality
-    const ocrInfo = `[OCR Extracted - Confidence: ${result.data.confidence.toFixed(1)}%]\n\n${extractedText}`;
+    // Return helpful message with free OCR alternatives
+    const helpMessage = `📸 **Image File Detected (${fileType.toUpperCase()})**
+
+I can help you extract text from this image using these **FREE** methods:
+
+**🎯 FASTEST METHOD - Use Google Drive (100% Free):**
+1. Upload your image to Google Drive
+2. Right-click → "Open with" → "Google Docs"
+3. Google will automatically OCR the image and convert to editable text
+4. Copy the text and paste it here, OR
+5. Download as PDF and upload that PDF to me
+
+**📱 METHOD 2 - Use Your Phone:**
+Most phones have built-in scanners:
+- iPhone: Notes app → Scan Documents
+- Android: Google Drive → Scan
+- These create searchable PDFs automatically!
+
+**💻 METHOD 3 - Free Online OCR Tools:**
+- onlineocr.net (no signup needed)
+- i2ocr.com (simple and fast)
+- newocr.com (supports 122 languages)
+
+**📄 METHOD 4 - Convert to PDF:**
+If this is a scan, convert it to a searchable PDF using:
+- Adobe Acrobat (free trial)
+- PDF24 Tools (free online)
+- SmallPDF (3 free conversions/day)
+
+**Image Info:**
+- Type: ${fileType.toUpperCase()}
+- Size: ${(buffer.length / 1024).toFixed(2)} KB
+- Ready for OCR: Yes
+
+Once you have the text or searchable PDF, upload it here and I'll analyze it immediately! 🚀`;
     
     return { 
       type: fileType, 
-      textContent: ocrInfo,
-      isOCRExtraction: true,
-      confidence: result.data.confidence
+      textContent: helpMessage,
+      isImage: true,
+      requiresManualProcessing: true
     };
     
   } catch (err) {
-    console.error("OCR extraction failed:", err?.message || err);
-    
-    // Return helpful error message
+    console.error("Image handling error:", err?.message || err);
     return { 
       type: fileType, 
       textContent: "", 
-      error: `OCR processing failed: ${err?.message || 'unknown error'}. Please ensure the image contains clear, readable text. For best results, use high-resolution scans with good lighting.`
+      error: `Error processing image. Please convert to PDF or extract text manually.`
     };
   }
 }
