@@ -198,11 +198,11 @@ export default async function handler(req, res) {
     if (!bankCols.date || !bankCols.amount) throw new Error("Bank sheet column detection failed");
     if (!ledgerCols.date || !ledgerCols.amount) throw new Error("Ledger sheet column detection failed");
 
-    const cleanBank = bankRows.map(r => ({
-      date: r[bankCols.date],
-      amount: r[bankCols.amount],
-      reference: bankCols.reference ? r[bankCols.reference] : ""
-    }));
+const cleanBank = bankRows.map(r => ({
+  date: r[bankCols.date],
+  amount: Number(r[bankCols.amount] || 0),
+  reference: bankCols.reference ? r[bankCols.reference] : ""
+}));
 
 const cleanLedger = ledgerRows.map(r => {
   let amt = 0;
