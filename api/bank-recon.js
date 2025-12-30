@@ -21,10 +21,35 @@ async function parseJsonBody(req) {
   });
 }
 
-async function downloadFile(url) {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error("Download Failed");
-  return Buffer.from(await r.arrayBuffer());
+// -------- Parse Excel with header detection --------
+function parseSheetWithHeaders(sheet) {
+  const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+  
+  // Find the header row (first row with multiple non-empty cells)
+  let headerRowIndex = -1;
+  for (let i = 0; i < Math.min(10, raw.length); i++) {
+    const nonEmpty = raw[i].filter(cell => cell && String(cell).trim()).length;
+    if (nonEmpty >= 3) { // At least 3 columns with data
+      headerRowIndex = i;
+      break;
+    }
+  }
+  
+  if (headerRowIndex === -1) return [];
+  
+  const headers = raw[headerRowIndex].map(h => String(h || "").trim());
+  const dataRows = raw.slice(headerRowIndex + 1);
+  
+  // Convert to objects
+  return dataRows
+    .filter(row => row.some(cell => cell !== "" && cell != null))
+    .map(row => {
+      const obj = {};
+      headers.forEach((header, idx) => {
+        if (header) obj[header] = row[idx];
+      });
+      return obj;
+    });
 }
 
 // -------- Column Detection --------
@@ -45,12 +70,12 @@ function detectColumns(rows) {
       .map((n) => Object.keys(h).find((k) => k.includes(n)))
       .find(Boolean);
 
-  const dateCol = h[find(["date", "posting", "txn", "transaction", "doc dt", "value date"])] || null;
+  const dateCol = h[find(["date", "posting", "txn", "transaction", "doc dt", "value date", "posted dt", "dt.", "dt"])] || null;
   const amountCol = h[find(["amount", "amt", "value", "net", "amount (inr)", "amount (usd)"])] || null;
   const debitCol = h[find(["debit", "dr", "debit amount", "withdrawal", "withdraw"])] || null;
   const creditCol = h[find(["credit", "cr", "credit amount", "deposit"])] || null;
-  const referenceCol = h[find(["description", "ref", "narration", "memo", "details", "memo/description", "particulars"])] || null;
-  const checkCol = h[find(["check", "cheque", "chq", "check number", "cheque number", "ref no"])] || null;
+  const referenceCol = h[find(["description", "ref", "narration", "memo", "details", "memo/description", "particulars", "memo/desc"])] || null;
+  const checkCol = h[find(["check", "cheque", "chq", "check number", "cheque number", "ref no", "doc"])] || null;
 
   return { date: dateCol, amount: amountCol, debit: debitCol, credit: creditCol, reference: referenceCol, check: checkCol };
 }
@@ -376,8 +401,9 @@ export default async function handler(req, res) {
     let bankSheet = body.bankSheet || workbook.SheetNames.find(s => s.toLowerCase().includes("bank")) || workbook.SheetNames[0];
     let ledgerSheet = body.ledgerSheet || workbook.SheetNames.find(s => s.toLowerCase().includes("ledger")) || workbook.SheetNames[1];
 
-    const bankRows = XLSX.utils.sheet_to_json(workbook.Sheets[bankSheet]);
-    const ledgerRows = XLSX.utils.sheet_to_json(workbook.Sheets[ledgerSheet]);
+    // Parse with smart header detection
+    const bankRows = parseSheetWithHeaders(workbook.Sheets[bankSheet]);
+    const ledgerRows = parseSheetWithHeaders(workbook.Sheets[ledgerSheet]);
 
     if (bankRows.length === 0 || ledgerRows.length === 0) {
       return res.status(400).json({ error: "Bank or Ledger sheet is empty" });
