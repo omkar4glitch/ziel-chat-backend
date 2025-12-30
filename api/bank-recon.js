@@ -38,15 +38,36 @@ function detectColumns(rows) {
   if (!rows || rows.length === 0) return null;
 
   const h = normalizeHeaders(rows[0]);
+
   const find = (names) =>
-    names.map((n) => n.toLowerCase()).map((n) =>
-      Object.keys(h).find((k) => k.includes(n))
-    ).find(Boolean);
+    names
+      .map((n) => n.toLowerCase())
+      .map((n) => Object.keys(h).find((k) => k.includes(n)))
+      .find(Boolean);
+
+  const dateCol =
+    h[find(["date", "posting", "txn", "transaction", "doc dt"])] || null;
+
+  // Try detect unified Amount column
+  const amountCol =
+    h[find(["amount", "amt", "value", "net", "amount (inr)"])] || null;
+
+  // Try detect debit & credit (for Ledger mostly)
+  const debitCol =
+    h[find(["debit", "dr", "debit amount", "withdrawal"])] || null;
+
+  const creditCol =
+    h[find(["credit", "cr", "credit amount", "deposit"])] || null;
+
+  const referenceCol =
+    h[find(["description", "ref", "narration", "memo", "details", "memo/description"])] || null;
 
   return {
-    date: h[find(["date", "posting", "txn", "transaction"])] || null,
-    amount: h[find(["amount", "amt", "value", "debit", "credit"])] || null,
-    reference: h[find(["description", "ref", "narration", "memo"])] || null
+    date: dateCol,
+    amount: amountCol,
+    debit: debitCol,
+    credit: creditCol,
+    reference: referenceCol
   };
 }
 
@@ -183,11 +204,26 @@ export default async function handler(req, res) {
       reference: bankCols.reference ? r[bankCols.reference] : ""
     }));
 
-    const cleanLedger = ledgerRows.map(r => ({
-      date: r[ledgerCols.date],
-      amount: r[ledgerCols.amount],
-      reference: ledgerCols.reference ? r[ledgerCols.reference] : ""
-    }));
+const cleanLedger = ledgerRows.map(r => {
+  let amt = 0;
+
+  if (ledgerCols.amount) {
+    amt = Number(r[ledgerCols.amount] || 0);
+  } else if (ledgerCols.debit || ledgerCols.credit) {
+    const debit = Number(r[ledgerCols.debit] || 0);
+    const credit = Number(r[ledgerCols.credit] || 0);
+
+    // Debit positive / Credit negative
+    amt = debit !== 0 ? debit : credit !== 0 ? -credit : 0;
+  }
+
+  return {
+    date: r[ledgerCols.date],
+    amount: amt,
+    reference: ledgerCols.reference ? r[ledgerCols.reference] : ""
+  };
+});
+
 
     const result = reconcile(cleanBank, cleanLedger);
     const markdown = toMarkdown(result);
