@@ -387,13 +387,22 @@ export default async function handler(req, res) {
     const bankCols = detectColumns(bankRows);
     const ledgerCols = detectColumns(ledgerRows);
 
-    if (!bankCols.date) throw new Error("Bank sheet: Could not detect Date column");
-    if (!ledgerCols.date) throw new Error("Ledger sheet: Could not detect Date column");
+    // Better error messages with actual column names
+    if (!bankCols.date) {
+      const availableColumns = Object.keys(bankRows[0] || {}).join(", ");
+      throw new Error(`Bank sheet: Could not detect Date column. Available columns: ${availableColumns}`);
+    }
+    if (!ledgerCols.date) {
+      const availableColumns = Object.keys(ledgerRows[0] || {}).join(", ");
+      throw new Error(`Ledger sheet: Could not detect Date column. Available columns: ${availableColumns}`);
+    }
     if (!bankCols.amount && !bankCols.debit && !bankCols.credit) {
-      throw new Error("Bank sheet: Could not detect Amount/Debit/Credit columns");
+      const availableColumns = Object.keys(bankRows[0] || {}).join(", ");
+      throw new Error(`Bank sheet: Could not detect Amount/Debit/Credit columns. Available columns: ${availableColumns}`);
     }
     if (!ledgerCols.amount && !ledgerCols.debit && !ledgerCols.credit) {
-      throw new Error("Ledger sheet: Could not detect Amount/Debit/Credit columns");
+      const availableColumns = Object.keys(ledgerRows[0] || {}).join(", ");
+      throw new Error(`Ledger sheet: Could not detect Amount/Debit/Credit columns. Available columns: ${availableColumns}`);
     }
 
     // Clean and normalize data
