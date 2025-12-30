@@ -21,6 +21,12 @@ async function parseJsonBody(req) {
   });
 }
 
+async function downloadFile(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("Download Failed");
+  return Buffer.from(await r.arrayBuffer());
+}
+
 // -------- Parse Excel with header detection --------
 function parseSheetWithHeaders(sheet) {
   const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
