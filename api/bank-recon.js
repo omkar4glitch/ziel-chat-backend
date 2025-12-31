@@ -160,11 +160,7 @@ function reconcile(bankRows, ledgerRows, options = {}) {
 
       const lDate = toDate(l.date);
       const lAmt = Math.abs(Number(l.amount || 0));
-      const lType = getTransactionType(l.amount);
       const lCheck = l.check || "";
-
-      // Must match transaction type
-      if (bType !== lType) return;
 
       // Amount must match (within tolerance)
       const amtDiff = Math.abs(bAmt - lAmt);
