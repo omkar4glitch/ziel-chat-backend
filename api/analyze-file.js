@@ -779,25 +779,10 @@ function preprocessGLData(textOrRows) {
 }
 
 /**
- * Detect document category with bank reconciliation detection
+ * Detect document category
  */
-function detectDocumentCategory(textContent, sheetNames = []) {
+function detectDocumentCategory(textContent) {
   const lower = textContent.toLowerCase();
-  
-  // Check if this is a bank reconciliation file (2 sheets: bank + ledger)
-  if (sheetNames.length >= 2) {
-    const hasBank = sheetNames.some(name => 
-      /bank|statement|transaction/i.test(name)
-    );
-    const hasLedger = sheetNames.some(name => 
-      /ledger|gl|general|account/i.test(name)
-    );
-    
-    if (hasBank && hasLedger) {
-      console.log("Detected: Bank Reconciliation (2 sheets found)");
-      return 'bank_reconciliation';
-    }
-  }
 
   const glScore = (lower.match(/debit|credit|journal|gl entry/g) || []).length;
   const plScore = (lower.match(/revenue|profit|loss|income|expenses|ebitda/g) || []).length;
@@ -811,71 +796,9 @@ function detectDocumentCategory(textContent, sheetNames = []) {
 }
 
 /**
- * Get system prompt with bank reconciliation support
+ * Get system prompt
  */
 function getSystemPrompt(category, isPreprocessed = false, accountCount = 0) {
-  if (category === 'bank_reconciliation') {
-    return `You are an expert accounting assistant specializing in BANK RECONCILIATION.
-
-**YOU HAVE BEEN PROVIDED WITH TWO SHEETS:**
-1. **Bank Statement** - transactions from the bank
-2. **General Ledger (GL)** - company's internal records
-
-**YOUR TASK - COMPLETE BANK RECONCILIATION:**
-
-1. **IDENTIFY ALL UNMATCHED ITEMS:**
-   - Transactions in Bank Statement but NOT in GL (outstanding items)
-   - Transactions in GL but NOT in Bank Statement (timing differences)
-   - Matching transactions with different amounts (errors/discrepancies)
-
-2. **MATCHING CRITERIA:**
-   - Match by date (within ±3 days tolerance)
-   - Match by amount (exact or very close)
-   - Match by description/reference/check number
-   - Consider deposits, withdrawals, checks, transfers
-
-3. **YOUR RESPONSE MUST INCLUDE:**
-
-   **A. Summary:**
-   - Bank Statement Ending Balance: $X
-   - GL Cash Account Ending Balance: $Y
-   - Difference to Reconcile: $Z
-   
-   **B. Detailed Reconciliation Table:**
-   Create a table with ALL unmatched items showing:
-   | Date | Description | Bank Amount | GL Amount | Status | Notes |
-   
-   **C. Categories of Differences:**
-   - **Outstanding Checks**: In GL but not yet cleared in bank
-   - **Deposits in Transit**: In GL but not yet recorded by bank
-   - **Bank Charges**: In bank statement but not in GL
-   - **Interest Earned**: In bank statement but not in GL
-   - **Errors**: Wrong amounts, duplicate entries, etc.
-   
-   **D. Reconciliation Statement:**
-   Show the step-by-step reconciliation:
-   \`\`\`
-   GL Balance:                           $X
-   Add: Deposits in Transit              $Y
-   Less: Outstanding Checks              $Z
-   Add/Less: Bank Charges/Interest       $W
-   Adjusted GL Balance:                  $V
-   Bank Statement Balance:               $V (should match!)
-   \`\`\`
-   
-   **E. Action Items:**
-   List each unmatched item with specific action needed
-
-4. **IMPORTANT RULES:**
-   - Examine EVERY transaction in both sheets
-   - Do NOT skip any entries - list ALL unmatched items
-   - Be specific - include dates, amounts, descriptions
-   - If sheets have different date formats, handle them intelligently
-   - Flag any suspicious patterns (duplicate entries, unusual amounts)
-
-Respond in clean markdown format with tables. Be thorough and detailed.`;
-  }
-  
   if (category === 'gl') {
     return `You are an expert accounting assistant analyzing General Ledger entries.
 
@@ -1084,44 +1007,33 @@ async function markdownToWord(markdownText) {
 }
 
 /**
- * Model call with bank reconciliation support
+ * Model call
  */
 async function callModel({ fileType, textContent, question, category, preprocessedData, fullData }) {
-  // Use full data for GL and Bank Reconciliation files
+  // Use full data for GL files, not the preprocessed summary
   let content = textContent;
   
-  if ((category === 'gl' || category === 'bank_reconciliation') && fullData) {
+  // For GL files, send the complete data instead of summary
+  if (category === 'gl' && fullData) {
     content = fullData;
-    console.log(`Using FULL data for ${category} analysis: ${content.length} characters`);
+    console.log("Using FULL GL data for detailed analysis");
   }
 
-  const trimmed = content.length > 120000 
-    ? content.slice(0, 120000) + "\n\n[Content truncated due to length - showing first 120,000 characters]"
+  const trimmed = content.length > 100000 
+    ? content.slice(0, 100000) + "\n\n[Content truncated due to length]"
     : content;
 
   const systemPrompt = getSystemPrompt(category, false, 0);
-  
-  // Customize user message based on category
-  let userMessage = `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\nData contains ${content.length} characters.\n\n${trimmed}`;
-  
-  if (category === 'bank_reconciliation') {
-    userMessage = `BANK RECONCILIATION FILE UPLOADED
-
-This file contains TWO sheets:
-1. Bank Statement (transactions from the bank)
-2. General Ledger (company's internal cash records)
-
-${trimmed}`;
-  }
 
   const messages = [
     { role: "system", content: systemPrompt },
-    { role: "user", content: userMessage },
+    { 
+      role: "user", 
+      content: `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\nData contains ${content.length} characters.\n\n${trimmed}`
+    },
     {
       role: "user",
-      content: question || (category === 'bank_reconciliation' 
-        ? "Perform a complete bank reconciliation. Identify ALL unmatched items between the bank statement and general ledger. Provide a detailed reconciliation statement with specific action items for each discrepancy."
-        : "Analyze this data in complete detail. If there are multiple sheets, perform reconciliation and identify ALL unmatched items.")
+      content: question || "Analyze this data in complete detail. If there are multiple sheets, perform reconciliation and identify ALL unmatched items."
     }
   ];
 
@@ -1233,33 +1145,26 @@ export default async function handler(req, res) {
     let fullDataForGL = null;
     
     if (extracted.rows) {
-      // Get sheet names for bank reconciliation detection
-      const sheetNames = [...new Set(extracted.rows.map(r => r.__sheet_name).filter(Boolean))];
-      console.log("Detected sheets:", sheetNames);
-      
       const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
-      category = detectDocumentCategory(sampleText, sheetNames);
+      category = detectDocumentCategory(sampleText);
       
-      // Store full data for GL and Bank Reconciliation analysis
-      if (category === 'gl' || category === 'bank_reconciliation') {
-        // Convert rows to structured format with sheet separation
+      // Store full data for GL analysis
+      if (category === 'gl') {
+        // Convert rows to CSV format with ALL data
         const headers = Object.keys(extracted.rows[0] || {}).filter(h => h !== '__sheet_name');
         const csvLines = [headers.join(',')];
         
         let currentSheet = null;
-        let sheetRowCount = {};
-        
         extracted.rows.forEach(row => {
-          // Add sheet separator when sheet changes
+          // Add sheet separator if it changes
           if (row.__sheet_name && row.__sheet_name !== currentSheet) {
             currentSheet = row.__sheet_name;
-            sheetRowCount[currentSheet] = (sheetRowCount[currentSheet] || 0) + 1;
-            csvLines.push(`\n### SHEET: ${currentSheet} ###`);
-            csvLines.push(headers.join(',')); // Headers for each sheet
+            csvLines.push(`\n### Sheet: ${currentSheet} ###`);
           }
           
           const values = headers.map(h => {
             const val = row[h] || '';
+            // Escape commas and quotes in CSV
             return typeof val === 'string' && (val.includes(',') || val.includes('"')) 
               ? `"${val.replace(/"/g, '""')}"` 
               : val;
@@ -1268,14 +1173,11 @@ export default async function handler(req, res) {
         });
         
         fullDataForGL = csvLines.join('\n');
+        console.log(`Prepared full GL data: ${fullDataForGL.length} characters, ${extracted.rows.length} rows`);
         
-        console.log(`Prepared full data: ${fullDataForGL.length} characters`);
-        console.log(`Sheets: ${Object.keys(sheetRowCount).map(s => `${s} (${sheetRowCount[s]} rows)`).join(', ')}`);
-        
-        // Still preprocess for statistics
-        if (category === 'gl') {
-          preprocessedData = preprocessGLData(extracted.rows);
-        }
+        // Still preprocess for statistics (but won't use for AI)
+        preprocessedData = preprocessGLData(extracted.rows);
+        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
       }
     } else {
       const textContent = extracted.textContent || '';
@@ -1291,11 +1193,10 @@ export default async function handler(req, res) {
       category = detectDocumentCategory(textContent);
       console.log(`Category: ${category}`);
 
-      if (category === 'gl' || category === 'bank_reconciliation') {
-        fullDataForGL = textContent;
-        if (category === 'gl') {
-          preprocessedData = preprocessGLData(textContent);
-        }
+      if (category === 'gl') {
+        fullDataForGL = textContent; // Use full CSV text
+        preprocessedData = preprocessGLData(textContent);
+        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
       }
     }
 
@@ -1305,7 +1206,7 @@ export default async function handler(req, res) {
       question,
       category,
       preprocessedData,
-      fullData: fullDataForGL
+      fullData: fullDataForGL // Pass full data for GL files
     });
 
     if (!reply) {
