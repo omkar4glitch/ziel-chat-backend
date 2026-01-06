@@ -1,33 +1,4 @@
-
-/**
- * Extract PDF - Enhanced to handle scanned PDFs with OCR
- */
-async function extractPdf(buffer) {
-  try {
-    const data = await pdf(buffer);
-    const text = (data && data.text) ? data.text.trim() : "";
-
-    // Check if PDF has extractable text
-    if (!text || text.length < 50) {
-      console.log("PDF appears to be scanned or image-based, attempting OCR...");
-      
-      // This is likely a scanned PDF - we need OCR
-      // For now, return indication that OCR is needed
-      // In future, we could convert PDF pages to images and OCR them
-      return { 
-        type: "pdf", 
-        textContent: "", 
-        ocrNeeded: true,
-        error: "This PDF appears to be scanned (image-based). Please try uploading the original image files (PNG/JPG) instead, or use a PDF with selectable text."
-      };
-    }
-
-    return { type: "pdf", textContent: text, ocrNeeded: false };
-  } catch (err) {
-    console.error("extractPdf failed:", err?.message || err);
-    return { type: "pdf", textContent: "", error: String(err?.message || err) };
-  }
-}import fetch from "node-fetch";
+import fetch from "node-fetch";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
@@ -334,42 +305,300 @@ function extractXlsx(buffer) {
   }
 }
 
-   // Detect if this is a bank reconciliation request
-    const sheetNames = extracted.rows && extracted.rows.length > 0 
-      ? [...new Set(extracted.rows.map(r => r.__sheet_name))]
-      : [];
+/**
+ * Extract Word Document (.docx) - Using JSZip library
+ */
+async function extractDocx(buffer) {
+  console.log("=== DOCX EXTRACTION with JSZip ===");
+  
+  try {
+    // Load the DOCX file (which is a ZIP) using JSZip
+    const zip = await JSZip.loadAsync(buffer);
+    console.log("ZIP loaded, files:", Object.keys(zip.files).join(', '));
     
-    const hasBankSheet = sheetNames.some(name => name && name.toLowerCase().includes('bank'));
-    const hasLedgerSheet = sheetNames.some(name => name && (name.toLowerCase().includes('ledger') || name.toLowerCase().includes('gl')));
+    // Get the document.xml file which contains the text
+    const documentXml = zip.files['word/document.xml'];
     
-    if (hasBankSheet && hasLedgerSheet) {
-      console.log("BANK RECONCILIATION DETECTED");
-      category = 'bank_reconciliation';
-      
-      // Perform reconciliation
-      const reconciliationData = performBankReconciliation(extracted.rows);
-      
-      if (!reconciliationData.reconciled) {
-        return res.status(200).json({
-          ok: false,
-          type: 'xlsx',
-          reply: reconciliationData.error || 'Bank reconciliation failed',
-          category: 'bank_reconciliation',
-          debug: {
-            reason: reconciliationData.reason,
-            sheetsFound: reconciliationData.sheetsFound,
-            bankHeaders: reconciliationData.bankHeaders,
-            ledgerHeaders: reconciliationData.ledgerHeaders
-          }
-        });
-      }
-      
-      // Use reconciliation summary as preprocessed data
-      preprocessedData = reconciliationData;
-      fullDataForGL = reconciliationData.summary;
-      
-      console.log(`Bank Reconciliation: ${reconciliationData.stats.matchRate}% match rate`);
+    if (!documentXml) {
+      console.log("document.xml not found");
+      return { 
+        type: "docx", 
+        textContent: "", 
+        error: "Invalid Word document structure" 
+      };
     }
+    
+    // Extract the XML content
+    const xmlContent = await documentXml.async('text');
+    console.log("XML content length:", xmlContent.length);
+    
+    // Extract text from <w:t> tags
+    const textRegex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
+    const textParts = [];
+    let match;
+    
+    while ((match = textRegex.exec(xmlContent)) !== null) {
+      if (match[1]) {
+        const text = match[1]
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&amp;/g, '&')
+          .replace(/&quot;/g, '"')
+          .replace(/&apos;/g, "'")
+          .trim();
+        
+        if (text.length > 0) {
+          textParts.push(text);
+        }
+      }
+    }
+    
+    console.log("Extracted text elements:", textParts.length);
+    
+    if (textParts.length === 0) {
+      return { 
+        type: "docx", 
+        textContent: "", 
+        error: "No text found in Word document. Document may be empty or contain only images." 
+      };
+    }
+    
+    const fullText = textParts.join(' ');
+    console.log("Final text length:", fullText.length);
+    
+    return { 
+      type: "docx", 
+      textContent: fullText 
+    };
+    
+  } catch (error) {
+    console.error("DOCX extraction error:", error.message);
+    return { 
+      type: "docx", 
+      textContent: "", 
+      error: `Failed to read Word document: ${error.message}` 
+    };
+  }
+}
+
+/**
+ * Extract PowerPoint (.pptx) - Improved extraction
+ */
+async function extractPptx(buffer) {
+  try {
+    const bufferStr = buffer.toString('latin1');
+    
+    // PPTX text is in <a:t> tags
+    const textPattern = /<a:t[^>]*>([^<]+)<\/a:t>/g;
+    let match;
+    let allText = [];
+    
+    while ((match = textPattern.exec(bufferStr)) !== null) {
+      const text = match[1];
+      const cleaned = text
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .trim();
+      
+      if (cleaned && cleaned.length > 0) {
+        allText.push(cleaned);
+      }
+    }
+    
+    // Alternative: also look for <a:p> paragraph tags
+    if (allText.length < 5) {
+      const paraPattern = /<a:p[^>]*>(.*?)<\/a:p>/gs;
+      const paraMatches = bufferStr.matchAll(paraPattern);
+      
+      for (const match of paraMatches) {
+        const innerText = match[1].replace(/<[^>]+>/g, ' ').trim();
+        if (innerText.length > 2) {
+          allText.push(innerText);
+        }
+      }
+    }
+    
+    if (allText.length === 0) {
+      return { 
+        type: "pptx", 
+        textContent: "", 
+        error: "No text found in PowerPoint. Please try exporting as PDF." 
+      };
+    }
+    
+    const text = allText.join('\n').trim();
+    
+    console.log(`Extracted ${text.length} characters from PPTX`);
+    
+    if (text.length < 20) {
+      return { 
+        type: "pptx", 
+        textContent: "", 
+        error: "Presentation appears to be empty or contains mostly images" 
+      };
+    }
+    
+    return { type: "pptx", textContent: text };
+  } catch (err) {
+    console.error("extractPptx failed:", err?.message || err);
+    return { 
+      type: "pptx", 
+      textContent: "", 
+      error: String(err?.message || err) 
+    };
+  }
+}
+
+/**
+ * Extract PDF - Enhanced to handle scanned PDFs with OCR
+ */
+async function extractPdf(buffer) {
+  try {
+    const data = await pdf(buffer);
+    const text = (data && data.text) ? data.text.trim() : "";
+
+    // Check if PDF has extractable text
+    if (!text || text.length < 50) {
+      console.log("PDF appears to be scanned or image-based, attempting OCR...");
+      
+      return { 
+        type: "pdf", 
+        textContent: "", 
+        ocrNeeded: true,
+        error: "This PDF appears to be scanned (image-based). Please try uploading the original image files (PNG/JPG) instead, or use a PDF with selectable text."
+      };
+    }
+
+    return { type: "pdf", textContent: text, ocrNeeded: false };
+  } catch (err) {
+    console.error("extractPdf failed:", err?.message || err);
+    return { type: "pdf", textContent: "", error: String(err?.message || err) };
+  }
+}
+
+/**
+ * Extract Image (PNG, JPG, etc.) - Provide helpful OCR alternatives
+ */
+async function extractImage(buffer, fileType) {
+  try {
+    console.log(`Image upload detected: ${fileType}, size: ${(buffer.length / 1024).toFixed(2)} KB`);
+    
+    const helpMessage = `Image File Detected (${fileType.toUpperCase()})
+
+I can help you extract text from this image using these FREE methods:
+
+FASTEST METHOD - Use Google Drive (100% Free):
+1. Upload your image to Google Drive
+2. Right-click → "Open with" → "Google Docs"
+3. Google will automatically OCR the image and convert to editable text
+4. Copy the text and paste it here, OR
+5. Download as PDF and upload that PDF to me
+
+METHOD 2 - Use Your Phone:
+Most phones have built-in scanners:
+- iPhone: Notes app → Scan Documents
+- Android: Google Drive → Scan
+- These create searchable PDFs automatically!
+
+METHOD 3 - Free Online OCR Tools:
+- onlineocr.net (no signup needed)
+- i2ocr.com (simple and fast)
+- newocr.com (supports 122 languages)
+
+METHOD 4 - Convert to PDF:
+If this is a scan, convert it to a searchable PDF using:
+- Adobe Acrobat (free trial)
+- PDF24 Tools (free online)
+- SmallPDF (3 free conversions/day)
+
+Image Info:
+- Type: ${fileType.toUpperCase()}
+- Size: ${(buffer.length / 1024).toFixed(2)} KB
+- Ready for OCR: Yes
+
+Once you have the text or searchable PDF, upload it here and I'll analyze it immediately!`;
+    
+    return { 
+      type: fileType, 
+      textContent: helpMessage,
+      isImage: true,
+      requiresManualProcessing: true
+    };
+    
+  } catch (err) {
+    console.error("Image handling error:", err?.message || err);
+    return { 
+      type: fileType, 
+      textContent: "", 
+      error: `Error processing image. Please convert to PDF or extract text manually.`
+    };
+  }
+}
+
+/**
+ * Parse CSV to array of objects (fallback)
+ */
+function parseCSV(csvText) {
+  const lines = csvText.trim().split('\n');
+  if (lines.length < 2) return [];
+
+  const parseCSVLine = (line) => {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      const nextChar = line[i + 1];
+
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  };
+
+  const headers = parseCSVLine(lines[0]);
+  const headerCount = headers.length;
+  const rows = [];
+
+  console.log(`CSV has ${lines.length} lines total (including header)`);
+  console.log(`Headers (${headerCount} columns):`, headers);
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (!line || line.trim() === '' || line.trim() === ','.repeat(headerCount - 1)) {
+      continue;
+    }
+
+    const values = parseCSVLine(line);
+
+    const row = {};
+    headers.forEach((h, idx) => {
+      row[h] = values[idx] !== undefined ? values[idx] : '';
+    });
+
+    rows.push(row);
+  }
+
+  console.log(`Parsed ${rows.length} data rows`);
+  return rows;
+}
 
 /**
  * BANK RECONCILIATION - Enhanced Logic
@@ -388,7 +617,7 @@ function performBankReconciliation(rows) {
 
   // Separate sheets
   const bankSheet = rows.filter(r => r.__sheet_name && r.__sheet_name.toLowerCase().includes('bank'));
-  const ledgerSheet = rows.filter(r => r.__sheet_name && r.__sheet_name.toLowerCase().includes('ledger') || r.__sheet_name.toLowerCase().includes('gl'));
+  const ledgerSheet = rows.filter(r => r.__sheet_name && (r.__sheet_name.toLowerCase().includes('ledger') || r.__sheet_name.toLowerCase().includes('gl')));
   
   console.log(`Bank sheet rows: ${bankSheet.length}`);
   console.log(`Ledger sheet rows: ${ledgerSheet.length}`);
@@ -601,7 +830,7 @@ function performBankReconciliation(rows) {
         ledgerDesc: fuzzyMatch.description,
         bankRef: bankTxn.reference,
         ledgerRef: fuzzyMatch.reference,
-        matchType: 'Fuzzy Match (±3 days)',
+        matchType: 'Fuzzy Match (within 3 days)',
         bankRow: bankTxn.originalRow,
         ledgerRow: fuzzyMatch.originalRow
       });
@@ -682,66 +911,66 @@ function performBankReconciliation(rows) {
   console.log(`Reconciliation complete: ${matched.length} matched, ${unmatchedBank.length} unmatched bank, ${unmatchedLedger.length} unmatched ledger`);
 
   // Generate summary report
-  let summary = `## 🏦 Bank Reconciliation Report\n\n`;
-  summary += `**Reconciliation Status:** ${matchRate}% Match Rate\n\n`;
+  let summary = `Bank Reconciliation Report\n\n`;
+  summary += `Reconciliation Status: ${matchRate}% Match Rate\n\n`;
   
-  summary += `### 📊 Summary Statistics\n\n`;
+  summary += `Summary Statistics\n\n`;
   summary += `| Metric | Bank Statement | General Ledger | Difference |\n`;
   summary += `|--------|----------------|----------------|------------|\n`;
   summary += `| Total Transactions | ${bankTransactions.length} | ${ledgerTransactions.length} | ${Math.abs(bankTransactions.length - ledgerTransactions.length)} |\n`;
-  summary += `| Total Amount | $${Math.round(totalBankAmount).toLocaleString()} | $${Math.round(totalLedgerAmount).toLocaleString()} | $${Math.round(Math.abs(totalBankAmount - totalLedgerAmount)).toLocaleString()} |\n`;
+  summary += `| Total Amount | ${Math.round(totalBankAmount).toLocaleString()} | ${Math.round(totalLedgerAmount).toLocaleString()} | ${Math.round(Math.abs(totalBankAmount - totalLedgerAmount)).toLocaleString()} |\n`;
   summary += `| Matched Transactions | ${matched.length} | ${matched.length} | - |\n`;
-  summary += `| Matched Amount | $${Math.round(matchedAmount).toLocaleString()} | $${Math.round(matchedAmount).toLocaleString()} | - |\n`;
+  summary += `| Matched Amount | ${Math.round(matchedAmount).toLocaleString()} | ${Math.round(matchedAmount).toLocaleString()} | - |\n`;
   summary += `| Unmatched Transactions | ${unmatchedBank.length} | ${unmatchedLedger.length} | - |\n`;
-  summary += `| Unmatched Amount | $${Math.round(unmatchedBankAmount).toLocaleString()} | $${Math.round(unmatchedLedgerAmount).toLocaleString()} | - |\n\n`;
+  summary += `| Unmatched Amount | ${Math.round(unmatchedBankAmount).toLocaleString()} | ${Math.round(unmatchedLedgerAmount).toLocaleString()} | - |\n\n`;
 
   if (matched.length > 0) {
-    summary += `### ✅ Matched Transactions (${matched.length} items)\n\n`;
+    summary += `Matched Transactions (${matched.length} items)\n\n`;
     summary += `| Bank Row | Ledger Row | Date | Amount | Type | Match Type | Bank Description | Ledger Description |\n`;
     summary += `|----------|------------|------|--------|------|------------|------------------|--------------------|\n`;
     matched.forEach(m => {
-      summary += `| ${m.bankRow} | ${m.ledgerRow} | ${m.date} | $${Math.round(m.amount).toLocaleString()} | ${m.type} | ${m.matchType} | ${m.bankDesc.substring(0, 30)} | ${m.ledgerDesc.substring(0, 30)} |\n`;
+      summary += `| ${m.bankRow} | ${m.ledgerRow} | ${m.date} | ${Math.round(m.amount).toLocaleString()} | ${m.type} | ${m.matchType} | ${m.bankDesc.substring(0, 30)} | ${m.ledgerDesc.substring(0, 30)} |\n`;
     });
     summary += `\n`;
   }
 
   if (unmatchedBank.length > 0) {
-    summary += `### ⚠️ Unmatched Bank Transactions (${unmatchedBank.length} items)\n\n`;
-    summary += `**These transactions appear in the Bank Statement but NOT in the General Ledger:**\n\n`;
+    summary += `Unmatched Bank Transactions (${unmatchedBank.length} items)\n\n`;
+    summary += `These transactions appear in the Bank Statement but NOT in the General Ledger:\n\n`;
     summary += `| Row | Date | Description | Reference | Amount | Type |\n`;
     summary += `|-----|------|-------------|-----------|--------|------|\n`;
     unmatchedBank.forEach(t => {
-      summary += `| ${t.row} | ${t.date} | ${t.description.substring(0, 40)} | ${t.reference} | $${Math.round(t.amount).toLocaleString()} | ${t.type} |\n`;
+      summary += `| ${t.row} | ${t.date} | ${t.description.substring(0, 40)} | ${t.reference} | ${Math.round(t.amount).toLocaleString()} | ${t.type} |\n`;
     });
-    summary += `\n**Total Unmatched Bank Amount:** $${Math.round(unmatchedBankAmount).toLocaleString()}\n\n`;
+    summary += `\nTotal Unmatched Bank Amount: ${Math.round(unmatchedBankAmount).toLocaleString()}\n\n`;
   }
 
   if (unmatchedLedger.length > 0) {
-    summary += `### ⚠️ Unmatched Ledger Transactions (${unmatchedLedger.length} items)\n\n`;
-    summary += `**These transactions appear in the General Ledger but NOT in the Bank Statement:**\n\n`;
+    summary += `Unmatched Ledger Transactions (${unmatchedLedger.length} items)\n\n`;
+    summary += `These transactions appear in the General Ledger but NOT in the Bank Statement:\n\n`;
     summary += `| Row | Date | Description | Reference | Amount | Type |\n`;
     summary += `|-----|------|-------------|-----------|--------|------|\n`;
     unmatchedLedger.forEach(t => {
-      summary += `| ${t.row} | ${t.date} | ${t.description.substring(0, 40)} | ${t.reference} | $${Math.round(t.amount).toLocaleString()} | ${t.type} |\n`;
+      summary += `| ${t.row} | ${t.date} | ${t.description.substring(0, 40)} | ${t.reference} | ${Math.round(t.amount).toLocaleString()} | ${t.type} |\n`;
     });
-    summary += `\n**Total Unmatched Ledger Amount:** $${Math.round(unmatchedLedgerAmount).toLocaleString()}\n\n`;
+    summary += `\nTotal Unmatched Ledger Amount: ${Math.round(unmatchedLedgerAmount).toLocaleString()}\n\n`;
   }
 
   // Recommendations
-  summary += `### 💡 Recommendations\n\n`;
+  summary += `Recommendations\n\n`;
   if (unmatchedBank.length > 0) {
-    summary += `- **Bank Statement has ${unmatchedBank.length} unrecorded transactions** - These may need journal entries in your accounting system\n`;
+    summary += `- Bank Statement has ${unmatchedBank.length} unrecorded transactions - These may need journal entries in your accounting system\n`;
   }
   if (unmatchedLedger.length > 0) {
-    summary += `- **General Ledger has ${unmatchedLedger.length} transactions not in bank** - These may be timing differences, outstanding checks, or deposits in transit\n`;
+    summary += `- General Ledger has ${unmatchedLedger.length} transactions not in bank - These may be timing differences, outstanding checks, or deposits in transit\n`;
   }
   if (Math.abs(totalBankAmount - totalLedgerAmount) > 0.01) {
-    summary += `- **Amount difference of $${Math.round(Math.abs(totalBankAmount - totalLedgerAmount)).toLocaleString()}** needs investigation\n`;
+    summary += `- Amount difference of ${Math.round(Math.abs(totalBankAmount - totalLedgerAmount)).toLocaleString()} needs investigation\n`;
   }
   if (matchRate < 90) {
-    summary += `- **Low match rate (${matchRate}%)** - Review date formats and amount formats in both sheets\n`;
+    summary += `- Low match rate (${matchRate}%) - Review date formats and amount formats in both sheets\n`;
   } else if (matchRate >= 95) {
-    summary += `- **Excellent match rate (${matchRate}%)** - Your records are well-aligned! 🎉\n`;
+    summary += `- Excellent match rate (${matchRate}%) - Your records are well-aligned!\n`;
   }
 
   return {
@@ -765,275 +994,6 @@ function performBankReconciliation(rows) {
     unmatchedBank,
     unmatchedLedger
   };
-}
-
-/**
- * Extract Word Document (.docx) - Using JSZip library
- */
-async function extractDocx(buffer) {
-  console.log("=== DOCX EXTRACTION with JSZip ===");
-  
-  try {
-    // Load the DOCX file (which is a ZIP) using JSZip
-    const zip = await JSZip.loadAsync(buffer);
-    console.log("ZIP loaded, files:", Object.keys(zip.files).join(', '));
-    
-    // Get the document.xml file which contains the text
-    const documentXml = zip.files['word/document.xml'];
-    
-    if (!documentXml) {
-      console.log("document.xml not found");
-      return { 
-        type: "docx", 
-        textContent: "", 
-        error: "Invalid Word document structure" 
-      };
-    }
-    
-    // Extract the XML content
-    const xmlContent = await documentXml.async('text');
-    console.log("XML content length:", xmlContent.length);
-    
-    // Extract text from <w:t> tags
-    const textRegex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
-    const textParts = [];
-    let match;
-    
-    while ((match = textRegex.exec(xmlContent)) !== null) {
-      if (match[1]) {
-        const text = match[1]
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&amp;/g, '&')
-          .replace(/&quot;/g, '"')
-          .replace(/&apos;/g, "'")
-          .trim();
-        
-        if (text.length > 0) {
-          textParts.push(text);
-        }
-      }
-    }
-    
-    console.log("Extracted text elements:", textParts.length);
-    
-    if (textParts.length === 0) {
-      return { 
-        type: "docx", 
-        textContent: "", 
-        error: "No text found in Word document. Document may be empty or contain only images." 
-      };
-    }
-    
-    const fullText = textParts.join(' ');
-    console.log("Final text length:", fullText.length);
-    
-    return { 
-      type: "docx", 
-      textContent: fullText 
-    };
-    
-  } catch (error) {
-    console.error("DOCX extraction error:", error.message);
-    return { 
-      type: "docx", 
-      textContent: "", 
-      error: `Failed to read Word document: ${error.message}` 
-    };
-  }
-}
-
-/**
- * Extract PowerPoint (.pptx) - Improved extraction
- */
-async function extractPptx(buffer) {
-  try {
-    const bufferStr = buffer.toString('latin1');
-    
-    // PPTX text is in <a:t> tags
-    const textPattern = /<a:t[^>]*>([^<]+)<\/a:t>/g;
-    let match;
-    let allText = [];
-    
-    while ((match = textPattern.exec(bufferStr)) !== null) {
-      const text = match[1];
-      const cleaned = text
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&')
-        .replace(/&quot;/g, '"')
-        .replace(/&apos;/g, "'")
-        .trim();
-      
-      if (cleaned && cleaned.length > 0) {
-        allText.push(cleaned);
-      }
-    }
-    
-    // Alternative: also look for <a:p> paragraph tags
-    if (allText.length < 5) {
-      const paraPattern = /<a:p[^>]*>(.*?)<\/a:p>/gs;
-      const paraMatches = bufferStr.matchAll(paraPattern);
-      
-      for (const match of paraMatches) {
-        const innerText = match[1].replace(/<[^>]+>/g, ' ').trim();
-        if (innerText.length > 2) {
-          allText.push(innerText);
-        }
-      }
-    }
-    
-    if (allText.length === 0) {
-      return { 
-        type: "pptx", 
-        textContent: "", 
-        error: "No text found in PowerPoint. Please try exporting as PDF." 
-      };
-    }
-    
-    const text = allText.join('\n').trim();
-    
-    console.log(`Extracted ${text.length} characters from PPTX`);
-    
-    if (text.length < 20) {
-      return { 
-        type: "pptx", 
-        textContent: "", 
-        error: "Presentation appears to be empty or contains mostly images" 
-      };
-    }
-    
-    return { type: "pptx", textContent: text };
-  } catch (err) {
-    console.error("extractPptx failed:", err?.message || err);
-    return { 
-      type: "pptx", 
-      textContent: "", 
-      error: String(err?.message || err) 
-    };
-  }
-}
-
-/**
- * Extract Image (PNG, JPG, etc.) - Provide helpful OCR alternatives
- */
-async function extractImage(buffer, fileType) {
-  try {
-    console.log(`Image upload detected: ${fileType}, size: ${(buffer.length / 1024).toFixed(2)} KB`);
-    
-    // Return helpful message with free OCR alternatives
-    const helpMessage = `📸 **Image File Detected (${fileType.toUpperCase()})**
-
-I can help you extract text from this image using these **FREE** methods:
-
-**🎯 FASTEST METHOD - Use Google Drive (100% Free):**
-1. Upload your image to Google Drive
-2. Right-click → "Open with" → "Google Docs"
-3. Google will automatically OCR the image and convert to editable text
-4. Copy the text and paste it here, OR
-5. Download as PDF and upload that PDF to me
-
-**📱 METHOD 2 - Use Your Phone:**
-Most phones have built-in scanners:
-- iPhone: Notes app → Scan Documents
-- Android: Google Drive → Scan
-- These create searchable PDFs automatically!
-
-**💻 METHOD 3 - Free Online OCR Tools:**
-- onlineocr.net (no signup needed)
-- i2ocr.com (simple and fast)
-- newocr.com (supports 122 languages)
-
-**📄 METHOD 4 - Convert to PDF:**
-If this is a scan, convert it to a searchable PDF using:
-- Adobe Acrobat (free trial)
-- PDF24 Tools (free online)
-- SmallPDF (3 free conversions/day)
-
-**Image Info:**
-- Type: ${fileType.toUpperCase()}
-- Size: ${(buffer.length / 1024).toFixed(2)} KB
-- Ready for OCR: Yes
-
-Once you have the text or searchable PDF, upload it here and I'll analyze it immediately! 🚀`;
-    
-    return { 
-      type: fileType, 
-      textContent: helpMessage,
-      isImage: true,
-      requiresManualProcessing: true
-    };
-    
-  } catch (err) {
-    console.error("Image handling error:", err?.message || err);
-    return { 
-      type: fileType, 
-      textContent: "", 
-      error: `Error processing image. Please convert to PDF or extract text manually.`
-    };
-  }
-}
-
-/**
- * Parse CSV to array of objects (fallback)
- */
-function parseCSV(csvText) {
-  const lines = csvText.trim().split('\n');
-  if (lines.length < 2) return [];
-
-  const parseCSVLine = (line) => {
-    const result = [];
-    let current = '';
-    let inQuotes = false;
-
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      const nextChar = line[i + 1];
-
-      if (char === '"') {
-        if (inQuotes && nextChar === '"') {
-          current += '"';
-          i++;
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (char === ',' && !inQuotes) {
-        result.push(current.trim());
-        current = '';
-      } else {
-        current += char;
-      }
-    }
-    result.push(current.trim());
-    return result;
-  };
-
-  const headers = parseCSVLine(lines[0]);
-  const headerCount = headers.length;
-  const rows = [];
-
-  console.log(`CSV has ${lines.length} lines total (including header)`);
-  console.log(`Headers (${headerCount} columns):`, headers);
-
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-
-    if (!line || line.trim() === '' || line.trim() === ','.repeat(headerCount - 1)) {
-      continue;
-    }
-
-    const values = parseCSVLine(line);
-
-    const row = {};
-    headers.forEach((h, idx) => {
-      row[h] = values[idx] !== undefined ? values[idx] : '';
-    });
-
-    rows.push(row);
-  }
-
-  console.log(`✓ Parsed ${rows.length} data rows (should match Excel row count minus header)`);
-  return rows;
 }
 
 /**
@@ -1157,23 +1117,23 @@ function preprocessGLDataFromRows(rows) {
   const formattedMinDate = formatDateUS(minDate);
   const formattedMaxDate = formatDateUS(maxDate);
 
-  let summary = `## Pre-Processed GL Summary\n\n`;
-  summary += `**Data Quality:**\n`;
+  let summary = `Pre-Processed GL Summary\n\n`;
+  summary += `Data Quality:\n`;
   summary += `- Total Rows: ${rows.length}\n`;
   summary += `- Processed: ${processedRows} entries\n`;
   summary += `- Skipped: ${skippedRows} entries\n`;
   if (reversalEntries > 0) summary += `- Reversal Entries: ${reversalEntries} (negative amounts auto-corrected)\n`;
   summary += `- Unique Accounts: ${accounts.length}\n\n`;
-  if (formattedMinDate && formattedMaxDate) summary += `**Period:** ${formattedMinDate} to ${formattedMaxDate}\n\n`;
+  if (formattedMinDate && formattedMaxDate) summary += `Period: ${formattedMinDate} to ${formattedMaxDate}\n\n`;
 
-  summary += `**Financial Summary:**\n`;
-  summary += `- Total Debits: $${Math.round(roundedDebits).toLocaleString('en-US')}\n`;
-  summary += `- Total Credits: $${Math.round(roundedCredits).toLocaleString('en-US')}\n`;
-  summary += `- Difference: $${Math.round(difference).toLocaleString('en-US')}\n`;
-  summary += `- **Balanced:** ${isBalanced ? '✓ YES' : '✗ NO'}\n\n`;
-  if (!isBalanced) summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of $${Math.round(Math.abs(difference)).toLocaleString('en-US')}\n\n`;
+  summary += `Financial Summary:\n`;
+  summary += `- Total Debits: ${Math.round(roundedDebits).toLocaleString('en-US')}\n`;
+  summary += `- Total Credits: ${Math.round(roundedCredits).toLocaleString('en-US')}\n`;
+  summary += `- Difference: ${Math.round(difference).toLocaleString('en-US')}\n`;
+  summary += `- Balanced: ${isBalanced ? 'YES' : 'NO'}\n\n`;
+  if (!isBalanced) summary += `WARNING: Debits and Credits do not balance. Difference of ${Math.round(Math.abs(difference)).toLocaleString('en-US')}\n\n`;
 
-  summary += `### Account-wise Summary (All ${accounts.length} Accounts)\n\n`;
+  summary += `Account-wise Summary (All ${accounts.length} Accounts)\n\n`;
   summary += `| # | Account Name | Total Debit ($) | Total Credit ($) | Net Balance ($) | Entries |\n`;
   summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
   accounts.forEach((acc,i) => {
@@ -1233,10 +1193,32 @@ function detectDocumentCategory(textContent) {
  * Get system prompt
  */
 function getSystemPrompt(category, isPreprocessed = false, accountCount = 0) {
+  if (category === 'bank_reconciliation') {
+    return `You are an expert accounting assistant specialized in bank reconciliation.
+
+The bank reconciliation has been performed automatically. Your role is to:
+
+1. Explain the reconciliation results clearly to the user
+2. Highlight key findings: matched vs unmatched transactions
+3. Provide actionable insights on discrepancies
+4. Suggest corrective actions for unmatched items
+5. Explain timing differences (checks in transit, outstanding deposits)
+
+Focus Areas:
+- Outstanding checks that have not cleared
+- Deposits in transit
+- Bank charges not recorded in books
+- Errors in recording amounts or dates
+- NSF (Non-Sufficient Funds) checks
+- Interest income or bank charges
+
+Respond in clear, professional markdown format with specific recommendations for each unmatched item.`;
+  }
+
   if (category === 'gl') {
     return `You are an expert accounting assistant analyzing General Ledger entries.
 
-**INSTRUCTIONS:**
+INSTRUCTIONS:
 1. You have access to the FULL, COMPLETE General Ledger data - analyze ALL entries in detail
 2. DO NOT summarize - examine every transaction, every account, every entry
 3. If multiple sheets are present (e.g., Bank Statement + General Ledger), compare them thoroughly
@@ -1245,7 +1227,7 @@ function getSystemPrompt(category, isPreprocessed = false, accountCount = 0) {
 6. Highlight any transactions that appear in one sheet but not the other
 7. Calculate totals, but also show individual problematic transactions
 
-**Your Response Should Include:**
+Your Response Should Include:
 1. Overview of all sheets/data sources
 2. Complete reconciliation analysis (if applicable)
 3. List of ALL unmatched/problematic items with transaction details
@@ -1286,7 +1268,7 @@ async function markdownToWord(markdownText) {
       continue;
     }
     
-    // Handle Headers (##, ###, ####)
+    // Handle Headers
     if (line.startsWith('#')) {
       const level = (line.match(/^#+/) || [''])[0].length;
       const text = line.replace(/^#+\s*/, '').replace(/\*\*/g, '').replace(/\*/g, '');
@@ -1306,13 +1288,12 @@ async function markdownToWord(markdownText) {
     if (line.includes('|')) {
       const cells = line.split('|').map(c => c.trim()).filter(c => c !== '');
       
-      // Skip separator lines (|---|---|)
+      // Skip separator lines
       if (cells.every(c => /^[-:]+$/.test(c))) {
         inTable = true;
         continue;
       }
       
-      // Clean cells - remove markdown formatting
       const cleanCells = cells.map(c => c.replace(/\*\*/g, '').replace(/\*/g, '').replace(/`/g, ''));
       tableData.push(cleanCells);
       continue;
@@ -1368,7 +1349,7 @@ async function markdownToWord(markdownText) {
       });
       
       sections.push(table);
-      sections.push(new Paragraph({ text: '' })); // Spacing after table
+      sections.push(new Paragraph({ text: '' }));
       tableData = [];
       inTable = false;
     }
@@ -1377,7 +1358,6 @@ async function markdownToWord(markdownText) {
     if (line.startsWith('-') || line.startsWith('*')) {
       let text = line.replace(/^[-*]\s+/, '');
       
-      // Parse bold text within bullets
       const textRuns = [];
       const parts = text.split(/(\*\*[^*]+\*\*)/g);
       
@@ -1427,7 +1407,6 @@ async function markdownToWord(markdownText) {
     }
   }
   
-  // Create the Word document
   const doc = new Document({
     sections: [{
       properties: {},
@@ -1435,7 +1414,6 @@ async function markdownToWord(markdownText) {
     }]
   });
   
-  // Generate buffer and convert to base64
   const buffer = await Packer.toBuffer(doc);
   return buffer.toString('base64');
 }
@@ -1444,11 +1422,14 @@ async function markdownToWord(markdownText) {
  * Model call
  */
 async function callModel({ fileType, textContent, question, category, preprocessedData, fullData }) {
-  // Use full data for GL files, not the preprocessed summary
   let content = textContent;
   
-  // For GL files, send the complete data instead of summary
-  if (category === 'gl' && fullData) {
+  // For bank reconciliation, use the summary
+  if (category === 'bank_reconciliation' && preprocessedData) {
+    content = preprocessedData.summary;
+    console.log("Using bank reconciliation summary for AI analysis");
+  } else if (category === 'gl' && fullData) {
+    // For GL files, send the complete data instead of summary
     content = fullData;
     console.log("Using FULL GL data for detailed analysis");
   }
@@ -1497,15 +1478,6 @@ async function callModel({ fileType, textContent, question, category, preprocess
   const reply = data?.choices?.[0]?.message?.content || data?.reply || null;
 
   return { reply, raw: data, httpStatus: r.status };
-    let content = textContent;
-  
-  if (category === 'bank_reconciliation' && preprocessedData) {
-    content = preprocessedData.summary;
-    console.log("Using bank reconciliation summary for AI analysis");
-  } else if (category === 'gl' && fullData) {
-    content = fullData;
-    console.log("Using FULL GL data for detailed analysis");
-  }
 }
 
 /**
