@@ -263,6 +263,164 @@ function formatDateUS(dateStr) {
 }
 
 /**
+ * Normalize rows into bank/ledger transaction objects
+ */
+function normalizeBankLedgerRows(rows, source) {
+  if (!rows || rows.length === 0) return [];
+
+  const headers = Object.keys(rows[0]);
+
+  const findCol = (names) =>
+    headers.find(h => names.some(n => h.toLowerCase().includes(n)));
+
+  const dateCol = findCol(['date', 'value date', 'txn date', 'transaction']);
+  const debitCol = findCol(['debit', 'dr']);
+  const creditCol = findCol(['credit', 'cr']);
+  const amountCol = findCol(['amount', 'amt']);
+  const refCol = findCol(['reference', 'ref', 'utr', 'cheque', 'document', 'doc']);
+  const descCol = findCol(['description', 'narration', 'memo', 'particular']);
+
+  return rows.map((r, i) => {
+    let amount = 0;
+
+    if (debitCol || creditCol) {
+      amount = parseAmount(r[debitCol]) - parseAmount(r[creditCol]);
+    } else if (amountCol) {
+      amount = parseAmount(r[amountCol]);
+    }
+
+    return {
+      source,
+      rowNo: i + 1,
+      date: formatDateUS(r[dateCol]),
+      amount: Number(amount.toFixed(2)),
+      reference: String(r[refCol] || '').trim(),
+      description: String(r[descCol] || '').toLowerCase().trim(),
+      raw: r
+    };
+  });
+}
+
+/**
+ * Bank Reconciliation Engine
+ */
+function reconcileTransactions(bankTxns, ledgerTxns) {
+  const matched = [];
+  const unmatchedBank = [];
+  const unmatchedLedger = [...ledgerTxns];
+
+  const AMOUNT_TOLERANCE = 0.005; // 0.5%
+  const DATE_TOLERANCE_DAYS = 2;
+
+  const isDateClose = (d1, d2) => {
+    if (!d1 || !d2) return false;
+    return Math.abs(new Date(d1) - new Date(d2)) <= DATE_TOLERANCE_DAYS * 86400000;
+  };
+
+  const isAmountClose = (a, b) => {
+    if (a === 0 || b === 0) return false;
+    return Math.abs(a - b) / Math.max(Math.abs(a), Math.abs(b)) <= AMOUNT_TOLERANCE;
+  };
+
+  bankTxns.forEach(bank => {
+    // 1️⃣ EXACT MATCH
+    let idx = unmatchedLedger.findIndex(l =>
+      l.amount === bank.amount &&
+      l.date === bank.date
+    );
+
+    // 2️⃣ FUZZY MATCH
+    if (idx === -1) {
+      idx = unmatchedLedger.findIndex(l =>
+        isAmountClose(l.amount, bank.amount) &&
+        isDateClose(l.date, bank.date) &&
+        (
+          l.reference && bank.reference && l.reference === bank.reference ||
+          l.description.includes(bank.description.slice(0, 8)) ||
+          bank.description.includes(l.description.slice(0, 8))
+        )
+      );
+    }
+
+    // 3️⃣ ONE-TO-MANY (basic)
+    if (idx === -1) {
+      for (let i = 0; i < unmatchedLedger.length; i++) {
+        let sum = 0;
+        let group = [];
+        for (let j = i; j < unmatchedLedger.length; j++) {
+          sum += unmatchedLedger[j].amount;
+          group.push(unmatchedLedger[j]);
+          if (Math.abs(sum - bank.amount) < 0.01) {
+            matched.push({
+              type: 'one-to-many',
+              bank,
+              ledger: [...group]
+            });
+            unmatchedLedger.splice(i, group.length);
+            return;
+          }
+        }
+      }
+    }
+
+    if (idx >= 0) {
+      matched.push({
+        type: 'one-to-one',
+        bank,
+        ledger: [unmatchedLedger[idx]]
+      });
+      unmatchedLedger.splice(idx, 1);
+    } else {
+      unmatchedBank.push(bank);
+    }
+  });
+
+  return {
+    matched,
+    unmatchedBank,
+    unmatchedLedger
+  };
+}
+
+function buildReconciliationMarkdown(result) {
+  let md = `## 🏦 Bank Reconciliation Statement\n\n`;
+
+  md += `### ✅ Matched Transactions (${result.matched.length})\n`;
+  md += `| Type | Bank Date | Amount | Reference | Ledger Rows |\n`;
+  md += `|------|-----------|--------|-----------|-------------|\n`;
+
+  result.matched.forEach(m => {
+    md += `| ${m.type} | ${m.bank.date} | ${m.bank.amount} | ${m.bank.reference || '-'} | ${m.ledger.map(l => l.rowNo).join(',')} |\n`;
+  });
+
+  md += `\n### ❌ Unmatched Bank Transactions (${result.unmatchedBank.length})\n`;
+  md += `| Date | Amount | Reference | Description |\n`;
+  md += `|------|--------|-----------|-------------|\n`;
+
+  result.unmatchedBank.forEach(b => {
+    md += `| ${b.date} | ${b.amount} | ${b.reference || '-'} | ${b.description.slice(0,40)} |\n`;
+  });
+
+  md += `\n### ❌ Unmatched Ledger Transactions (${result.unmatchedLedger.length})\n`;
+  md += `| Date | Amount | Reference | Description |\n`;
+  md += `|------|--------|-----------|-------------|\n`;
+
+  result.unmatchedLedger.forEach(l => {
+    md += `| ${l.date} | ${l.amount} | ${l.reference || '-'} | ${l.description.slice(0,40)} |\n`;
+  });
+
+  md += `\n### 📌 Reconciliation Summary\n`;
+  md += `- Total Bank Transactions: ${result.matched.length + result.unmatchedBank.length}\n`;
+  md += `- Total Ledger Transactions: ${result.matched.length + result.unmatchedLedger.length}\n`;
+  md += `- Matched: ${result.matched.length}\n`;
+  md += `- Unmatched Bank: ${result.unmatchedBank.length}\n`;
+  md += `- Unmatched Ledger: ${result.unmatchedLedger.length}\n`;
+
+  return md;
+}
+
+
+/**
  * Extract XLSX using sheet_to_json (reliable row preservation)
  * NOW READS ALL SHEETS and combines them
  */
@@ -1011,6 +1169,13 @@ async function markdownToWord(markdownText) {
  */
 async function callModel({ fileType, textContent, question, category, preprocessedData, fullData }) {
   // Use full data for GL files, not the preprocessed summary
+
+    let content = textContent;
+  
+  if (reconciliationMarkdown) {
+    content = reconciliationMarkdown + "\n\n" + content;
+  }
+
   let content = textContent;
   
   // For GL files, send the complete data instead of summary
@@ -1199,6 +1364,29 @@ export default async function handler(req, res) {
         console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
       }
     }
+    let reconciliationMarkdown = null;
+
+if (extracted.rows && extracted.sheetCount >= 2) {
+  const sheets = {};
+  extracted.rows.forEach(r => {
+    const s = r.__sheet_name;
+    if (!sheets[s]) sheets[s] = [];
+    sheets[s].push(r);
+  });
+
+  const sheetNames = Object.keys(sheets);
+  if (sheetNames.length >= 2) {
+    const bankRows = sheets[sheetNames[0]];
+    const ledgerRows = sheets[sheetNames[1]];
+
+    const bankTxns = normalizeBankLedgerRows(bankRows, "bank");
+    const ledgerTxns = normalizeBankLedgerRows(ledgerRows, "ledger");
+
+    const reconResult = reconcileTransactions(bankTxns, ledgerTxns);
+    reconciliationMarkdown = buildReconciliationMarkdown(reconResult);
+  }
+}
+
 
     const { reply, raw, httpStatus } = await callModel({
       fileType: extracted.type,
