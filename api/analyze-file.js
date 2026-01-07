@@ -1,3 +1,6 @@
+api/analyze-file.js (word download formatted properly)
+
+
 /**
  * Extract PDF - Enhanced to handle scanned PDFs with OCR
  */
