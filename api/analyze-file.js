@@ -1495,7 +1495,6 @@ export default async function handler(req, res) {
 
     const body = await parseJsonBody(req);
     const { fileUrl, question = "" } = body || {};
-    // Always generate Excel by default
     const exportExcel = body.exportExcel !== undefined ? body.exportExcel : true;
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
@@ -1517,7 +1516,6 @@ export default async function handler(req, res) {
     } else if (["png", "jpg", "jpeg", "gif", "bmp", "webp"].includes(detectedType)) {
       extracted = await extractImage(buffer, detectedType);
     } else {
-      // Default to CSV
       extracted = extractCsv(buffer);
     }
 
@@ -1559,40 +1557,76 @@ export default async function handler(req, res) {
     let category = 'general';
     let fullDataForGL = null;
     
+    // BANK RECONCILIATION DETECTION
     if (extracted.rows) {
-      const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
-      category = detectDocumentCategory(sampleText);
+      const sheetNames = [...new Set(extracted.rows.map(r => r.__sheet_name))];
       
-      // Store full data for GL analysis
-      if (category === 'gl') {
-        // Convert rows to CSV format with ALL data
-        const headers = Object.keys(extracted.rows[0] || {}).filter(h => h !== '__sheet_name');
-        const csvLines = [headers.join(',')];
+      const hasBankSheet = sheetNames.some(name => name && name.toLowerCase().includes('bank'));
+      const hasLedgerSheet = sheetNames.some(name => name && (name.toLowerCase().includes('ledger') || name.toLowerCase().includes('gl')));
+      
+      if (hasBankSheet && hasLedgerSheet) {
+        console.log("BANK RECONCILIATION DETECTED");
+        category = 'bank_reconciliation';
         
-        let currentSheet = null;
-        extracted.rows.forEach(row => {
-          // Add sheet separator if it changes
-          if (row.__sheet_name && row.__sheet_name !== currentSheet) {
-            currentSheet = row.__sheet_name;
-            csvLines.push(`\n### Sheet: ${currentSheet} ###`);
-          }
-          
-          const values = headers.map(h => {
-            const val = row[h] || '';
-            // Escape commas and quotes in CSV
-            return typeof val === 'string' && (val.includes(',') || val.includes('"')) 
-              ? `"${val.replace(/"/g, '""')}"` 
-              : val;
+        // Perform reconciliation
+        const reconciliationData = performBankReconciliation(extracted.rows);
+        
+        if (!reconciliationData.reconciled) {
+          return res.status(200).json({
+            ok: false,
+            type: 'xlsx',
+            reply: reconciliationData.error || 'Bank reconciliation failed',
+            category: 'bank_reconciliation',
+            debug: {
+              reason: reconciliationData.reason,
+              sheetsFound: reconciliationData.sheetsFound,
+              bankHeaders: reconciliationData.bankHeaders,
+              ledgerHeaders: reconciliationData.ledgerHeaders
+            }
           });
-          csvLines.push(values.join(','));
-        });
+        }
         
-        fullDataForGL = csvLines.join('\n');
-        console.log(`Prepared full GL data: ${fullDataForGL.length} characters, ${extracted.rows.length} rows`);
+        // Use reconciliation summary as preprocessed data
+        preprocessedData = reconciliationData;
+        fullDataForGL = reconciliationData.summary;
         
-        // Still preprocess for statistics (but won't use for AI)
-        preprocessedData = preprocessGLData(extracted.rows);
-        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
+        console.log(`Bank Reconciliation: ${reconciliationData.stats.matchRate}% match rate`);
+      } else {
+        // Not bank reconciliation - check for GL
+        const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
+        category = detectDocumentCategory(sampleText);
+        
+        // Store full data for GL analysis
+        if (category === 'gl') {
+          // Convert rows to CSV format with ALL data
+          const headers = Object.keys(extracted.rows[0] || {}).filter(h => h !== '__sheet_name');
+          const csvLines = [headers.join(',')];
+          
+          let currentSheet = null;
+          extracted.rows.forEach(row => {
+            // Add sheet separator if it changes
+            if (row.__sheet_name && row.__sheet_name !== currentSheet) {
+              currentSheet = row.__sheet_name;
+              csvLines.push(`\n### Sheet: ${currentSheet} ###`);
+            }
+            
+            const values = headers.map(h => {
+              const val = row[h] || '';
+              // Escape commas and quotes in CSV
+              return typeof val === 'string' && (val.includes(',') || val.includes('"')) 
+                ? `"${val.replace(/"/g, '""')}"` 
+                : val;
+            });
+            csvLines.push(values.join(','));
+          });
+          
+          fullDataForGL = csvLines.join('\n');
+          console.log(`Prepared full GL data: ${fullDataForGL.length} characters, ${extracted.rows.length} rows`);
+          
+          // Still preprocess for statistics (but won't use for AI)
+          preprocessedData = preprocessGLData(extracted.rows);
+          console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
+        }
       }
     } else {
       const textContent = extracted.textContent || '';
@@ -1609,7 +1643,7 @@ export default async function handler(req, res) {
       console.log(`Category: ${category}`);
 
       if (category === 'gl') {
-        fullDataForGL = textContent; // Use full CSV text
+        fullDataForGL = textContent;
         preprocessedData = preprocessGLData(textContent);
         console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
       }
@@ -1621,7 +1655,7 @@ export default async function handler(req, res) {
       question,
       category,
       preprocessedData,
-      fullData: fullDataForGL // Pass full data for GL files
+      fullData: fullDataForGL
     });
 
     if (!reply) {
@@ -1638,10 +1672,9 @@ export default async function handler(req, res) {
     try {
       console.log("Starting Word document generation...");
       wordBase64 = await markdownToWord(reply);
-      console.log("✓ Word document generated successfully, length:", wordBase64.length);
+      console.log("Word document generated successfully, length:", wordBase64.length);
     } catch (wordError) {
-      console.error("✗ Word generation error:", wordError);
-      // Don't fail the whole request if Word generation fails
+      console.error("Word generation error:", wordError);
     }
 
     return res.status(200).json({
@@ -1650,14 +1683,13 @@ export default async function handler(req, res) {
       category,
       reply,
       wordDownload: wordBase64,
-      // Direct download URL for Word document
       downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
       wordSize: wordBase64 ? wordBase64.length : 0,
-      preprocessed: preprocessedData?.processed || false,
+      preprocessed: preprocessedData?.processed || preprocessedData?.reconciled || false,
       debug: {
         status: httpStatus,
         category,
-        preprocessed: preprocessedData?.processed || false,
+        preprocessed: preprocessedData?.processed || preprocessedData?.reconciled || false,
         stats: preprocessedData?.stats || null,
         debug_sample: preprocessedData?.debug || null,
         hasWord: !!wordBase64,
