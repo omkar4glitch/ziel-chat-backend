@@ -1,33 +1,4 @@
-
-/**
- * Extract PDF - Enhanced to handle scanned PDFs with OCR
- */
-async function extractPdf(buffer) {
-  try {
-    const data = await pdf(buffer);
-    const text = (data && data.text) ? data.text.trim() : "";
-
-    // Check if PDF has extractable text
-    if (!text || text.length < 50) {
-      console.log("PDF appears to be scanned or image-based, attempting OCR...");
-      
-      // This is likely a scanned PDF - we need OCR
-      // For now, return indication that OCR is needed
-      // In future, we could convert PDF pages to images and OCR them
-      return { 
-        type: "pdf", 
-        textContent: "", 
-        ocrNeeded: true,
-        error: "This PDF appears to be scanned (image-based). Please try uploading the original image files (PNG/JPG) instead, or use a PDF with selectable text."
-      };
-    }
-
-    return { type: "pdf", textContent: text, ocrNeeded: false };
-  } catch (err) {
-    console.error("extractPdf failed:", err?.message || err);
-    return { type: "pdf", textContent: "", error: String(err?.message || err) };
-  }
-}import fetch from "node-fetch";
+import fetch from "node-fetch";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
@@ -125,36 +96,26 @@ function detectFileType(fileUrl, contentType, buffer) {
   const lowerType = (contentType || "").toLowerCase();
 
   if (buffer && buffer.length >= 4) {
-    // Check magic numbers
     if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
-      // PK header - could be XLSX, DOCX, or PPTX
       if (lowerUrl.includes('.docx') || lowerType.includes('wordprocessing')) return "docx";
       if (lowerUrl.includes('.pptx') || lowerType.includes('presentation')) return "pptx";
       return "xlsx";
     }
     if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46)
       return "pdf";
-    // PNG signature
     if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47)
       return "png";
-    // JPEG signature
     if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF)
       return "jpg";
-    // GIF signature
     if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46)
       return "gif";
   }
 
-  // Check by URL/content-type
   if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) return "pdf";
-  
-  // Office documents
   if (lowerUrl.endsWith(".docx") || lowerType.includes("wordprocessing")) return "docx";
   if (lowerUrl.endsWith(".doc")) return "doc";
   if (lowerUrl.endsWith(".pptx") || lowerType.includes("presentation")) return "pptx";
   if (lowerUrl.endsWith(".ppt")) return "ppt";
-  
-  // Spreadsheets
   if (
     lowerUrl.endsWith(".xlsx") ||
     lowerUrl.endsWith(".xls") ||
@@ -162,10 +123,7 @@ function detectFileType(fileUrl, contentType, buffer) {
     lowerType.includes("sheet") ||
     lowerType.includes("excel")
   ) return "xlsx";
-  
   if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv")) return "csv";
-  
-  // Images
   if (lowerUrl.endsWith(".png") || lowerType.includes("image/png")) return "png";
   if (lowerUrl.endsWith(".jpg") || lowerUrl.endsWith(".jpeg") || lowerType.includes("image/jpeg")) return "jpg";
   if (lowerUrl.endsWith(".gif") || lowerType.includes("image/gif")) return "gif";
@@ -202,17 +160,14 @@ function parseAmount(s) {
 
   if (!str) return 0;
 
-  // If parentheses -> negative
   const parenMatch = str.match(/^\s*\((.*)\)\s*$/);
   if (parenMatch) str = '-' + parenMatch[1];
 
-  // Trailing minus like "123-" or "123 -"
   const trailingMinus = str.match(/^(.*?)[\s-]+$/);
   if (trailingMinus && !/^-/.test(str)) {
     str = '-' + trailingMinus[1];
   }
 
-  // Detect CR/DR tokens (case-insensitive)
   const crMatch = str.match(/\bCR\b/i);
   const drMatch = str.match(/\bDR\b/i);
   if (crMatch && !drMatch) {
@@ -221,9 +176,7 @@ function parseAmount(s) {
     str = str.replace('-', '');
   }
 
-  // Remove currency symbols, letters and keep digits, dot, minus
   str = str.replace(/[^0-9.\-]/g, '');
-  // If multiple dots, keep first
   const parts = str.split('.');
   if (parts.length > 2) {
     str = parts.shift() + '.' + parts.join('');
@@ -240,10 +193,8 @@ function parseAmount(s) {
 function formatDateUS(dateStr) {
   if (!dateStr) return dateStr;
   
-  // Try to parse Excel serial date number
   const num = parseFloat(dateStr);
   if (!isNaN(num) && num > 40000 && num < 50000) {
-    // Excel date serial number (days since 1900-01-01)
     const date = new Date((num - 25569) * 86400 * 1000);
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
@@ -251,7 +202,6 @@ function formatDateUS(dateStr) {
     return `${month}/${day}/${year}`;
   }
   
-  // Try to parse ISO date or other formats
   const date = new Date(dateStr);
   if (!isNaN(date.getTime())) {
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -264,8 +214,47 @@ function formatDateUS(dateStr) {
 }
 
 /**
- * Extract XLSX using sheet_to_json (reliable row preservation)
- * NOW READS ALL SHEETS and combines them
+ * Fuzzy string similarity (Levenshtein-based)
+ */
+function stringSimilarity(str1, str2) {
+  const s1 = str1.toLowerCase().trim();
+  const s2 = str2.toLowerCase().trim();
+  
+  if (s1 === s2) return 1.0;
+  if (s1.length === 0 || s2.length === 0) return 0.0;
+  
+  // Check if one contains the other
+  if (s1.includes(s2) || s2.includes(s1)) return 0.8;
+  
+  // Levenshtein distance
+  const matrix = [];
+  for (let i = 0; i <= s2.length; i++) {
+    matrix[i] = [i];
+  }
+  for (let j = 0; j <= s1.length; j++) {
+    matrix[0][j] = j;
+  }
+  for (let i = 1; i <= s2.length; i++) {
+    for (let j = 1; j <= s1.length; j++) {
+      if (s2.charAt(i - 1) === s1.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+  
+  const distance = matrix[s2.length][s1.length];
+  const maxLen = Math.max(s1.length, s2.length);
+  return 1 - (distance / maxLen);
+}
+
+/**
+ * Extract XLSX - READ ALL COLUMNS
  */
 function extractXlsx(buffer) {
   try {
@@ -286,7 +275,6 @@ function extractXlsx(buffer) {
       return { type: "xlsx", textContent: "", rows: [] };
     }
 
-    // Read ALL sheets and combine rows
     let allRows = [];
     let allCsv = '';
 
@@ -295,19 +283,36 @@ function extractXlsx(buffer) {
       
       const sheet = workbook.Sheets[sheetName];
       
-      // Get rows from this sheet
-      const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval: '', blankrows: true, raw: false });
-      console.log(`  - Sheet "${sheetName}" has ${jsonRows.length} rows`);
+      // Get rows - preserve ALL columns
+      const jsonRows = XLSX.utils.sheet_to_json(sheet, { 
+        defval: '', 
+        blankrows: true, 
+        raw: false,
+        header: 1 // Get as array of arrays first
+      });
       
-      // Add sheet name to each row for reference
-      const rowsWithSheetName = jsonRows.map(row => ({
-        ...row,
-        __sheet_name: sheetName
-      }));
+      if (jsonRows.length === 0) {
+        console.log(`  - Sheet "${sheetName}" is empty`);
+        return;
+      }
+      
+      // Convert to objects with ALL columns preserved
+      const headers = jsonRows[0];
+      const dataRows = jsonRows.slice(1);
+      
+      console.log(`  - Sheet "${sheetName}" headers:`, headers);
+      console.log(`  - Sheet "${sheetName}" has ${dataRows.length} data rows`);
+      
+      const rowsWithSheetName = dataRows.map((row, idx) => {
+        const obj = { __sheet_name: sheetName, __row_number: idx + 2 };
+        headers.forEach((header, colIdx) => {
+          obj[header] = row[colIdx] || '';
+        });
+        return obj;
+      });
       
       allRows = allRows.concat(rowsWithSheetName);
       
-      // Also generate CSV for this sheet
       const csv = XLSX.utils.sheet_to_csv(sheet, {
         blankrows: true,
         FS: ',',
@@ -316,16 +321,11 @@ function extractXlsx(buffer) {
         rawNumbers: false
       });
       
-      // Add sheet separator in CSV
       if (index > 0) allCsv += '\n\n';
       allCsv += `Sheet: ${sheetName}\n${csv}`;
     });
 
     console.log(`Total rows from all sheets: ${allRows.length}`);
-
-    const firstLine = allCsv.split('\n')[0] || '';
-    const columnCount = (firstLine.match(/,/g) || []).length + 1;
-    console.log(`Combined CSV has ${columnCount} columns`);
 
     return { type: "xlsx", textContent: allCsv, rows: allRows, sheetCount: workbook.SheetNames.length };
   } catch (err) {
@@ -335,21 +335,16 @@ function extractXlsx(buffer) {
 }
 
 /**
- * Extract Word Document (.docx) - Using JSZip library
+ * Extract Word Document (.docx)
  */
 async function extractDocx(buffer) {
   console.log("=== DOCX EXTRACTION with JSZip ===");
   
   try {
-    // Load the DOCX file (which is a ZIP) using JSZip
     const zip = await JSZip.loadAsync(buffer);
-    console.log("ZIP loaded, files:", Object.keys(zip.files).join(', '));
-    
-    // Get the document.xml file which contains the text
     const documentXml = zip.files['word/document.xml'];
     
     if (!documentXml) {
-      console.log("document.xml not found");
       return { 
         type: "docx", 
         textContent: "", 
@@ -357,11 +352,7 @@ async function extractDocx(buffer) {
       };
     }
     
-    // Extract the XML content
     const xmlContent = await documentXml.async('text');
-    console.log("XML content length:", xmlContent.length);
-    
-    // Extract text from <w:t> tags
     const textRegex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
     const textParts = [];
     let match;
@@ -382,26 +373,20 @@ async function extractDocx(buffer) {
       }
     }
     
-    console.log("Extracted text elements:", textParts.length);
-    
     if (textParts.length === 0) {
       return { 
         type: "docx", 
         textContent: "", 
-        error: "No text found in Word document. Document may be empty or contain only images." 
+        error: "No text found in Word document" 
       };
     }
     
-    const fullText = textParts.join(' ');
-    console.log("Final text length:", fullText.length);
-    
     return { 
       type: "docx", 
-      textContent: fullText 
+      textContent: textParts.join(' ')
     };
     
   } catch (error) {
-    console.error("DOCX extraction error:", error.message);
     return { 
       type: "docx", 
       textContent: "", 
@@ -411,20 +396,17 @@ async function extractDocx(buffer) {
 }
 
 /**
- * Extract PowerPoint (.pptx) - Improved extraction
+ * Extract PowerPoint (.pptx)
  */
 async function extractPptx(buffer) {
   try {
     const bufferStr = buffer.toString('latin1');
-    
-    // PPTX text is in <a:t> tags
     const textPattern = /<a:t[^>]*>([^<]+)<\/a:t>/g;
     let match;
     let allText = [];
     
     while ((match = textPattern.exec(bufferStr)) !== null) {
-      const text = match[1];
-      const cleaned = text
+      const text = match[1]
         .replace(/&lt;/g, '<')
         .replace(/&gt;/g, '>')
         .replace(/&amp;/g, '&')
@@ -432,21 +414,8 @@ async function extractPptx(buffer) {
         .replace(/&apos;/g, "'")
         .trim();
       
-      if (cleaned && cleaned.length > 0) {
-        allText.push(cleaned);
-      }
-    }
-    
-    // Alternative: also look for <a:p> paragraph tags
-    if (allText.length < 5) {
-      const paraPattern = /<a:p[^>]*>(.*?)<\/a:p>/gs;
-      const paraMatches = bufferStr.matchAll(paraPattern);
-      
-      for (const match of paraMatches) {
-        const innerText = match[1].replace(/<[^>]+>/g, ' ').trim();
-        if (innerText.length > 2) {
-          allText.push(innerText);
-        }
+      if (text && text.length > 0) {
+        allText.push(text);
       }
     }
     
@@ -454,25 +423,12 @@ async function extractPptx(buffer) {
       return { 
         type: "pptx", 
         textContent: "", 
-        error: "No text found in PowerPoint. Please try exporting as PDF." 
+        error: "No text found in PowerPoint" 
       };
     }
     
-    const text = allText.join('\n').trim();
-    
-    console.log(`Extracted ${text.length} characters from PPTX`);
-    
-    if (text.length < 20) {
-      return { 
-        type: "pptx", 
-        textContent: "", 
-        error: "Presentation appears to be empty or contains mostly images" 
-      };
-    }
-    
-    return { type: "pptx", textContent: text };
+    return { type: "pptx", textContent: allText.join('\n').trim() };
   } catch (err) {
-    console.error("extractPptx failed:", err?.message || err);
     return { 
       type: "pptx", 
       textContent: "", 
@@ -482,47 +438,34 @@ async function extractPptx(buffer) {
 }
 
 /**
- * Extract Image (PNG, JPG, etc.) - Provide helpful OCR alternatives
+ * Extract PDF
+ */
+async function extractPdf(buffer) {
+  try {
+    const data = await pdf(buffer);
+    const text = (data && data.text) ? data.text.trim() : "";
+
+    if (!text || text.length < 50) {
+      return { 
+        type: "pdf", 
+        textContent: "", 
+        ocrNeeded: true,
+        error: "This PDF appears to be scanned. Please upload as image (PNG/JPG) or use a PDF with selectable text."
+      };
+    }
+
+    return { type: "pdf", textContent: text, ocrNeeded: false };
+  } catch (err) {
+    return { type: "pdf", textContent: "", error: String(err?.message || err) };
+  }
+}
+
+/**
+ * Extract Image
  */
 async function extractImage(buffer, fileType) {
   try {
-    console.log(`Image upload detected: ${fileType}, size: ${(buffer.length / 1024).toFixed(2)} KB`);
-    
-    // Return helpful message with free OCR alternatives
-    const helpMessage = `📸 **Image File Detected (${fileType.toUpperCase()})**
-
-I can help you extract text from this image using these **FREE** methods:
-
-**🎯 FASTEST METHOD - Use Google Drive (100% Free):**
-1. Upload your image to Google Drive
-2. Right-click → "Open with" → "Google Docs"
-3. Google will automatically OCR the image and convert to editable text
-4. Copy the text and paste it here, OR
-5. Download as PDF and upload that PDF to me
-
-**📱 METHOD 2 - Use Your Phone:**
-Most phones have built-in scanners:
-- iPhone: Notes app → Scan Documents
-- Android: Google Drive → Scan
-- These create searchable PDFs automatically!
-
-**💻 METHOD 3 - Free Online OCR Tools:**
-- onlineocr.net (no signup needed)
-- i2ocr.com (simple and fast)
-- newocr.com (supports 122 languages)
-
-**📄 METHOD 4 - Convert to PDF:**
-If this is a scan, convert it to a searchable PDF using:
-- Adobe Acrobat (free trial)
-- PDF24 Tools (free online)
-- SmallPDF (3 free conversions/day)
-
-**Image Info:**
-- Type: ${fileType.toUpperCase()}
-- Size: ${(buffer.length / 1024).toFixed(2)} KB
-- Ready for OCR: Yes
-
-Once you have the text or searchable PDF, upload it here and I'll analyze it immediately! 🚀`;
+    const helpMessage = `Image File Detected (${fileType.toUpperCase()})\n\nPlease use Google Drive OCR or convert to searchable PDF first.`;
     
     return { 
       type: fileType, 
@@ -530,19 +473,631 @@ Once you have the text or searchable PDF, upload it here and I'll analyze it imm
       isImage: true,
       requiresManualProcessing: true
     };
-    
   } catch (err) {
-    console.error("Image handling error:", err?.message || err);
     return { 
       type: fileType, 
       textContent: "", 
-      error: `Error processing image. Please convert to PDF or extract text manually.`
+      error: "Error processing image"
     };
   }
 }
 
 /**
- * Parse CSV to array of objects (fallback)
+ * PROFESSIONAL BANK RECONCILIATION ENGINE
+ * Implements industry-standard matching rules
+ */
+function performBankReconciliation(rows) {
+  console.log("=== BANK RECONCILIATION ENGINE STARTED ===");
+  
+  if (!rows || rows.length === 0) {
+    return { 
+      reconciled: false, 
+      error: 'No data found in Excel file'
+    };
+  }
+
+  // Separate sheets
+  const bankSheet = rows.filter(r => r.__sheet_name && r.__sheet_name.toLowerCase().includes('bank'));
+  const ledgerSheet = rows.filter(r => r.__sheet_name && (r.__sheet_name.toLowerCase().includes('ledger') || r.__sheet_name.toLowerCase().includes('gl')));
+  
+  console.log(`Bank sheet: ${bankSheet.length} rows`);
+  console.log(`Ledger sheet: ${ledgerSheet.length} rows`);
+
+  if (bankSheet.length === 0 || ledgerSheet.length === 0) {
+    const availableSheets = [...new Set(rows.map(r => r.__sheet_name))];
+    return {
+      reconciled: false,
+      error: `Missing required sheets. Found sheets: ${availableSheets.join(', ')}. Please ensure one sheet contains "Bank" and another contains "Ledger" or "GL" in the name.`
+    };
+  }
+
+  // Column detection - COMPREHENSIVE
+  const bankHeaders = Object.keys(bankSheet[0] || {}).filter(h => h !== '__sheet_name' && h !== '__row_number');
+  const ledgerHeaders = Object.keys(ledgerSheet[0] || {}).filter(h => h !== '__sheet_name' && h !== '__row_number');
+  
+  console.log("Bank headers:", bankHeaders);
+  console.log("Ledger headers:", ledgerHeaders);
+  
+  const findColumn = (headers, possibleNames) => {
+    for (const name of possibleNames) {
+      const found = headers.find(h => h.toLowerCase().includes(name.toLowerCase()));
+      if (found) return found;
+    }
+    return null;
+  };
+
+  // Bank columns
+  const bankDateCol = findColumn(bankHeaders, ['date', 'transaction date', 'trans date', 'posting date', 'value date']);
+  const bankDescCol = findColumn(bankHeaders, ['description', 'desc', 'particulars', 'narration', 'details', 'memo']);
+  const bankRefCol = findColumn(bankHeaders, ['reference', 'ref', 'cheque', 'check', 'transaction id', 'ref no', 'document', 'doc no']);
+  const bankAmountCol = findColumn(bankHeaders, ['amount', 'transaction amount', 'value']);
+  const bankDebitCol = findColumn(bankHeaders, ['debit', 'withdrawal', 'dr', 'debit amount']);
+  const bankCreditCol = findColumn(bankHeaders, ['credit', 'deposit', 'cr', 'credit amount']);
+
+  // Ledger columns
+  const ledgerDateCol = findColumn(ledgerHeaders, ['date', 'transaction date', 'trans date', 'posting date', 'entry date', 'value date']);
+  const ledgerDescCol = findColumn(ledgerHeaders, ['description', 'desc', 'particulars', 'narration', 'details', 'memo']);
+  const ledgerRefCol = findColumn(ledgerHeaders, ['reference', 'ref', 'voucher', 'journal', 'entry no', 'document', 'doc no']);
+  const ledgerAmountCol = findColumn(ledgerHeaders, ['amount', 'value']);
+  const ledgerDebitCol = findColumn(ledgerHeaders, ['debit', 'dr', 'debit amount']);
+  const ledgerCreditCol = findColumn(ledgerHeaders, ['credit', 'cr', 'credit amount']);
+
+  console.log("Detected Bank columns:", { bankDateCol, bankDescCol, bankRefCol, bankAmountCol, bankDebitCol, bankCreditCol });
+  console.log("Detected Ledger columns:", { ledgerDateCol, ledgerDescCol, ledgerRefCol, ledgerAmountCol, ledgerDebitCol, ledgerCreditCol });
+
+  if (!bankDateCol && !ledgerDateCol) {
+    return {
+      reconciled: false,
+      error: 'Could not find date columns. Please ensure at least one sheet has a column with "Date" in the header.',
+      bankHeaders,
+      ledgerHeaders
+    };
+  }
+
+  // Parse bank transactions - PRESERVE ALL FIELDS
+  const bankTransactions = bankSheet.map((row, idx) => {
+    const date = bankDateCol ? formatDateUS(row[bankDateCol]) : '';
+    const description = bankDescCol ? String(row[bankDescCol] || '').trim() : '';
+    const reference = bankRefCol ? String(row[bankRefCol] || '').trim() : '';
+    
+    let debit = 0;
+    let credit = 0;
+    let amount = 0;
+    
+    if (bankDebitCol && bankCreditCol) {
+      debit = parseAmount(row[bankDebitCol] || '');
+      credit = parseAmount(row[bankCreditCol] || '');
+      amount = debit > 0 ? debit : credit;
+    } else if (bankAmountCol) {
+      const amt = parseAmount(row[bankAmountCol] || '');
+      amount = Math.abs(amt);
+      if (amt < 0) {
+        credit = amount;
+      } else {
+        debit = amount;
+      }
+    }
+    
+    // Skip zero amounts
+    if (amount === 0) return null;
+    
+    return {
+      id: `BANK-${idx + 1}`,
+      rowNumber: row.__row_number || (idx + 2),
+      date,
+      description,
+      reference,
+      debit,
+      credit,
+      amount,
+      type: debit > 0 ? 'Debit' : 'Credit',
+      matched: false,
+      matchedWith: [],
+      matchType: null,
+      matchScore: 0
+    };
+  }).filter(t => t !== null);
+
+  // Parse ledger transactions - PRESERVE ALL FIELDS
+  const ledgerTransactions = ledgerSheet.map((row, idx) => {
+    const date = ledgerDateCol ? formatDateUS(row[ledgerDateCol]) : '';
+    const description = ledgerDescCol ? String(row[ledgerDescCol] || '').trim() : '';
+    const reference = ledgerRefCol ? String(row[ledgerRefCol] || '').trim() : '';
+    
+    let debit = 0;
+    let credit = 0;
+    let amount = 0;
+    
+    if (ledgerDebitCol && ledgerCreditCol) {
+      debit = parseAmount(row[ledgerDebitCol] || '');
+      credit = parseAmount(row[ledgerCreditCol] || '');
+      amount = debit > 0 ? debit : credit;
+    } else if (ledgerAmountCol) {
+      const amt = parseAmount(row[ledgerAmountCol] || '');
+      amount = Math.abs(amt);
+      if (amt < 0) {
+        credit = amount;
+      } else {
+        debit = amount;
+      }
+    }
+    
+    if (amount === 0) return null;
+    
+    return {
+      id: `LEDGER-${idx + 1}`,
+      rowNumber: row.__row_number || (idx + 2),
+      date,
+      description,
+      reference,
+      debit,
+      credit,
+      amount,
+      type: debit > 0 ? 'Debit' : 'Credit',
+      matched: false,
+      matchedWith: [],
+      matchType: null,
+      matchScore: 0
+    };
+  }).filter(t => t !== null);
+
+  console.log(`Parsed ${bankTransactions.length} bank transactions`);
+  console.log(`Parsed ${ledgerTransactions.length} ledger transactions`);
+
+  if (bankTransactions.length === 0 || ledgerTransactions.length === 0) {
+    return {
+      reconciled: false,
+      error: 'No valid transactions found in one or both sheets. Please check your data.'
+    };
+  }
+
+  const matched = [];
+  const partialMatches = [];
+  
+  // RULE 1: EXACT MATCH (Date + Amount + Type)
+  console.log("Rule 1: Exact matching...");
+  bankTransactions.forEach(bankTxn => {
+    if (bankTxn.matched) return;
+    
+    const exactMatch = ledgerTransactions.find(ledgerTxn => 
+      !ledgerTxn.matched &&
+      ledgerTxn.date === bankTxn.date &&
+      Math.abs(ledgerTxn.amount - bankTxn.amount) < 0.01 &&
+      ledgerTxn.type === bankTxn.type
+    );
+    
+    if (exactMatch) {
+      bankTxn.matched = true;
+      exactMatch.matched = true;
+      bankTxn.matchedWith = [exactMatch.id];
+      exactMatch.matchedWith = [bankTxn.id];
+      bankTxn.matchType = 'Exact Match';
+      exactMatch.matchType = 'Exact Match';
+      bankTxn.matchScore = 100;
+      exactMatch.matchScore = 100;
+      
+      matched.push({
+        matchType: 'Exact Match',
+        confidence: 100,
+        bankTxn,
+        ledgerTxns: [exactMatch]
+      });
+    }
+  });
+  console.log(`Exact matches: ${matched.length}`);
+
+  // RULE 2: FUZZY DATE MATCH (±5 days + Amount + Type)
+  console.log("Rule 2: Fuzzy date matching...");
+  bankTransactions.forEach(bankTxn => {
+    if (bankTxn.matched) return;
+    
+    const bankDate = bankTxn.date ? new Date(bankTxn.date) : null;
+    if (!bankDate || isNaN(bankDate.getTime())) return;
+    
+    const fuzzyMatch = ledgerTransactions.find(ledgerTxn => {
+      if (ledgerTxn.matched) return false;
+      
+      const ledgerDate = ledgerTxn.date ? new Date(ledgerTxn.date) : null;
+      if (!ledgerDate || isNaN(ledgerDate.getTime())) return false;
+      
+      const daysDiff = Math.abs((bankDate - ledgerDate) / (1000 * 60 * 60 * 24));
+      
+      return daysDiff <= 5 &&
+             Math.abs(ledgerTxn.amount - bankTxn.amount) < 0.01 &&
+             ledgerTxn.type === bankTxn.type;
+    });
+    
+    if (fuzzyMatch) {
+      const daysDiff = Math.abs((bankDate - new Date(fuzzyMatch.date)) / (1000 * 60 * 60 * 24));
+      const confidence = Math.round(95 - (daysDiff * 3)); // 95% for 1 day, 92% for 2 days, etc.
+      
+      bankTxn.matched = true;
+      fuzzyMatch.matched = true;
+      bankTxn.matchedWith = [fuzzyMatch.id];
+      fuzzyMatch.matchedWith = [bankTxn.id];
+      bankTxn.matchType = `Fuzzy Date Match (${Math.round(daysDiff)} days diff)`;
+      fuzzyMatch.matchType = `Fuzzy Date Match (${Math.round(daysDiff)} days diff)`;
+      bankTxn.matchScore = confidence;
+      fuzzyMatch.matchScore = confidence;
+      
+      matched.push({
+        matchType: `Fuzzy Date Match (${Math.round(daysDiff)} days)`,
+        confidence,
+        bankTxn,
+        ledgerTxns: [fuzzyMatch]
+      });
+    }
+  });
+  console.log(`After fuzzy date matching: ${matched.length}`);
+
+  // RULE 3: AMOUNT + TYPE MATCH (with tolerance ±0.5%)
+  console.log("Rule 3: Amount tolerance matching...");
+  bankTransactions.forEach(bankTxn => {
+    if (bankTxn.matched) return;
+    
+    const tolerance = bankTxn.amount * 0.005; // 0.5% tolerance
+    
+    const amountMatch = ledgerTransactions.find(ledgerTxn => 
+      !ledgerTxn.matched &&
+      Math.abs(ledgerTxn.amount - bankTxn.amount) <= tolerance &&
+      ledgerTxn.type === bankTxn.type
+    );
+    
+    if (amountMatch) {
+      const diff = Math.abs(amountMatch.amount - bankTxn.amount);
+      const pctDiff = (diff / bankTxn.amount) * 100;
+      const confidence = Math.round(90 - (pctDiff * 10)); // 90% for exact, decreases with difference
+      
+      bankTxn.matched = true;
+      amountMatch.matched = true;
+      bankTxn.matchedWith = [amountMatch.id];
+      amountMatch.matchedWith = [bankTxn.id];
+      bankTxn.matchType = `Amount Match (${pctDiff.toFixed(2)}% diff)`;
+      amountMatch.matchType = `Amount Match (${pctDiff.toFixed(2)}% diff)`;
+      bankTxn.matchScore = confidence;
+      amountMatch.matchScore = confidence;
+      
+      matched.push({
+        matchType: `Amount Match (${pctDiff.toFixed(2)}% diff)`,
+        confidence,
+        bankTxn,
+        ledgerTxns: [amountMatch]
+      });
+    }
+  });
+  console.log(`After amount tolerance matching: ${matched.length}`);
+
+  // RULE 4: DESCRIPTION SIMILARITY MATCH
+  console.log("Rule 4: Description similarity matching...");
+  bankTransactions.forEach(bankTxn => {
+    if (bankTxn.matched) return;
+    if (!bankTxn.description || bankTxn.description.length < 5) return;
+    
+    let bestMatch = null;
+    let bestSimilarity = 0;
+    
+    ledgerTransactions.forEach(ledgerTxn => {
+      if (ledgerTxn.matched) return;
+      if (!ledgerTxn.description || ledgerTxn.description.length < 5) return;
+      if (Math.abs(ledgerTxn.amount - bankTxn.amount) > 0.01) return;
+      if (ledgerTxn.type !== bankTxn.type) return;
+      
+      const similarity = stringSimilarity(bankTxn.description, ledgerTxn.description);
+      
+      if (similarity > 0.6 && similarity > bestSimilarity) {
+        bestSimilarity = similarity;
+        bestMatch = ledgerTxn;
+      }
+    });
+    
+    if (bestMatch && bestSimilarity >= 0.6) {
+      const confidence = Math.round(bestSimilarity * 80); // Max 80% confidence
+      
+      bankTxn.matched = true;
+      bestMatch.matched = true;
+      bankTxn.matchedWith = [bestMatch.id];
+      bestMatch.matchedWith = [bankTxn.id];
+      bankTxn.matchType = `Description Match (${Math.round(bestSimilarity * 100)}% similar)`;
+      bestMatch.matchType = `Description Match (${Math.round(bestSimilarity * 100)}% similar)`;
+      bankTxn.matchScore = confidence;
+      bestMatch.matchScore = confidence;
+      
+      matched.push({
+        matchType: `Description Match (${Math.round(bestSimilarity * 100)}% similar)`,
+        confidence,
+        bankTxn,
+        ledgerTxns: [bestMatch]
+      });
+    }
+  });
+  console.log(`After description matching: ${matched.length}`);
+
+  // RULE 5: MANY-TO-ONE MATCHING (Bank pays multiple ledger entries)
+  console.log("Rule 5: Many-to-one matching...");
+  bankTransactions.forEach(bankTxn => {
+    if (bankTxn.matched) return;
+    
+    // Try to find multiple ledger transactions that sum to bank amount
+    const unmatchedLedger = ledgerTransactions.filter(l => !l.matched && l.type === bankTxn.type);
+    
+    // Try combinations of 2-5 transactions
+    for (let groupSize = 2; groupSize <= Math.min(5, unmatchedLedger.length); groupSize++) {
+      const combinations = getCombinations(unmatchedLedger, groupSize);
+      
+      for (const combo of combinations) {
+        const totalAmount = combo.reduce((sum, txn) => sum + txn.amount, 0);
+        
+        if (Math.abs(totalAmount - bankTxn.amount) < 0.01) {
+          // Found a match!
+          bankTxn.matched = true;
+          bankTxn.matchedWith = combo.map(t => t.id);
+          bankTxn.matchType = `Many-to-One (${combo.length} ledger entries)`;
+          bankTxn.matchScore = 85;
+          
+          combo.forEach(ledgerTxn => {
+            ledgerTxn.matched = true;
+            ledgerTxn.matchedWith = [bankTxn.id];
+            ledgerTxn.matchType = `Many-to-One (${combo.length} entries)`;
+            ledgerTxn.matchScore = 85;
+          });
+          
+          matched.push({
+            matchType: `Many-to-One (${combo.length} ledger entries)`,
+            confidence: 85,
+            bankTxn,
+            ledgerTxns: combo
+          });
+          
+          break;
+        }
+      }
+      
+      if (bankTxn.matched) break;
+    }
+  });
+  console.log(`After many-to-one matching: ${matched.length}`);
+
+  // RULE 6: ONE-TO-MANY MATCHING (Ledger entries paid by multiple bank transactions)
+  console.log("Rule 6: One-to-many matching...");
+  ledgerTransactions.forEach(ledgerTxn => {
+    if (ledgerTxn.matched) return;
+    
+    const unmatchedBank = bankTransactions.filter(b => !b.matched && b.type === ledgerTxn.type);
+    
+    for (let groupSize = 2; groupSize <= Math.min(5, unmatchedBank.length); groupSize++) {
+      const combinations = getCombinations(unmatchedBank, groupSize);
+      
+      for (const combo of combinations) {
+        const totalAmount = combo.reduce((sum, txn) => sum + txn.amount, 0);
+        
+        if (Math.abs(totalAmount - ledgerTxn.amount) < 0.01) {
+          ledgerTxn.matched = true;
+          ledgerTxn.matchedWith = combo.map(t => t.id);
+          ledgerTxn.matchType = `One-to-Many (${combo.length} bank entries)`;
+          ledgerTxn.matchScore = 85;
+          
+          combo.forEach(bankTxn => {
+            bankTxn.matched = true;
+            bankTxn.matchedWith = [ledgerTxn.id];
+            bankTxn.matchType = `One-to-Many (${combo.length} entries)`;
+            bankTxn.matchScore = 85;
+          });
+          
+          matched.push({
+            matchType: `One-to-Many (${combo.length} bank entries)`,
+            confidence: 85,
+            bankTxn: combo[0], // Representative
+            ledgerTxns: [ledgerTxn],
+            groupedBank: combo
+          });
+          
+          break;
+        }
+      }
+      
+      if (ledgerTxn.matched) break;
+    }
+  });
+  console.log(`After one-to-many matching: ${matched.length}`);
+
+  // Collect unmatched transactions
+  const unmatchedBank = bankTransactions.filter(t => !t.matched);
+  const unmatchedLedger = ledgerTransactions.filter(t => !t.matched);
+
+  console.log(`Final: ${matched.length} matched, ${unmatchedBank.length} unmatched bank, ${unmatchedLedger.length} unmatched ledger`);
+
+  // Calculate statistics
+  const totalBankDebit = bankTransactions.reduce((sum, t) => sum + t.debit, 0);
+  const totalBankCredit = bankTransactions.reduce((sum, t) => sum + t.credit, 0);
+  const totalLedgerDebit = ledgerTransactions.reduce((sum, t) => sum + t.debit, 0);
+  const totalLedgerCredit = ledgerTransactions.reduce((sum, t) => sum + t.credit, 0);
+  
+  const matchedBankAmount = matched.reduce((sum, m) => sum + m.bankTxn.amount, 0);
+  const unmatchedBankAmount = unmatchedBank.reduce((sum, t) => sum + t.amount, 0);
+  const unmatchedLedgerAmount = unmatchedLedger.reduce((sum, t) => sum + t.amount, 0);
+
+  const matchRate = ((matched.length / Math.max(bankTransactions.length, ledgerTransactions.length)) * 100).toFixed(1);
+
+  // Generate comprehensive reconciliation statement
+  let summary = `BANK RECONCILIATION STATEMENT\n\n`;
+  summary += `Reconciliation Date: ${new Date().toLocaleDateString()}\n`;
+  summary += `Match Rate: ${matchRate}%\n`;
+  summary += `Matching Engine: AI-Powered Multi-Rule Engine\n\n`;
+  
+  summary += `SUMMARY STATISTICS\n\n`;
+  summary += `| Metric | Bank Statement | General Ledger | Difference |\n`;
+  summary += `|--------|----------------|----------------|------------|\n`;
+  summary += `| Total Transactions | ${bankTransactions.length} | ${ledgerTransactions.length} | ${Math.abs(bankTransactions.length - ledgerTransactions.length)} |\n`;
+  summary += `| Total Debits | ${totalBankDebit.toFixed(2)} | ${totalLedgerDebit.toFixed(2)} | ${Math.abs(totalBankDebit - totalLedgerDebit).toFixed(2)} |\n`;
+  summary += `| Total Credits | ${totalBankCredit.toFixed(2)} | ${totalLedgerCredit.toFixed(2)} | ${Math.abs(totalBankCredit - totalLedgerCredit).toFixed(2)} |\n`;
+  summary += `| Matched Transactions | ${matched.length} | ${matched.length} | - |\n`;
+  summary += `| Matched Amount | ${matchedBankAmount.toFixed(2)} | ${matchedBankAmount.toFixed(2)} | - |\n`;
+  summary += `| Unmatched Transactions | ${unmatchedBank.length} | ${unmatchedLedger.length} | - |\n`;
+  summary += `| Unmatched Amount | ${unmatchedBankAmount.toFixed(2)} | ${unmatchedLedgerAmount.toFixed(2)} | - |\n\n`;
+
+  if (matched.length > 0) {
+    summary += `MATCHED TRANSACTIONS (${matched.length} matches)\n\n`;
+    summary += `| # | Match Type | Confidence | Bank Row | Ledger Row(s) | Date | Amount | Debit | Credit | Bank Desc | Ledger Desc | Reference |\n`;
+    summary += `|---|------------|------------|----------|---------------|------|--------|-------|--------|-----------|-------------|-----------|\ n`;
+    matched.forEach((m, i) => {
+      const ledgerRows = m.ledgerTxns.map(l => l.rowNumber).join(', ');
+      const ledgerDescs = m.ledgerTxns.map(l => l.description.substring(0, 25)).join('; ');
+      const bankRef = m.bankTxn.reference.substring(0, 15);
+      const ledgerRefs = m.ledgerTxns.map(l => l.reference.substring(0, 15)).join('; ');
+      
+      summary += `| ${i + 1} | ${m.matchType} | ${m.confidence}% | ${m.bankTxn.rowNumber} | ${ledgerRows} | ${m.bankTxn.date} | ${m.bankTxn.amount.toFixed(2)} | ${m.bankTxn.debit.toFixed(2)} | ${m.bankTxn.credit.toFixed(2)} | ${m.bankTxn.description.substring(0, 25)} | ${ledgerDescs} | ${bankRef} |\n`;
+    });
+    summary += `\n`;
+  }
+
+  if (unmatchedBank.length > 0) {
+    summary += `UNMATCHED BANK TRANSACTIONS (${unmatchedBank.length} items)\n\n`;
+    summary += `These transactions appear in Bank Statement but NOT in General Ledger:\n\n`;
+    summary += `| # | Row | Date | Description | Reference | Debit | Credit | Amount | Type |\n`;
+    summary += `|---|-----|------|-------------|-----------|-------|--------|--------|------|\n`;
+    unmatchedBank.forEach((t, i) => {
+      summary += `| ${i + 1} | ${t.rowNumber} | ${t.date} | ${t.description.substring(0, 40)} | ${t.reference.substring(0, 15)} | ${t.debit.toFixed(2)} | ${t.credit.toFixed(2)} | ${t.amount.toFixed(2)} | ${t.type} |\n`;
+    });
+    summary += `\nTotal Unmatched Bank Amount: ${unmatchedBankAmount.toFixed(2)}\n\n`;
+    
+    summary += `POSSIBLE REASONS FOR UNMATCHED BANK TRANSACTIONS:\n`;
+    summary += `- Bank charges or fees not recorded in ledger\n`;
+    summary += `- Interest income not yet journalized\n`;
+    summary += `- Automatic payments or direct debits\n`;
+    summary += `- NSF (Non-Sufficient Funds) checks\n`;
+    summary += `- Timing differences (transactions recorded in different periods)\n\n`;
+  }
+
+  if (unmatchedLedger.length > 0) {
+    summary += `UNMATCHED LEDGER TRANSACTIONS (${unmatchedLedger.length} items)\n\n`;
+    summary += `These transactions appear in General Ledger but NOT in Bank Statement:\n\n`;
+    summary += `| # | Row | Date | Description | Reference | Debit | Credit | Amount | Type |\n`;
+    summary += `|---|-----|------|-------------|-----------|-------|--------|--------|------|\n`;
+    unmatchedLedger.forEach((t, i) => {
+      summary += `| ${i + 1} | ${t.rowNumber} | ${t.date} | ${t.description.substring(0, 40)} | ${t.reference.substring(0, 15)} | ${t.debit.toFixed(2)} | ${t.credit.toFixed(2)} | ${t.amount.toFixed(2)} | ${t.type} |\n`;
+    });
+    summary += `\nTotal Unmatched Ledger Amount: ${unmatchedLedgerAmount.toFixed(2)}\n\n`;
+    
+    summary += `POSSIBLE REASONS FOR UNMATCHED LEDGER TRANSACTIONS:\n`;
+    summary += `- Outstanding checks not yet cleared by bank\n`;
+    summary += `- Deposits in transit (not yet shown in bank statement)\n`;
+    summary += `- Post-dated checks\n`;
+    summary += `- Timing differences between book date and bank clearing date\n`;
+    summary += `- Electronic transfers in process\n\n`;
+  }
+
+  // RECONCILIATION STATEMENT
+  summary += `FORMAL BANK RECONCILIATION STATEMENT\n\n`;
+  summary += `Balance per Bank Statement: ${totalBankCredit.toFixed(2)}\n`;
+  summary += `Add: Deposits in Transit: ${unmatchedLedger.filter(t => t.type === 'Credit').reduce((s, t) => s + t.amount, 0).toFixed(2)}\n`;
+  summary += `Less: Outstanding Checks: (${unmatchedLedger.filter(t => t.type === 'Debit').reduce((s, t) => s + t.amount, 0).toFixed(2)})\n`;
+  summary += `Adjusted Bank Balance: ${(totalBankCredit + unmatchedLedger.filter(t => t.type === 'Credit').reduce((s, t) => s + t.amount, 0) - unmatchedLedger.filter(t => t.type === 'Debit').reduce((s, t) => s + t.amount, 0)).toFixed(2)}\n\n`;
+  
+  summary += `Balance per Books (Ledger): ${totalLedgerCredit.toFixed(2)}\n`;
+  summary += `Add: Bank Collections/Interest: ${unmatchedBank.filter(t => t.type === 'Credit').reduce((s, t) => s + t.amount, 0).toFixed(2)}\n`;
+  summary += `Less: Bank Charges/NSF: (${unmatchedBank.filter(t => t.type === 'Debit').reduce((s, t) => s + t.amount, 0).toFixed(2)})\n`;
+  summary += `Adjusted Book Balance: ${(totalLedgerCredit + unmatchedBank.filter(t => t.type === 'Credit').reduce((s, t) => s + t.amount, 0) - unmatchedBank.filter(t => t.type === 'Debit').reduce((s, t) => s + t.amount, 0)).toFixed(2)}\n\n`;
+
+  // RECOMMENDATIONS
+  summary += `ACTION ITEMS AND RECOMMENDATIONS\n\n`;
+  let actionNumber = 1;
+  
+  if (unmatchedBank.length > 0) {
+    summary += `${actionNumber}. RECORD BANK TRANSACTIONS IN BOOKS\n`;
+    summary += `   ${unmatchedBank.length} bank transactions need journal entries:\n`;
+    unmatchedBank.slice(0, 5).forEach(t => {
+      summary += `   - ${t.description} (${t.amount.toFixed(2)}) - ${t.type}\n`;
+    });
+    if (unmatchedBank.length > 5) {
+      summary += `   - ... and ${unmatchedBank.length - 5} more\n`;
+    }
+    summary += `\n`;
+    actionNumber++;
+  }
+  
+  if (unmatchedLedger.length > 0) {
+    summary += `${actionNumber}. INVESTIGATE OUTSTANDING ITEMS\n`;
+    summary += `   ${unmatchedLedger.length} ledger transactions not yet in bank:\n`;
+    unmatchedLedger.slice(0, 5).forEach(t => {
+      summary += `   - ${t.description} (${t.amount.toFixed(2)}) - ${t.type}\n`;
+    });
+    if (unmatchedLedger.length > 5) {
+      summary += `   - ... and ${unmatchedLedger.length - 5} more\n`;
+    }
+    summary += `\n`;
+    actionNumber++;
+  }
+  
+  if (matchRate < 85) {
+    summary += `${actionNumber}. IMPROVE DATA QUALITY\n`;
+    summary += `   Match rate of ${matchRate}% is below industry standard (>90%).\n`;
+    summary += `   Recommendations:\n`;
+    summary += `   - Ensure consistent date formats in both sheets\n`;
+    summary += `   - Use consistent reference numbers\n`;
+    summary += `   - Improve transaction descriptions\n`;
+    summary += `   - Review amount entry accuracy\n\n`;
+    actionNumber++;
+  }
+  
+  if (matchRate >= 95) {
+    summary += `${actionNumber}. EXCELLENT RECONCILIATION\n`;
+    summary += `   Your records are well-maintained with ${matchRate}% match rate!\n`;
+    summary += `   Continue following your current processes.\n\n`;
+  }
+
+  return {
+    reconciled: true,
+    summary,
+    stats: {
+      matchRate: parseFloat(matchRate),
+      totalBankTransactions: bankTransactions.length,
+      totalLedgerTransactions: ledgerTransactions.length,
+      matchedCount: matched.length,
+      unmatchedBankCount: unmatchedBank.length,
+      unmatchedLedgerCount: unmatchedLedger.length,
+      totalBankDebit: Number(totalBankDebit.toFixed(2)),
+      totalBankCredit: Number(totalBankCredit.toFixed(2)),
+      totalLedgerDebit: Number(totalLedgerDebit.toFixed(2)),
+      totalLedgerCredit: Number(totalLedgerCredit.toFixed(2)),
+      matchedAmount: Number(matchedBankAmount.toFixed(2)),
+      unmatchedBankAmount: Number(unmatchedBankAmount.toFixed(2)),
+      unmatchedLedgerAmount: Number(unmatchedLedgerAmount.toFixed(2))
+    },
+    matched,
+    unmatchedBank,
+    unmatchedLedger
+  };
+}
+
+/**
+ * Helper function to get combinations
+ */
+function getCombinations(arr, size) {
+  if (size > arr.length || size <= 0) return [];
+  if (size === arr.length) return [arr];
+  if (size === 1) return arr.map(el => [el]);
+  
+  const combinations = [];
+  
+  function combine(start, chosen) {
+    if (chosen.length === size) {
+      combinations.push([...chosen]);
+      return;
+    }
+    
+    for (let i = start; i < arr.length; i++) {
+      chosen.push(arr[i]);
+      combine(i + 1, chosen);
+      chosen.pop();
+    }
+  }
+  
+  combine(0, []);
+  return combinations;
+}
+
+/**
+ * Parse CSV to array of objects
  */
 function parseCSV(csvText) {
   const lines = csvText.trim().split('\n');
@@ -576,41 +1131,32 @@ function parseCSV(csvText) {
   };
 
   const headers = parseCSVLine(lines[0]);
-  const headerCount = headers.length;
   const rows = [];
-
-  console.log(`CSV has ${lines.length} lines total (including header)`);
-  console.log(`Headers (${headerCount} columns):`, headers);
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
-
-    if (!line || line.trim() === '' || line.trim() === ','.repeat(headerCount - 1)) {
-      continue;
-    }
+    if (!line || line.trim() === '') continue;
 
     const values = parseCSVLine(line);
-
     const row = {};
     headers.forEach((h, idx) => {
       row[h] = values[idx] !== undefined ? values[idx] : '';
     });
-
     rows.push(row);
   }
 
-  console.log(`✓ Parsed ${rows.length} data rows (should match Excel row count minus header)`);
   return rows;
 }
 
+// ... Continue in next message (GL preprocessing, model call, Word export, main handler) ...
+
 /**
- * Convert rows (array of objects) into the same structure used by preprocessGLData
+ * GL Data preprocessing
  */
 function preprocessGLDataFromRows(rows) {
   if (!rows || rows.length === 0) return { processed: false, reason: 'No rows' };
 
   const headers = Object.keys(rows[0]);
-
   const findColumn = (possibleNames) => {
     for (const name of possibleNames) {
       const found = headers.find(h => h.toLowerCase().includes(name.toLowerCase()));
@@ -619,76 +1165,25 @@ function preprocessGLDataFromRows(rows) {
     return null;
   };
 
-  const accountCol = findColumn(['account', 'acc', 'gl account', 'account name', 'ledger', 'account desc']);
-  const debitCol = findColumn(['debit', 'dr', 'debit amount', 'dr amount']);
-  const creditCol = findColumn(['credit', 'cr', 'credit amount', 'cr amount']);
-  const dateCol = findColumn(['date', 'trans date', 'transaction date', 'posting date', 'entry date']);
-  const referenceCol = findColumn(['reference', 'ref', 'entry', 'journal', 'voucher', 'transaction']);
-  const balanceCol = findColumn(['balance', 'net', 'amount']);
+  const accountCol = findColumn(['account', 'acc', 'gl account', 'account name', 'ledger']);
+  const debitCol = findColumn(['debit', 'dr', 'debit amount']);
+  const creditCol = findColumn(['credit', 'cr', 'credit amount']);
+  const dateCol = findColumn(['date', 'trans date', 'transaction date']);
 
-  if (!accountCol || (!debitCol && !creditCol && !balanceCol)) {
-    return { processed: false, reason: 'Could not identify required columns', headers };
+  if (!accountCol || (!debitCol && !creditCol)) {
+    return { processed: false, reason: 'Could not identify required columns' };
   }
 
   const accountSummary = {};
   let totalDebits = 0;
   let totalCredits = 0;
-  let skippedRows = 0;
-  let processedRows = 0;
-  let minDate = null;
-  let maxDate = null;
-  let reversalEntries = 0;
 
-  let debugInfo = [];
+  rows.forEach(row => {
+    const account = String(row[accountCol] || '').trim();
+    if (!account) return;
 
-  rows.forEach((row, idx) => {
-    const account = (row[accountCol] || '').toString().trim();
-    if (!account) {
-      skippedRows++;
-      return;
-    }
-
-    const debitStr = debitCol ? (row[debitCol] || '').toString().trim() : '';
-    const creditStr = creditCol ? (row[creditCol] || '').toString().trim() : '';
-
-    let debit = 0;
-    let credit = 0;
-
-    const parsedDebit = parseAmount(debitStr || '');
-    const parsedCredit = parseAmount(creditStr || '');
-
-    if (parsedDebit !== 0 || parsedCredit !== 0) {
-      if (parsedDebit < 0) {
-        credit = Math.abs(parsedDebit);
-        reversalEntries++;
-      } else {
-        debit = parsedDebit;
-      }
-
-      if (parsedCredit < 0) {
-        debit = debit + Math.abs(parsedCredit);
-        reversalEntries++;
-      } else {
-        credit = credit + parsedCredit;
-      }
-    } else {
-      const amountColCandidate = balanceCol || (headers.find(h => /amount|amt|value/i.test(h)) || null);
-      if (amountColCandidate && row[amountColCandidate] !== undefined) {
-        const amt = parseAmount(row[amountColCandidate]);
-        if (amt < 0) {
-          credit = Math.abs(amt);
-          reversalEntries++;
-        } else {
-          debit = amt;
-        }
-      }
-    }
-
-    if (dateCol && row[dateCol]) {
-      const dateStr = row[dateCol].toString().trim();
-      if (!minDate || dateStr < minDate) minDate = dateStr;
-      if (!maxDate || dateStr > maxDate) maxDate = dateStr;
-    }
+    const debit = debitCol ? parseAmount(row[debitCol] || '') : 0;
+    const credit = creditCol ? parseAmount(row[creditCol] || '') : 0;
 
     if (!accountSummary[account]) {
       accountSummary[account] = { account, totalDebit: 0, totalCredit: 0, count: 0 };
@@ -698,83 +1193,30 @@ function preprocessGLDataFromRows(rows) {
     accountSummary[account].totalCredit += credit;
     accountSummary[account].count += 1;
 
-    if ((parsedDebit === 0 && parsedCredit === 0) && (debitStr || creditStr)) {
-      debugInfo.push({ row: idx + 1, debitStr, creditStr, amountCandidate: row[balanceCol] });
-    }
-
     totalDebits += debit;
     totalCredits += credit;
-    processedRows++;
   });
 
-  const accounts = Object.values(accountSummary).map(acc => ({
-    account: acc.account,
-    totalDebit: acc.totalDebit,
-    totalCredit: acc.totalCredit,
-    netBalance: acc.totalDebit - acc.totalCredit,
-    totalActivity: acc.totalDebit + acc.totalCredit,
-    count: acc.count
-  })).sort((a,b) => b.totalActivity - a.totalActivity);
+  const accounts = Object.values(accountSummary);
+  const isBalanced = Math.abs(totalDebits - totalCredits) < 0.01;
 
-  const roundedDebits = Number(totalDebits.toFixed(2));
-  const roundedCredits = Number(totalCredits.toFixed(2));
-  const isBalanced = Math.abs(roundedDebits - roundedCredits) < 0.01;
-  const difference = roundedDebits - roundedCredits;
-
-  const formattedMinDate = formatDateUS(minDate);
-  const formattedMaxDate = formatDateUS(maxDate);
-
-  let summary = `## Pre-Processed GL Summary\n\n`;
-  summary += `**Data Quality:**\n`;
-  summary += `- Total Rows: ${rows.length}\n`;
-  summary += `- Processed: ${processedRows} entries\n`;
-  summary += `- Skipped: ${skippedRows} entries\n`;
-  if (reversalEntries > 0) summary += `- Reversal Entries: ${reversalEntries} (negative amounts auto-corrected)\n`;
-  summary += `- Unique Accounts: ${accounts.length}\n\n`;
-  if (formattedMinDate && formattedMaxDate) summary += `**Period:** ${formattedMinDate} to ${formattedMaxDate}\n\n`;
-
-  summary += `**Financial Summary:**\n`;
-  summary += `- Total Debits: $${Math.round(roundedDebits).toLocaleString('en-US')}\n`;
-  summary += `- Total Credits: $${Math.round(roundedCredits).toLocaleString('en-US')}\n`;
-  summary += `- Difference: $${Math.round(difference).toLocaleString('en-US')}\n`;
-  summary += `- **Balanced:** ${isBalanced ? '✓ YES' : '✗ NO'}\n\n`;
-  if (!isBalanced) summary += `⚠️ **WARNING:** Debits and Credits do not balance. Difference of $${Math.round(Math.abs(difference)).toLocaleString('en-US')}\n\n`;
-
-  summary += `### Account-wise Summary (All ${accounts.length} Accounts)\n\n`;
-  summary += `| # | Account Name | Total Debit ($) | Total Credit ($) | Net Balance ($) | Entries |\n`;
-  summary += `|---|--------------|-----------------|------------------|-----------------|----------|\n`;
-  accounts.forEach((acc,i) => {
-    summary += `| ${i+1} | ${acc.account} | ${Math.round(acc.totalDebit).toLocaleString('en-US')} | ${Math.round(acc.totalCredit).toLocaleString('en-US')} | ${Math.round(acc.netBalance).toLocaleString('en-US')} | ${acc.count} |\n`;
-  });
+  let summary = `GL Summary\n\n`;
+  summary += `Total Debits: ${totalDebits.toFixed(2)}\n`;
+  summary += `Total Credits: ${totalCredits.toFixed(2)}\n`;
+  summary += `Balanced: ${isBalanced ? 'YES' : 'NO'}\n`;
+  summary += `Accounts: ${accounts.length}\n\n`;
 
   return {
     processed: true,
     summary,
-    stats: {
-      totalDebits: roundedDebits,
-      totalCredits: roundedCredits,
-      difference,
-      isBalanced,
-      accountCount: accounts.length,
-      entryCount: rows.length,
-      processedCount: processedRows,
-      skippedCount: skippedRows,
-      reversalCount: reversalEntries,
-      dateRange: formattedMinDate && formattedMaxDate ? `${formattedMinDate} to ${formattedMaxDate}` : 'Unknown'
-    },
-    accounts,
-    debug: { sampleUnparsed: debugInfo.slice(0,10) }
+    stats: { totalDebits, totalCredits, isBalanced, accountCount: accounts.length }
   };
 }
 
-/**
- * PRE-PROCESS GL DATA (accepts CSV string OR rows array)
- */
 function preprocessGLData(textOrRows) {
   if (Array.isArray(textOrRows)) {
     return preprocessGLDataFromRows(textOrRows);
   }
-
   const rows = parseCSV(textOrRows);
   return preprocessGLDataFromRows(rows);
 }
@@ -784,57 +1226,45 @@ function preprocessGLData(textOrRows) {
  */
 function detectDocumentCategory(textContent) {
   const lower = textContent.toLowerCase();
-
-  const glScore = (lower.match(/debit|credit|journal|gl entry/g) || []).length;
-  const plScore = (lower.match(/revenue|profit|loss|income|expenses|ebitda/g) || []).length;
-
-  console.log(`Category scores - GL: ${glScore}, P&L: ${plScore}`);
+  const glScore = (lower.match(/debit|credit|journal/g) || []).length;
+  const plScore = (lower.match(/revenue|profit|loss/g) || []).length;
 
   if (glScore > plScore && glScore > 3) return 'gl';
   if (plScore > glScore && plScore > 3) return 'pl';
-
   return 'general';
 }
 
 /**
  * Get system prompt
  */
-function getSystemPrompt(category, isPreprocessed = false, accountCount = 0) {
+function getSystemPrompt(category) {
+  if (category === 'bank_reconciliation') {
+    return `You are an expert accounting assistant specialized in bank reconciliation.
+
+The bank reconciliation has been performed using a professional multi-rule matching engine. Your role is to:
+
+1. Explain the reconciliation results in detail
+2. Analyze matched transactions and their confidence levels
+3. Investigate unmatched items and provide reasons
+4. Suggest specific corrective actions for each discrepancy
+5. Explain timing differences and outstanding items
+
+Focus on actionable insights and specific recommendations for the accountant.`;
+  }
+
   if (category === 'gl') {
     return `You are an expert accounting assistant analyzing General Ledger entries.
 
-**INSTRUCTIONS:**
-1. You have access to the FULL, COMPLETE General Ledger data - analyze ALL entries in detail
-2. DO NOT summarize - examine every transaction, every account, every entry
-3. If multiple sheets are present (e.g., Bank Statement + General Ledger), compare them thoroughly
-4. Identify ALL unmatched items, discrepancies, missing entries, or reconciliation issues
-5. For bank reconciliation: Match each bank transaction with corresponding GL entries
-6. Highlight any transactions that appear in one sheet but not the other
-7. Calculate totals, but also show individual problematic transactions
-
-**Your Response Should Include:**
-1. Overview of all sheets/data sources
-2. Complete reconciliation analysis (if applicable)
-3. List of ALL unmatched/problematic items with transaction details
-4. Account-by-account analysis where relevant
-5. Specific recommendations for each issue found
-
-Respond in clean markdown format with detailed tables showing problematic transactions.`;
-  }
-
-  if (category === 'pl') {
-    return `You are an expert accounting assistant analyzing Profit & Loss statements.
-
-Analyze the complete data and provide insights with observations and recommendations in markdown format.`;
+Analyze the complete data and provide insights with observations and recommendations.`;
   }
 
   return `You are an expert accounting assistant analyzing financial statements.
 
-When totals exist, USE those numbers. Create a markdown table with metrics and insights.`;
+Provide detailed analysis with metrics and insights.`;
 }
 
 /**
- * Convert markdown to Word document with professional formatting
+ * Convert markdown to Word document
  */
 async function markdownToWord(markdownText) {
   const sections = [];
@@ -845,7 +1275,6 @@ async function markdownToWord(markdownText) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     
-    // Skip empty lines (but add spacing)
     if (!line) {
       if (sections.length > 0) {
         sections.push(new Paragraph({ text: '' }));
@@ -853,38 +1282,32 @@ async function markdownToWord(markdownText) {
       continue;
     }
     
-    // Handle Headers (##, ###, ####)
     if (line.startsWith('#')) {
       const level = (line.match(/^#+/) || [''])[0].length;
-      const text = line.replace(/^#+\s*/, '').replace(/\*\*/g, '').replace(/\*/g, '');
+      const text = line.replace(/^#+\s*/, '').replace(/\*\*/g, '');
       
       sections.push(
         new Paragraph({
           text: text,
           heading: level === 2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
-          spacing: { before: 240, after: 120 },
-          thematicBreak: false
+          spacing: { before: 240, after: 120 }
         })
       );
       continue;
     }
     
-    // Handle Markdown Tables
     if (line.includes('|')) {
       const cells = line.split('|').map(c => c.trim()).filter(c => c !== '');
       
-      // Skip separator lines (|---|---|)
       if (cells.every(c => /^[-:]+$/.test(c))) {
         inTable = true;
         continue;
       }
       
-      // Clean cells - remove markdown formatting
-      const cleanCells = cells.map(c => c.replace(/\*\*/g, '').replace(/\*/g, '').replace(/`/g, ''));
+      const cleanCells = cells.map(c => c.replace(/\*\*/g, '').replace(/`/g, ''));
       tableData.push(cleanCells);
       continue;
     } else if (inTable && tableData.length > 0) {
-      // End of table - create the Word table
       const tableRows = tableData.map((rowData, rowIdx) => {
         const isHeader = rowIdx === 0;
         
@@ -897,112 +1320,33 @@ async function markdownToWord(markdownText) {
                     new TextRun({
                       text: cellText,
                       bold: isHeader,
-                      color: isHeader ? 'FFFFFF' : '000000',
-                      size: 22
+                      size: 20
                     })
-                  ],
-                  alignment: AlignmentType.LEFT
+                  ]
                 })
               ],
-              shading: {
-                fill: isHeader ? '4472C4' : 'FFFFFF'
-              },
-              margins: {
-                top: 100,
-                bottom: 100,
-                left: 100,
-                right: 100
-              }
+              shading: { fill: isHeader ? '4472C4' : 'FFFFFF' }
             })
           )
         });
       });
       
-      const table = new Table({
-        rows: tableRows,
-        width: {
-          size: 100,
-          type: WidthType.PERCENTAGE
-        },
-        borders: {
-          top: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          bottom: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          left: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          right: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' },
-          insideVertical: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' }
-        }
-      });
-      
-      sections.push(table);
-      sections.push(new Paragraph({ text: '' })); // Spacing after table
+      sections.push(new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+      sections.push(new Paragraph({ text: '' }));
       tableData = [];
       inTable = false;
     }
     
-    // Handle Bullet Points
     if (line.startsWith('-') || line.startsWith('*')) {
-      let text = line.replace(/^[-*]\s+/, '');
-      
-      // Parse bold text within bullets
-      const textRuns = [];
-      const parts = text.split(/(\*\*[^*]+\*\*)/g);
-      
-      parts.forEach(part => {
-        if (part.startsWith('**') && part.endsWith('**')) {
-          textRuns.push(new TextRun({
-            text: part.replace(/\*\*/g, ''),
-            bold: true
-          }));
-        } else if (part) {
-          textRuns.push(new TextRun({ text: part }));
-        }
-      });
-      
-      sections.push(
-        new Paragraph({
-          children: textRuns,
-          bullet: { level: 0 },
-          spacing: { before: 60, after: 60 }
-        })
-      );
+      const text = line.replace(/^[-*]\s+/, '');
+      sections.push(new Paragraph({ text, bullet: { level: 0 } }));
       continue;
     }
     
-    // Handle Regular Text with Bold Formatting
-    const textRuns = [];
-    const parts = line.split(/(\*\*[^*]+\*\*)/g);
-    
-    parts.forEach(part => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        textRuns.push(new TextRun({
-          text: part.replace(/\*\*/g, ''),
-          bold: true
-        }));
-      } else if (part) {
-        textRuns.push(new TextRun({ text: part }));
-      }
-    });
-    
-    if (textRuns.length > 0) {
-      sections.push(
-        new Paragraph({
-          children: textRuns,
-          spacing: { before: 60, after: 60 }
-        })
-      );
-    }
+    sections.push(new Paragraph({ text: line }));
   }
   
-  // Create the Word document
-  const doc = new Document({
-    sections: [{
-      properties: {},
-      children: sections
-    }]
-  });
-  
-  // Generate buffer and convert to base64
+  const doc = new Document({ sections: [{ children: sections }] });
   const buffer = await Packer.toBuffer(doc);
   return buffer.toString('base64');
 }
@@ -1011,31 +1355,21 @@ async function markdownToWord(markdownText) {
  * Model call
  */
 async function callModel({ fileType, textContent, question, category, preprocessedData, fullData }) {
-  // Use full data for GL files, not the preprocessed summary
   let content = textContent;
   
-  // For GL files, send the complete data instead of summary
-  if (category === 'gl' && fullData) {
+  if (category === 'bank_reconciliation' && preprocessedData) {
+    content = preprocessedData.summary;
+  } else if (category === 'gl' && fullData) {
     content = fullData;
-    console.log("Using FULL GL data for detailed analysis");
   }
 
-  const trimmed = content.length > 100000 
-    ? content.slice(0, 100000) + "\n\n[Content truncated due to length]"
-    : content;
-
-  const systemPrompt = getSystemPrompt(category, false, 0);
+  const trimmed = content.length > 100000 ? content.slice(0, 100000) : content;
+  const systemPrompt = getSystemPrompt(category);
 
   const messages = [
     { role: "system", content: systemPrompt },
-    { 
-      role: "user", 
-      content: `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\nData contains ${content.length} characters.\n\n${trimmed}`
-    },
-    {
-      role: "user",
-      content: question || "Analyze this data in complete detail. If there are multiple sheets, perform reconciliation and identify ALL unmatched items."
-    }
+    { role: "user", content: `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\n${trimmed}` },
+    { role: "user", content: question || "Analyze this data in detail." }
   ];
 
   const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -1056,13 +1390,10 @@ async function callModel({ fileType, textContent, question, category, preprocess
   try {
     data = await r.json();
   } catch (err) {
-    const raw = await r.text().catch(() => "");
-    console.error("Model returned non-JSON:", raw.slice(0, 1000));
-    return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
+    return { reply: null, raw: {}, httpStatus: r.status };
   }
 
-  const reply = data?.choices?.[0]?.message?.content || data?.reply || null;
-
+  const reply = data?.choices?.[0]?.message?.content || null;
   return { reply, raw: data, httpStatus: r.status };
 }
 
@@ -1081,17 +1412,14 @@ export default async function handler(req, res) {
 
     const body = await parseJsonBody(req);
     const { fileUrl, question = "" } = body || {};
-    // Always generate Excel by default
-    const exportExcel = body.exportExcel !== undefined ? body.exportExcel : true;
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
-    const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
+    const { buffer, contentType } = await downloadFileToBuffer(fileUrl);
     const detectedType = detectFileType(fileUrl, contentType, buffer);
 
     let extracted = { type: detectedType, textContent: "" };
     
-    // Route to appropriate extractor based on file type
     if (detectedType === "pdf") {
       extracted = await extractPdf(buffer);
     } else if (detectedType === "docx") {
@@ -1103,7 +1431,6 @@ export default async function handler(req, res) {
     } else if (["png", "jpg", "jpeg", "gif", "bmp", "webp"].includes(detectedType)) {
       extracted = await extractImage(buffer, detectedType);
     } else {
-      // Default to CSV
       extracted = extractCsv(buffer);
     }
 
@@ -1111,33 +1438,16 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ok: false,
         type: extracted.type,
-        reply: `Failed to parse file: ${extracted.error}`,
-        debug: { error: extracted.error }
+        reply: `Failed to parse file: ${extracted.error}`
       });
     }
 
-    if (extracted.ocrNeeded) {
-      return res.status(200).json({
-        ok: false,
-        type: "pdf",
-        reply: "This PDF appears to be scanned (image-based) and requires OCR. Please upload the scanned document as an image file (PNG, JPG) instead - our OCR system works better with direct image files than scanned PDFs.",
-        debug: { ocrNeeded: true, error: extracted.error }
-      });
-    }
-    
-    if (extracted.requiresVision || extracted.requiresManualProcessing || extracted.requiresConversion) {
+    if (extracted.ocrNeeded || extracted.requiresManualProcessing) {
       return res.status(200).json({
         ok: true,
         type: extracted.type,
-        reply: extracted.textContent || "This file type requires conversion. Please see the instructions below.",
-        category: "general",
-        preprocessed: false,
-        debug: { 
-          requiresConversion: extracted.requiresConversion || false,
-          requiresManualProcessing: extracted.requiresManualProcessing || false,
-          isImage: extracted.isImage || false,
-          message: "File needs to be converted to a supported format"
-        }
+        reply: extracted.textContent,
+        category: "general"
       });
     }
 
@@ -1145,40 +1455,40 @@ export default async function handler(req, res) {
     let category = 'general';
     let fullDataForGL = null;
     
+    // BANK RECONCILIATION DETECTION
     if (extracted.rows) {
-      const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
-      category = detectDocumentCategory(sampleText);
+      const sheetNames = [...new Set(extracted.rows.map(r => r.__sheet_name))];
       
-      // Store full data for GL analysis
-      if (category === 'gl') {
-        // Convert rows to CSV format with ALL data
-        const headers = Object.keys(extracted.rows[0] || {}).filter(h => h !== '__sheet_name');
-        const csvLines = [headers.join(',')];
+      const hasBankSheet = sheetNames.some(name => name && name.toLowerCase().includes('bank'));
+      const hasLedgerSheet = sheetNames.some(name => name && (name.toLowerCase().includes('ledger') || name.toLowerCase().includes('gl')));
+      
+      if (hasBankSheet && hasLedgerSheet) {
+        console.log("=== BANK RECONCILIATION DETECTED ===");
+        category = 'bank_reconciliation';
         
-        let currentSheet = null;
-        extracted.rows.forEach(row => {
-          // Add sheet separator if it changes
-          if (row.__sheet_name && row.__sheet_name !== currentSheet) {
-            currentSheet = row.__sheet_name;
-            csvLines.push(`\n### Sheet: ${currentSheet} ###`);
-          }
-          
-          const values = headers.map(h => {
-            const val = row[h] || '';
-            // Escape commas and quotes in CSV
-            return typeof val === 'string' && (val.includes(',') || val.includes('"')) 
-              ? `"${val.replace(/"/g, '""')}"` 
-              : val;
+        const reconciliationData = performBankReconciliation(extracted.rows);
+        
+        if (!reconciliationData.reconciled) {
+          return res.status(200).json({
+            ok: false,
+            type: 'xlsx',
+            reply: reconciliationData.error || 'Bank reconciliation failed',
+            category: 'bank_reconciliation'
           });
-          csvLines.push(values.join(','));
-        });
+        }
         
-        fullDataForGL = csvLines.join('\n');
-        console.log(`Prepared full GL data: ${fullDataForGL.length} characters, ${extracted.rows.length} rows`);
+        preprocessedData = reconciliationData;
+        fullDataForGL = reconciliationData.summary;
         
-        // Still preprocess for statistics (but won't use for AI)
-        preprocessedData = preprocessGLData(extracted.rows);
-        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
+        console.log(`Bank Reconciliation Complete: ${reconciliationData.stats.matchRate}% match rate`);
+        console.log(`Matched: ${reconciliationData.stats.matchedCount}, Unmatched Bank: ${reconciliationData.stats.unmatchedBankCount}, Unmatched Ledger: ${reconciliationData.stats.unmatchedLedgerCount}`);
+      } else {
+        const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
+        category = detectDocumentCategory(sampleText);
+        
+        if (category === 'gl') {
+          preprocessedData = preprocessGLDataFromRows(extracted.rows);
+        }
       }
     } else {
       const textContent = extracted.textContent || '';
@@ -1186,48 +1496,38 @@ export default async function handler(req, res) {
         return res.status(200).json({
           ok: false,
           type: extracted.type,
-          reply: "No text could be extracted from this file.",
-          debug: { contentType, bytesReceived }
+          reply: "No text could be extracted from this file."
         });
       }
 
       category = detectDocumentCategory(textContent);
-      console.log(`Category: ${category}`);
-
       if (category === 'gl') {
-        fullDataForGL = textContent; // Use full CSV text
         preprocessedData = preprocessGLData(textContent);
-        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
       }
     }
 
-    const { reply, raw, httpStatus } = await callModel({
+    const { reply, httpStatus } = await callModel({
       fileType: extracted.type,
       textContent: extracted.textContent || '',
       question,
       category,
       preprocessedData,
-      fullData: fullDataForGL // Pass full data for GL files
+      fullData: fullDataForGL
     });
 
     if (!reply) {
       return res.status(200).json({
         ok: false,
         type: extracted.type,
-        reply: "(No reply from model)",
-        debug: { status: httpStatus, raw: raw }
+        reply: "No reply from model"
       });
     }
 
-    // ALWAYS generate Word document by default
     let wordBase64 = null;
     try {
-      console.log("Starting Word document generation...");
       wordBase64 = await markdownToWord(reply);
-      console.log("✓ Word document generated successfully, length:", wordBase64.length);
     } catch (wordError) {
-      console.error("✗ Word generation error:", wordError);
-      // Don't fail the whole request if Word generation fails
+      console.error("Word generation error:", wordError);
     }
 
     return res.status(200).json({
@@ -1236,18 +1536,13 @@ export default async function handler(req, res) {
       category,
       reply,
       wordDownload: wordBase64,
-      // Direct download URL for Word document
       downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
-      wordSize: wordBase64 ? wordBase64.length : 0,
-      preprocessed: preprocessedData?.processed || false,
+      preprocessed: preprocessedData?.processed || preprocessedData?.reconciled || false,
       debug: {
         status: httpStatus,
         category,
-        preprocessed: preprocessedData?.processed || false,
         stats: preprocessedData?.stats || null,
-        debug_sample: preprocessedData?.debug || null,
-        hasWord: !!wordBase64,
-        wordGenerated: !!wordBase64
+        hasWord: !!wordBase64
       }
     });
   } catch (err) {
