@@ -1,4 +1,3 @@
-
 /**
  * Extract PDF - Enhanced to handle scanned PDFs with OCR
  */
