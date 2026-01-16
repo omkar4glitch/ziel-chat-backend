@@ -1,6 +1,36 @@
-import fetch from "node-fetch";
+/**
+ * Extract PDF - Enhanced to handle scanned PDFs with OCR
+ */
+async function extractPdf(buffer) {
+  try {
+    const data = await pdf(buffer);
+    const text = (data && data.text) ? data.text.trim() : "";
+
+    // Check if PDF has extractable text
+    if (!text || text.length < 50) {
+      console.log("PDF appears to be scanned or image-based, attempting OCR...");
+      
+      // This is likely a scanned PDF - we need OCR
+      // For now, return indication that OCR is needed
+      // In future, we could convert PDF pages to images and OCR them
+      return { 
+        type: "pdf", 
+        textContent: "", 
+        ocrNeeded: true,
+        error: "This PDF appears to be scanned (image-based). Please try uploading the original image files (PNG/JPG) instead, or use a PDF with selectable text."
+      };
+    }
+
+    return { type: "pdf", textContent: text, ocrNeeded: false };
+  } catch (err) {
+    console.error("extractPdf failed:", err?.message || err);
+    return { type: "pdf", textContent: "", error: String(err?.message || err) };
+  }
+}import fetch from "node-fetch";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
+import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
+import JSZip from "jszip";
 
 /**
  * CORS helper
@@ -94,12 +124,36 @@ function detectFileType(fileUrl, contentType, buffer) {
   const lowerType = (contentType || "").toLowerCase();
 
   if (buffer && buffer.length >= 4) {
-    if (buffer[0] === 0x50 && buffer[1] === 0x4b) return "xlsx";
+    // Check magic numbers
+    if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
+      // PK header - could be XLSX, DOCX, or PPTX
+      if (lowerUrl.includes('.docx') || lowerType.includes('wordprocessing')) return "docx";
+      if (lowerUrl.includes('.pptx') || lowerType.includes('presentation')) return "pptx";
+      return "xlsx";
+    }
     if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46)
       return "pdf";
+    // PNG signature
+    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47)
+      return "png";
+    // JPEG signature
+    if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF)
+      return "jpg";
+    // GIF signature
+    if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46)
+      return "gif";
   }
 
+  // Check by URL/content-type
   if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) return "pdf";
+  
+  // Office documents
+  if (lowerUrl.endsWith(".docx") || lowerType.includes("wordprocessing")) return "docx";
+  if (lowerUrl.endsWith(".doc")) return "doc";
+  if (lowerUrl.endsWith(".pptx") || lowerType.includes("presentation")) return "pptx";
+  if (lowerUrl.endsWith(".ppt")) return "ppt";
+  
+  // Spreadsheets
   if (
     lowerUrl.endsWith(".xlsx") ||
     lowerUrl.endsWith(".xls") ||
@@ -107,7 +161,15 @@ function detectFileType(fileUrl, contentType, buffer) {
     lowerType.includes("sheet") ||
     lowerType.includes("excel")
   ) return "xlsx";
+  
   if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv")) return "csv";
+  
+  // Images
+  if (lowerUrl.endsWith(".png") || lowerType.includes("image/png")) return "png";
+  if (lowerUrl.endsWith(".jpg") || lowerUrl.endsWith(".jpeg") || lowerType.includes("image/jpeg")) return "jpg";
+  if (lowerUrl.endsWith(".gif") || lowerType.includes("image/gif")) return "gif";
+  if (lowerUrl.endsWith(".bmp") || lowerType.includes("image/bmp")) return "bmp";
+  if (lowerUrl.endsWith(".webp") || lowerType.includes("image/webp")) return "webp";
 
   return "csv";
 }
@@ -272,21 +334,209 @@ function extractXlsx(buffer) {
 }
 
 /**
- * Extract PDF
+ * Extract Word Document (.docx) - Using JSZip library
  */
-async function extractPdf(buffer) {
+async function extractDocx(buffer) {
+  console.log("=== DOCX EXTRACTION with JSZip ===");
+  
   try {
-    const data = await pdf(buffer);
-    const text = (data && data.text) ? data.text.trim() : "";
-
-    if (!text || text.length < 50) {
-      return { type: "pdf", textContent: "", ocrNeeded: true };
+    // Load the DOCX file (which is a ZIP) using JSZip
+    const zip = await JSZip.loadAsync(buffer);
+    console.log("ZIP loaded, files:", Object.keys(zip.files).join(', '));
+    
+    // Get the document.xml file which contains the text
+    const documentXml = zip.files['word/document.xml'];
+    
+    if (!documentXml) {
+      console.log("document.xml not found");
+      return { 
+        type: "docx", 
+        textContent: "", 
+        error: "Invalid Word document structure" 
+      };
     }
+    
+    // Extract the XML content
+    const xmlContent = await documentXml.async('text');
+    console.log("XML content length:", xmlContent.length);
+    
+    // Extract text from <w:t> tags
+    const textRegex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
+    const textParts = [];
+    let match;
+    
+    while ((match = textRegex.exec(xmlContent)) !== null) {
+      if (match[1]) {
+        const text = match[1]
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&amp;/g, '&')
+          .replace(/&quot;/g, '"')
+          .replace(/&apos;/g, "'")
+          .trim();
+        
+        if (text.length > 0) {
+          textParts.push(text);
+        }
+      }
+    }
+    
+    console.log("Extracted text elements:", textParts.length);
+    
+    if (textParts.length === 0) {
+      return { 
+        type: "docx", 
+        textContent: "", 
+        error: "No text found in Word document. Document may be empty or contain only images." 
+      };
+    }
+    
+    const fullText = textParts.join(' ');
+    console.log("Final text length:", fullText.length);
+    
+    return { 
+      type: "docx", 
+      textContent: fullText 
+    };
+    
+  } catch (error) {
+    console.error("DOCX extraction error:", error.message);
+    return { 
+      type: "docx", 
+      textContent: "", 
+      error: `Failed to read Word document: ${error.message}` 
+    };
+  }
+}
 
-    return { type: "pdf", textContent: text, ocrNeeded: false };
+/**
+ * Extract PowerPoint (.pptx) - Improved extraction
+ */
+async function extractPptx(buffer) {
+  try {
+    const bufferStr = buffer.toString('latin1');
+    
+    // PPTX text is in <a:t> tags
+    const textPattern = /<a:t[^>]*>([^<]+)<\/a:t>/g;
+    let match;
+    let allText = [];
+    
+    while ((match = textPattern.exec(bufferStr)) !== null) {
+      const text = match[1];
+      const cleaned = text
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .trim();
+      
+      if (cleaned && cleaned.length > 0) {
+        allText.push(cleaned);
+      }
+    }
+    
+    // Alternative: also look for <a:p> paragraph tags
+    if (allText.length < 5) {
+      const paraPattern = /<a:p[^>]*>(.*?)<\/a:p>/gs;
+      const paraMatches = bufferStr.matchAll(paraPattern);
+      
+      for (const match of paraMatches) {
+        const innerText = match[1].replace(/<[^>]+>/g, ' ').trim();
+        if (innerText.length > 2) {
+          allText.push(innerText);
+        }
+      }
+    }
+    
+    if (allText.length === 0) {
+      return { 
+        type: "pptx", 
+        textContent: "", 
+        error: "No text found in PowerPoint. Please try exporting as PDF." 
+      };
+    }
+    
+    const text = allText.join('\n').trim();
+    
+    console.log(`Extracted ${text.length} characters from PPTX`);
+    
+    if (text.length < 20) {
+      return { 
+        type: "pptx", 
+        textContent: "", 
+        error: "Presentation appears to be empty or contains mostly images" 
+      };
+    }
+    
+    return { type: "pptx", textContent: text };
   } catch (err) {
-    console.error("extractPdf failed:", err?.message || err);
-    return { type: "pdf", textContent: "", error: String(err?.message || err) };
+    console.error("extractPptx failed:", err?.message || err);
+    return { 
+      type: "pptx", 
+      textContent: "", 
+      error: String(err?.message || err) 
+    };
+  }
+}
+
+/**
+ * Extract Image (PNG, JPG, etc.) - Provide helpful OCR alternatives
+ */
+async function extractImage(buffer, fileType) {
+  try {
+    console.log(`Image upload detected: ${fileType}, size: ${(buffer.length / 1024).toFixed(2)} KB`);
+    
+    // Return helpful message with free OCR alternatives
+    const helpMessage = `📸 **Image File Detected (${fileType.toUpperCase()})**
+
+I can help you extract text from this image using these **FREE** methods:
+
+**🎯 FASTEST METHOD - Use Google Drive (100% Free):**
+1. Upload your image to Google Drive
+2. Right-click → "Open with" → "Google Docs"
+3. Google will automatically OCR the image and convert to editable text
+4. Copy the text and paste it here, OR
+5. Download as PDF and upload that PDF to me
+
+**📱 METHOD 2 - Use Your Phone:**
+Most phones have built-in scanners:
+- iPhone: Notes app → Scan Documents
+- Android: Google Drive → Scan
+- These create searchable PDFs automatically!
+
+**💻 METHOD 3 - Free Online OCR Tools:**
+- onlineocr.net (no signup needed)
+- i2ocr.com (simple and fast)
+- newocr.com (supports 122 languages)
+
+**📄 METHOD 4 - Convert to PDF:**
+If this is a scan, convert it to a searchable PDF using:
+- Adobe Acrobat (free trial)
+- PDF24 Tools (free online)
+- SmallPDF (3 free conversions/day)
+
+**Image Info:**
+- Type: ${fileType.toUpperCase()}
+- Size: ${(buffer.length / 1024).toFixed(2)} KB
+- Ready for OCR: Yes
+
+Once you have the text or searchable PDF, upload it here and I'll analyze it immediately! 🚀`;
+    
+    return { 
+      type: fileType, 
+      textContent: helpMessage,
+      isImage: true,
+      requiresManualProcessing: true
+    };
+    
+  } catch (err) {
+    console.error("Image handling error:", err?.message || err);
+    return { 
+      type: fileType, 
+      textContent: "", 
+      error: `Error processing image. Please convert to PDF or extract text manually.`
+    };
   }
 }
 
@@ -356,8 +606,6 @@ function parseCSV(csvText) {
  * Convert rows (array of objects) into the same structure used by preprocessGLData
  */
 function preprocessGLDataFromRows(rows) {
-  // rows is an array of objects where keys are column headers
-  // We'll reuse logic from preprocessGLData but operate directly on rows
   if (!rows || rows.length === 0) return { processed: false, reason: 'No rows' };
 
   const headers = Object.keys(rows[0]);
@@ -449,7 +697,6 @@ function preprocessGLDataFromRows(rows) {
     accountSummary[account].totalCredit += credit;
     accountSummary[account].count += 1;
 
-    // Debug capture for anomalous entries
     if ((parsedDebit === 0 && parsedCredit === 0) && (debitStr || creditStr)) {
       debugInfo.push({ row: idx + 1, debitStr, creditStr, amountCandidate: row[balanceCol] });
     }
@@ -473,7 +720,6 @@ function preprocessGLDataFromRows(rows) {
   const isBalanced = Math.abs(roundedDebits - roundedCredits) < 0.01;
   const difference = roundedDebits - roundedCredits;
 
-  // Format dates to US format
   const formattedMinDate = formatDateUS(minDate);
   const formattedMaxDate = formatDateUS(maxDate);
 
@@ -524,21 +770,34 @@ function preprocessGLDataFromRows(rows) {
  * PRE-PROCESS GL DATA (accepts CSV string OR rows array)
  */
 function preprocessGLData(textOrRows) {
-  // If it's already an array of rows, use the direct path
   if (Array.isArray(textOrRows)) {
     return preprocessGLDataFromRows(textOrRows);
   }
 
-  // Otherwise assume CSV text
   const rows = parseCSV(textOrRows);
   return preprocessGLDataFromRows(rows);
 }
 
 /**
- * Detect document category
+ * Detect document category with bank reconciliation detection
  */
-function detectDocumentCategory(textContent) {
+function detectDocumentCategory(textContent, sheetNames = []) {
   const lower = textContent.toLowerCase();
+  
+  // Check if this is a bank reconciliation file (2 sheets: bank + ledger)
+  if (sheetNames.length >= 2) {
+    const hasBank = sheetNames.some(name => 
+      /bank|statement|transaction/i.test(name)
+    );
+    const hasLedger = sheetNames.some(name => 
+      /ledger|gl|general|account/i.test(name)
+    );
+    
+    if (hasBank && hasLedger) {
+      console.log("Detected: Bank Reconciliation (2 sheets found)");
+      return 'bank_reconciliation';
+    }
+  }
 
   const glScore = (lower.match(/debit|credit|journal|gl entry/g) || []).length;
   const plScore = (lower.match(/revenue|profit|loss|income|expenses|ebitda/g) || []).length;
@@ -552,42 +811,97 @@ function detectDocumentCategory(textContent) {
 }
 
 /**
- * Get system prompt
+ * Get system prompt with bank reconciliation support
  */
 function getSystemPrompt(category, isPreprocessed = false, accountCount = 0) {
-  if (category === 'gl' && isPreprocessed) {
-    return `You are an expert accounting assistant. You've been given PRE-CALCULATED GL data.
+  if (category === 'bank_reconciliation') {
+    return `You are an expert accounting assistant specializing in BANK RECONCILIATION.
 
-**CRITICAL INSTRUCTIONS:**
-1. The data is ALREADY CALCULATED - do NOT recalculate
-2. Use the exact numbers provided in the summary table
-3. ALL ${accountCount} accounts are included - reference any account by name
-4. Your job is to INTERPRET and PROVIDE INSIGHTS
-5. All amounts are in USD ($) and already rounded to whole dollars
-6. For percentages in your analysis, use 2 decimal places (e.g., 25.50%)
+**YOU HAVE BEEN PROVIDED WITH TWO SHEETS:**
+1. **Bank Statement** - transactions from the bank
+2. **General Ledger (GL)** - company's internal records
 
-**Your Response Format:**
-1. Start with "**General Ledger Analysis**"
-2. Present key statistics (Total Debits, Credits, Balance status)
-3. Reference the account summary table
-4. Add observations:
-   - Highest activity accounts
-   - Balance verification
-   - Account type breakdown (Assets, Liabilities, Revenue, Expenses)
-   - Any anomalies or unusual entries
-5. Add recommendations:
-   - Reconciliation needs
-   - Potential errors
-   - Compliance considerations
+**YOUR TASK - COMPLETE BANK RECONCILIATION:**
 
-DO NOT make up numbers. Use ONLY the data provided.
-Respond in clean markdown format.`;
+1. **IDENTIFY ALL UNMATCHED ITEMS:**
+   - Transactions in Bank Statement but NOT in GL (outstanding items)
+   - Transactions in GL but NOT in Bank Statement (timing differences)
+   - Matching transactions with different amounts (errors/discrepancies)
+
+2. **MATCHING CRITERIA:**
+   - Match by date (within ±3 days tolerance)
+   - Match by amount (exact or very close)
+   - Match by description/reference/check number
+   - Consider deposits, withdrawals, checks, transfers
+
+3. **YOUR RESPONSE MUST INCLUDE:**
+
+   **A. Summary:**
+   - Bank Statement Ending Balance: $X
+   - GL Cash Account Ending Balance: $Y
+   - Difference to Reconcile: $Z
+   
+   **B. Detailed Reconciliation Table:**
+   Create a table with ALL unmatched items showing:
+   | Date | Description | Bank Amount | GL Amount | Status | Notes |
+   
+   **C. Categories of Differences:**
+   - **Outstanding Checks**: In GL but not yet cleared in bank
+   - **Deposits in Transit**: In GL but not yet recorded by bank
+   - **Bank Charges**: In bank statement but not in GL
+   - **Interest Earned**: In bank statement but not in GL
+   - **Errors**: Wrong amounts, duplicate entries, etc.
+   
+   **D. Reconciliation Statement:**
+   Show the step-by-step reconciliation:
+   \`\`\`
+   GL Balance:                           $X
+   Add: Deposits in Transit              $Y
+   Less: Outstanding Checks              $Z
+   Add/Less: Bank Charges/Interest       $W
+   Adjusted GL Balance:                  $V
+   Bank Statement Balance:               $V (should match!)
+   \`\`\`
+   
+   **E. Action Items:**
+   List each unmatched item with specific action needed
+
+4. **IMPORTANT RULES:**
+   - Examine EVERY transaction in both sheets
+   - Do NOT skip any entries - list ALL unmatched items
+   - Be specific - include dates, amounts, descriptions
+   - If sheets have different date formats, handle them intelligently
+   - Flag any suspicious patterns (duplicate entries, unusual amounts)
+
+Respond in clean markdown format with tables. Be thorough and detailed.`;
   }
-
+  
   if (category === 'gl') {
     return `You are an expert accounting assistant analyzing General Ledger entries.
 
-Parse the data, group by account, sum debits/credits, and present findings in markdown.`;
+**INSTRUCTIONS:**
+1. You have access to the FULL, COMPLETE General Ledger data - analyze ALL entries in detail
+2. DO NOT summarize - examine every transaction, every account, every entry
+3. If multiple sheets are present (e.g., Bank Statement + General Ledger), compare them thoroughly
+4. Identify ALL unmatched items, discrepancies, missing entries, or reconciliation issues
+5. For bank reconciliation: Match each bank transaction with corresponding GL entries
+6. Highlight any transactions that appear in one sheet but not the other
+7. Calculate totals, but also show individual problematic transactions
+
+**Your Response Should Include:**
+1. Overview of all sheets/data sources
+2. Complete reconciliation analysis (if applicable)
+3. List of ALL unmatched/problematic items with transaction details
+4. Account-by-account analysis where relevant
+5. Specific recommendations for each issue found
+
+Respond in clean markdown format with detailed tables showing problematic transactions.`;
+  }
+
+  if (category === 'pl') {
+    return `You are an expert accounting assistant analyzing Profit & Loss statements.
+
+Analyze the complete data and provide insights with observations and recommendations in markdown format.`;
   }
 
   return `You are an expert accounting assistant analyzing financial statements.
@@ -596,35 +910,218 @@ When totals exist, USE those numbers. Create a markdown table with metrics and i
 }
 
 /**
- * Model call
+ * Convert markdown to Word document with professional formatting
  */
-async function callModel({ fileType, textContent, question, category, preprocessedData }) {
-  let content = textContent;
-  let isPreprocessed = false;
-  let accountCount = 0;
+async function markdownToWord(markdownText) {
+  const sections = [];
+  const lines = markdownText.split('\n');
+  let tableData = [];
+  let inTable = false;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Skip empty lines (but add spacing)
+    if (!line) {
+      if (sections.length > 0) {
+        sections.push(new Paragraph({ text: '' }));
+      }
+      continue;
+    }
+    
+    // Handle Headers (##, ###, ####)
+    if (line.startsWith('#')) {
+      const level = (line.match(/^#+/) || [''])[0].length;
+      const text = line.replace(/^#+\s*/, '').replace(/\*\*/g, '').replace(/\*/g, '');
+      
+      sections.push(
+        new Paragraph({
+          text: text,
+          heading: level === 2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
+          spacing: { before: 240, after: 120 },
+          thematicBreak: false
+        })
+      );
+      continue;
+    }
+    
+    // Handle Markdown Tables
+    if (line.includes('|')) {
+      const cells = line.split('|').map(c => c.trim()).filter(c => c !== '');
+      
+      // Skip separator lines (|---|---|)
+      if (cells.every(c => /^[-:]+$/.test(c))) {
+        inTable = true;
+        continue;
+      }
+      
+      // Clean cells - remove markdown formatting
+      const cleanCells = cells.map(c => c.replace(/\*\*/g, '').replace(/\*/g, '').replace(/`/g, ''));
+      tableData.push(cleanCells);
+      continue;
+    } else if (inTable && tableData.length > 0) {
+      // End of table - create the Word table
+      const tableRows = tableData.map((rowData, rowIdx) => {
+        const isHeader = rowIdx === 0;
+        
+        return new TableRow({
+          children: rowData.map(cellText => 
+            new TableCell({
+              children: [
+                new Paragraph({
+                  children: [
+                    new TextRun({
+                      text: cellText,
+                      bold: isHeader,
+                      color: isHeader ? 'FFFFFF' : '000000',
+                      size: 22
+                    })
+                  ],
+                  alignment: AlignmentType.LEFT
+                })
+              ],
+              shading: {
+                fill: isHeader ? '4472C4' : 'FFFFFF'
+              },
+              margins: {
+                top: 100,
+                bottom: 100,
+                left: 100,
+                right: 100
+              }
+            })
+          )
+        });
+      });
+      
+      const table = new Table({
+        rows: tableRows,
+        width: {
+          size: 100,
+          type: WidthType.PERCENTAGE
+        },
+        borders: {
+          top: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
+          bottom: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
+          left: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
+          right: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
+          insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' },
+          insideVertical: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' }
+        }
+      });
+      
+      sections.push(table);
+      sections.push(new Paragraph({ text: '' })); // Spacing after table
+      tableData = [];
+      inTable = false;
+    }
+    
+    // Handle Bullet Points
+    if (line.startsWith('-') || line.startsWith('*')) {
+      let text = line.replace(/^[-*]\s+/, '');
+      
+      // Parse bold text within bullets
+      const textRuns = [];
+      const parts = text.split(/(\*\*[^*]+\*\*)/g);
+      
+      parts.forEach(part => {
+        if (part.startsWith('**') && part.endsWith('**')) {
+          textRuns.push(new TextRun({
+            text: part.replace(/\*\*/g, ''),
+            bold: true
+          }));
+        } else if (part) {
+          textRuns.push(new TextRun({ text: part }));
+        }
+      });
+      
+      sections.push(
+        new Paragraph({
+          children: textRuns,
+          bullet: { level: 0 },
+          spacing: { before: 60, after: 60 }
+        })
+      );
+      continue;
+    }
+    
+    // Handle Regular Text with Bold Formatting
+    const textRuns = [];
+    const parts = line.split(/(\*\*[^*]+\*\*)/g);
+    
+    parts.forEach(part => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        textRuns.push(new TextRun({
+          text: part.replace(/\*\*/g, ''),
+          bold: true
+        }));
+      } else if (part) {
+        textRuns.push(new TextRun({ text: part }));
+      }
+    });
+    
+    if (textRuns.length > 0) {
+      sections.push(
+        new Paragraph({
+          children: textRuns,
+          spacing: { before: 60, after: 60 }
+        })
+      );
+    }
+  }
+  
+  // Create the Word document
+  const doc = new Document({
+    sections: [{
+      properties: {},
+      children: sections
+    }]
+  });
+  
+  // Generate buffer and convert to base64
+  const buffer = await Packer.toBuffer(doc);
+  return buffer.toString('base64');
+}
 
-  if (preprocessedData && preprocessedData.processed) {
-    content = preprocessedData.summary;
-    isPreprocessed = true;
-    accountCount = preprocessedData.stats?.accountCount || 0;
-    console.log("Using preprocessed GL summary");
+/**
+ * Model call with bank reconciliation support
+ */
+async function callModel({ fileType, textContent, question, category, preprocessedData, fullData }) {
+  // Use full data for GL and Bank Reconciliation files
+  let content = textContent;
+  
+  if ((category === 'gl' || category === 'bank_reconciliation') && fullData) {
+    content = fullData;
+    console.log(`Using FULL data for ${category} analysis: ${content.length} characters`);
   }
 
-  const trimmed = content.length > 60000 
-    ? content.slice(0, 60000) + "\n\n[Content truncated]"
+  const trimmed = content.length > 120000 
+    ? content.slice(0, 120000) + "\n\n[Content truncated due to length - showing first 120,000 characters]"
     : content;
 
-  const systemPrompt = getSystemPrompt(category, isPreprocessed, accountCount);
+  const systemPrompt = getSystemPrompt(category, false, 0);
+  
+  // Customize user message based on category
+  let userMessage = `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\nData contains ${content.length} characters.\n\n${trimmed}`;
+  
+  if (category === 'bank_reconciliation') {
+    userMessage = `BANK RECONCILIATION FILE UPLOADED
+
+This file contains TWO sheets:
+1. Bank Statement (transactions from the bank)
+2. General Ledger (company's internal cash records)
+
+${trimmed}`;
+  }
 
   const messages = [
     { role: "system", content: systemPrompt },
-    { 
-      role: "user", 
-      content: `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\n${trimmed}`
-    },
+    { role: "user", content: userMessage },
     {
       role: "user",
-      content: question || "Analyze this data and provide insights with observations and recommendations."
+      content: question || (category === 'bank_reconciliation' 
+        ? "Perform a complete bank reconciliation. Identify ALL unmatched items between the bank statement and general ledger. Provide a detailed reconciliation statement with specific action items for each discrepancy."
+        : "Analyze this data in complete detail. If there are multiple sheets, perform reconciliation and identify ALL unmatched items.")
     }
   ];
 
@@ -671,6 +1168,8 @@ export default async function handler(req, res) {
 
     const body = await parseJsonBody(req);
     const { fileUrl, question = "" } = body || {};
+    // Always generate Excel by default
+    const exportExcel = body.exportExcel !== undefined ? body.exportExcel : true;
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
@@ -678,11 +1177,20 @@ export default async function handler(req, res) {
     const detectedType = detectFileType(fileUrl, contentType, buffer);
 
     let extracted = { type: detectedType, textContent: "" };
+    
+    // Route to appropriate extractor based on file type
     if (detectedType === "pdf") {
       extracted = await extractPdf(buffer);
+    } else if (detectedType === "docx") {
+      extracted = await extractDocx(buffer);
+    } else if (detectedType === "pptx") {
+      extracted = await extractPptx(buffer);
     } else if (detectedType === "xlsx") {
       extracted = extractXlsx(buffer);
+    } else if (["png", "jpg", "jpeg", "gif", "bmp", "webp"].includes(detectedType)) {
+      extracted = await extractImage(buffer, detectedType);
     } else {
+      // Default to CSV
       extracted = extractCsv(buffer);
     }
 
@@ -699,22 +1207,75 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ok: false,
         type: "pdf",
-        reply: "This PDF requires OCR to extract text.",
-        debug: { ocrNeeded: true }
+        reply: "This PDF appears to be scanned (image-based) and requires OCR. Please upload the scanned document as an image file (PNG, JPG) instead - our OCR system works better with direct image files than scanned PDFs.",
+        debug: { ocrNeeded: true, error: extracted.error }
+      });
+    }
+    
+    if (extracted.requiresVision || extracted.requiresManualProcessing || extracted.requiresConversion) {
+      return res.status(200).json({
+        ok: true,
+        type: extracted.type,
+        reply: extracted.textContent || "This file type requires conversion. Please see the instructions below.",
+        category: "general",
+        preprocessed: false,
+        debug: { 
+          requiresConversion: extracted.requiresConversion || false,
+          requiresManualProcessing: extracted.requiresManualProcessing || false,
+          isImage: extracted.isImage || false,
+          message: "File needs to be converted to a supported format"
+        }
       });
     }
 
-    // If extractXlsx returned rows, use them directly for preprocessing to avoid CSV pitfalls
     let preprocessedData = null;
     let category = 'general';
+    let fullDataForGL = null;
+    
     if (extracted.rows) {
-      // Detect category using a simple join of first N rows values (best-effort)
+      // Get sheet names for bank reconciliation detection
+      const sheetNames = [...new Set(extracted.rows.map(r => r.__sheet_name).filter(Boolean))];
+      console.log("Detected sheets:", sheetNames);
+      
       const sampleText = JSON.stringify(extracted.rows.slice(0, 20)).toLowerCase();
-      category = detectDocumentCategory(sampleText);
-      if (category === 'gl') {
-        preprocessedData = preprocessGLData(extracted.rows);
-        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
-        if (!preprocessedData.processed) console.log("Preprocessing failed:", preprocessedData.reason);
+      category = detectDocumentCategory(sampleText, sheetNames);
+      
+      // Store full data for GL and Bank Reconciliation analysis
+      if (category === 'gl' || category === 'bank_reconciliation') {
+        // Convert rows to structured format with sheet separation
+        const headers = Object.keys(extracted.rows[0] || {}).filter(h => h !== '__sheet_name');
+        const csvLines = [headers.join(',')];
+        
+        let currentSheet = null;
+        let sheetRowCount = {};
+        
+        extracted.rows.forEach(row => {
+          // Add sheet separator when sheet changes
+          if (row.__sheet_name && row.__sheet_name !== currentSheet) {
+            currentSheet = row.__sheet_name;
+            sheetRowCount[currentSheet] = (sheetRowCount[currentSheet] || 0) + 1;
+            csvLines.push(`\n### SHEET: ${currentSheet} ###`);
+            csvLines.push(headers.join(',')); // Headers for each sheet
+          }
+          
+          const values = headers.map(h => {
+            const val = row[h] || '';
+            return typeof val === 'string' && (val.includes(',') || val.includes('"')) 
+              ? `"${val.replace(/"/g, '""')}"` 
+              : val;
+          });
+          csvLines.push(values.join(','));
+        });
+        
+        fullDataForGL = csvLines.join('\n');
+        
+        console.log(`Prepared full data: ${fullDataForGL.length} characters`);
+        console.log(`Sheets: ${Object.keys(sheetRowCount).map(s => `${s} (${sheetRowCount[s]} rows)`).join(', ')}`);
+        
+        // Still preprocess for statistics
+        if (category === 'gl') {
+          preprocessedData = preprocessGLData(extracted.rows);
+        }
       }
     } else {
       const textContent = extracted.textContent || '';
@@ -730,10 +1291,11 @@ export default async function handler(req, res) {
       category = detectDocumentCategory(textContent);
       console.log(`Category: ${category}`);
 
-      if (category === 'gl') {
-        preprocessedData = preprocessGLData(textContent);
-        console.log("GL preprocessing result:", preprocessedData.processed ? "SUCCESS" : "FAILED");
-        if (!preprocessedData.processed) console.log("Preprocessing failed:", preprocessedData.reason);
+      if (category === 'gl' || category === 'bank_reconciliation') {
+        fullDataForGL = textContent;
+        if (category === 'gl') {
+          preprocessedData = preprocessGLData(textContent);
+        }
       }
     }
 
@@ -742,7 +1304,8 @@ export default async function handler(req, res) {
       textContent: extracted.textContent || '',
       question,
       category,
-      preprocessedData
+      preprocessedData,
+      fullData: fullDataForGL
     });
 
     if (!reply) {
@@ -754,18 +1317,35 @@ export default async function handler(req, res) {
       });
     }
 
+    // ALWAYS generate Word document by default
+    let wordBase64 = null;
+    try {
+      console.log("Starting Word document generation...");
+      wordBase64 = await markdownToWord(reply);
+      console.log("✓ Word document generated successfully, length:", wordBase64.length);
+    } catch (wordError) {
+      console.error("✗ Word generation error:", wordError);
+      // Don't fail the whole request if Word generation fails
+    }
+
     return res.status(200).json({
       ok: true,
       type: extracted.type,
       category,
       reply,
+      wordDownload: wordBase64,
+      // Direct download URL for Word document
+      downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
+      wordSize: wordBase64 ? wordBase64.length : 0,
       preprocessed: preprocessedData?.processed || false,
       debug: {
         status: httpStatus,
         category,
         preprocessed: preprocessedData?.processed || false,
         stats: preprocessedData?.stats || null,
-        debug_sample: preprocessedData?.debug || null
+        debug_sample: preprocessedData?.debug || null,
+        hasWord: !!wordBase64,
+        wordGenerated: !!wordBase64
       }
     });
   } catch (err) {
