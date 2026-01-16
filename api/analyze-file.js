@@ -818,7 +818,7 @@ function getSystemPrompt(category, isPreprocessed = false, accountCount = 0) {
 4. Account-by-account analysis where relevant
 5. Specific recommendations for each issue found
 
-Respond in clean markdown format with detailed tables showing problematic transactions.`;
+Respond in clean markdown format with detailed tables showing problematic transactions.;
   }
 
   if (category === 'pl') {
