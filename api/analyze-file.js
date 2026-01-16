@@ -1,6 +1,100 @@
 /**
  * Extract PDF - Enhanced to handle scanned PDFs with OCR
  */
+
+// Add this function near the top of your file, after the imports
+
+/**
+ * Clean markdown response by removing code block wrappers
+ */
+function cleanMarkdownResponse(text) {
+  if (!text) return text;
+  
+  let cleaned = text.trim();
+  
+  // Remove opening code block markers (```markdown, ```json, or just ```)
+  cleaned = cleaned.replace(/^```(?:markdown|json)?\s*\n/i, '');
+  
+  // Remove closing code block markers
+  cleaned = cleaned.replace(/\n```\s*$/, '');
+  
+  // Handle nested code blocks (sometimes AI adds multiple layers)
+  cleaned = cleaned.replace(/^```(?:markdown|json)?\s*\n/i, '');
+  cleaned = cleaned.replace(/\n```\s*$/, '');
+  
+  return cleaned.trim();
+}
+
+// Then in your handler, after getting the reply from callModel:
+
+export default async function handler(req, res) {
+  cors(res);
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
+  try {
+    // ... all your existing code ...
+
+    const { reply, raw, httpStatus } = await callModel({
+      fileType: extracted.type,
+      textContent: extracted.textContent || '',
+      question,
+      category,
+      preprocessedData,
+      fullData: fullDataForGL
+    });
+
+    if (!reply) {
+      return res.status(200).json({
+        ok: false,
+        type: extracted.type,
+        reply: "(No reply from model)",
+        debug: { status: httpStatus, raw: raw }
+      });
+    }
+
+    // ⭐ CLEAN THE MARKDOWN RESPONSE HERE ⭐
+    const cleanedReply = cleanMarkdownResponse(reply);
+    console.log("Cleaned markdown response, length:", cleanedReply.length);
+
+    // Generate Word document using cleaned reply
+    let wordBase64 = null;
+    try {
+      console.log("Starting Word document generation...");
+      wordBase64 = await markdownToWord(cleanedReply); // Use cleaned reply
+      console.log("✓ Word document generated successfully");
+    } catch (wordError) {
+      console.error("✗ Word generation error:", wordError);
+    }
+
+    return res.status(200).json({
+      ok: true,
+      type: extracted.type,
+      category,
+      reply: cleanedReply, // ⭐ Return cleaned reply
+      wordDownload: wordBase64,
+      downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
+      wordSize: wordBase64 ? wordBase64.length : 0,
+      preprocessed: preprocessedData?.processed || false,
+      debug: {
+        status: httpStatus,
+        category,
+        preprocessed: preprocessedData?.processed || false,
+        stats: preprocessedData?.stats || null,
+        debug_sample: preprocessedData?.debug || null,
+        hasWord: !!wordBase64,
+        wordGenerated: !!wordBase64,
+        originalLength: reply.length,
+        cleanedLength: cleanedReply.length
+      }
+    });
+  } catch (err) {
+    console.error("analyze-file error:", err);
+    return res.status(500).json({ 
+      error: String(err?.message || err)
+    });
+  }
+}
 async function extractPdf(buffer) {
   try {
     const data = await pdf(buffer);
