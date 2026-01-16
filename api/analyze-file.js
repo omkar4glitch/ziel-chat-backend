@@ -1,126 +1,4 @@
-/**
- * Extract PDF - Enhanced to handle scanned PDFs with OCR
- */
-
-// Add this function near the top of your file, after the imports
-
-/**
- * Clean markdown response by removing code block wrappers
- */
-function cleanMarkdownResponse(text) {
-  if (!text) return text;
-  
-  let cleaned = text.trim();
-  
-  // Remove opening code block markers (```markdown, ```json, or just ```)
-  cleaned = cleaned.replace(/^```(?:markdown|json)?\s*\n/i, '');
-  
-  // Remove closing code block markers
-  cleaned = cleaned.replace(/\n```\s*$/, '');
-  
-  // Handle nested code blocks (sometimes AI adds multiple layers)
-  cleaned = cleaned.replace(/^```(?:markdown|json)?\s*\n/i, '');
-  cleaned = cleaned.replace(/\n```\s*$/, '');
-  
-  return cleaned.trim();
-}
-
-// Then in your handler, after getting the reply from callModel:
-
-export default async function handler(req, res) {
-  cors(res);
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-
-  try {
-    // ... all your existing code ...
-
-    const { reply, raw, httpStatus } = await callModel({
-      fileType: extracted.type,
-      textContent: extracted.textContent || '',
-      question,
-      category,
-      preprocessedData,
-      fullData: fullDataForGL
-    });
-
-    if (!reply) {
-      return res.status(200).json({
-        ok: false,
-        type: extracted.type,
-        reply: "(No reply from model)",
-        debug: { status: httpStatus, raw: raw }
-      });
-    }
-
-    // ⭐ CLEAN THE MARKDOWN RESPONSE HERE ⭐
-    const cleanedReply = cleanMarkdownResponse(reply);
-    console.log("Cleaned markdown response, length:", cleanedReply.length);
-
-    // Generate Word document using cleaned reply
-    let wordBase64 = null;
-    try {
-      console.log("Starting Word document generation...");
-      wordBase64 = await markdownToWord(cleanedReply); // Use cleaned reply
-      console.log("✓ Word document generated successfully");
-    } catch (wordError) {
-      console.error("✗ Word generation error:", wordError);
-    }
-
-    return res.status(200).json({
-      ok: true,
-      type: extracted.type,
-      category,
-      reply: cleanedReply, // ⭐ Return cleaned reply
-      wordDownload: wordBase64,
-      downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
-      wordSize: wordBase64 ? wordBase64.length : 0,
-      preprocessed: preprocessedData?.processed || false,
-      debug: {
-        status: httpStatus,
-        category,
-        preprocessed: preprocessedData?.processed || false,
-        stats: preprocessedData?.stats || null,
-        debug_sample: preprocessedData?.debug || null,
-        hasWord: !!wordBase64,
-        wordGenerated: !!wordBase64,
-        originalLength: reply.length,
-        cleanedLength: cleanedReply.length
-      }
-    });
-  } catch (err) {
-    console.error("analyze-file error:", err);
-    return res.status(500).json({ 
-      error: String(err?.message || err)
-    });
-  }
-}
-async function extractPdf(buffer) {
-  try {
-    const data = await pdf(buffer);
-    const text = (data && data.text) ? data.text.trim() : "";
-
-    // Check if PDF has extractable text
-    if (!text || text.length < 50) {
-      console.log("PDF appears to be scanned or image-based, attempting OCR...");
-      
-      // This is likely a scanned PDF - we need OCR
-      // For now, return indication that OCR is needed
-      // In future, we could convert PDF pages to images and OCR them
-      return { 
-        type: "pdf", 
-        textContent: "", 
-        ocrNeeded: true,
-        error: "This PDF appears to be scanned (image-based). Please try uploading the original image files (PNG/JPG) instead, or use a PDF with selectable text."
-      };
-    }
-
-    return { type: "pdf", textContent: text, ocrNeeded: false };
-  } catch (err) {
-    console.error("extractPdf failed:", err?.message || err);
-    return { type: "pdf", textContent: "", error: String(err?.message || err) };
-  }
-}import fetch from "node-fetch";
+import fetch from "node-fetch";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
@@ -284,6 +162,36 @@ function bufferToText(buffer) {
 function extractCsv(buffer) {
   const text = bufferToText(buffer);
   return { type: "csv", textContent: text };
+}
+
+/**
+ * Extract PDF - Enhanced to handle scanned PDFs with OCR
+ */
+async function extractPdf(buffer) {
+  try {
+    const data = await pdf(buffer);
+    const text = (data && data.text) ? data.text.trim() : "";
+
+    // Check if PDF has extractable text
+    if (!text || text.length < 50) {
+      console.log("PDF appears to be scanned or image-based, attempting OCR...");
+      
+      // This is likely a scanned PDF - we need OCR
+      // For now, return indication that OCR is needed
+      // In future, we could convert PDF pages to images and OCR them
+      return { 
+        type: "pdf", 
+        textContent: "", 
+        ocrNeeded: true,
+        error: "This PDF appears to be scanned (image-based). Please try uploading the original image files (PNG/JPG) instead, or use a PDF with selectable text."
+      };
+    }
+
+    return { type: "pdf", textContent: text, ocrNeeded: false };
+  } catch (err) {
+    console.error("extractPdf failed:", err?.message || err);
+    return { type: "pdf", textContent: "", error: String(err?.message || err) };
+  }
 }
 
 /**
@@ -1154,7 +1062,17 @@ async function callModel({ fileType, textContent, question, category, preprocess
     return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
   }
 
-  const reply = data?.choices?.[0]?.message?.content || data?.reply || null;
+  let reply = data?.choices?.[0]?.message?.content || data?.reply || null;
+
+  // Strip markdown/json code fences that break formatting
+  if (reply) {
+    reply = reply
+      .replace(/^```(?:markdown|json)\s*\n/gm, '')
+      .replace(/\n```\s*$/gm, '')
+      .replace(/```(?:markdown|json)\s*\n/g, '')
+      .replace(/\n```/g, '')
+      .trim();
+  }
 
   return { reply, raw: data, httpStatus: r.status };
 }
