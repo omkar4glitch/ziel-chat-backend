@@ -1009,7 +1009,7 @@ async function markdownToWord(markdownText) {
 }
 
 /**
- * Model call
+ * Model call - ENHANCED for ChatGPT compatibility
  */
 async function callModel({ fileType, textContent, question, category, preprocessedData, fullData }) {
   // Use full data for GL files, not the preprocessed summary
@@ -1064,13 +1064,21 @@ async function callModel({ fileType, textContent, question, category, preprocess
 
   let reply = data?.choices?.[0]?.message?.content || data?.reply || null;
 
-  // Strip markdown/json code fences that break formatting
+  // ENHANCED: Strip ALL types of code fences and formatting wrappers
   if (reply) {
+    // Remove all code block wrappers (markdown, json, text, etc.)
     reply = reply
-      .replace(/^```(?:markdown|json)\s*\n/gm, '')
-      .replace(/\n```\s*$/gm, '')
-      .replace(/```(?:markdown|json)\s*\n/g, '')
-      .replace(/\n```/g, '')
+      .replace(/^```[\w]*\s*\n/gm, '')           // Opening code fences with language
+      .replace(/\n```\s*$/gm, '')                 // Closing code fences at end
+      .replace(/```[\w]*\s*\n/g, '')              // Opening code fences anywhere
+      .replace(/\n```(?:\s|$)/g, '\n')            // Closing code fences anywhere
+      .replace(/^```\s*$/gm, '')                  // Standalone code fences
+      .trim();
+    
+    // Additional cleanup for thinking tags (common in some models)
+    reply = reply
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')  // Remove thinking blocks
+      .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
       .trim();
   }
 
