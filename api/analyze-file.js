@@ -824,9 +824,9 @@ Respond in clean markdown format with detailed tables showing problematic transa
   }
 
   if (category === 'pl') {
-    return `You are an expert accounting assistant analyzing Profit & Loss statements & Balance Sheet.
+    return `You are an expert accounting assistant analyzing Profit & Loss statements.
 
-Analyze the complete data and provide insights with observations and comments in markdown format.`;
+Analyze the complete data and provide insights with observations and recommendations in markdown format.`;
   }
 
   return `You are an expert accounting assistant analyzing financial statements.
