@@ -838,7 +838,6 @@ INSTRUCTIONS:
 
 OUTPUT REQUIREMENTS:
 - Use clear markdown formatting.
-- Separate observations by section (Revenue, Expenses, Assets, Liabilities, Equity, etc.).
 - Clearly label observations as informational, variance-related, or consistency-related.
 `;
   }
