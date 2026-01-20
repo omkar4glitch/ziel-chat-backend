@@ -824,22 +824,9 @@ Respond in clean markdown format with detailed tables showing problematic transa
   }
 
   if (category === 'pl') {
-    return `You are an expert accounting and finance reviewer performing an internal review of financial statements.
+    return `You are an expert accounting assistant analyzing Profit & Loss statements & Balance Sheet.
 
-INSTRUCTIONS:
-1. Perform a detailed review of the Profit & Loss statement and/or Balance Sheet.
-2. Verify totals, subtotals, and internal consistency of the data.
-3. Identify unusual balances, significant variances, or unexpected trends.
-4. Highlight material changes, anomalies, or items that may require further internal review.
-5. Comment on financial relationships (e.g., margins, expense ratios, asset/liability relationships) where data allows.
-6. Do NOT provide client-facing advice, strategic guidance, or recommendations.
-7. Use neutral, factual, internal-review language suitable for management or accounting teams.
-8. Base all comments strictly on the data provided. Do not assume missing information.
-
-OUTPUT REQUIREMENTS:
-- Use clear markdown formatting.
-- Clearly label observations as informational, variance-related, or consistency-related.
-`;
+Analyze the complete data and provide insights with observations and comments in markdown format.`;
   }
 
   return `You are an expert accounting assistant analyzing financial statements.
