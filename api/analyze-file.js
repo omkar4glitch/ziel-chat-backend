@@ -1021,8 +1021,8 @@ async function callModel({ fileType, textContent, question, category, preprocess
     console.log("Using FULL GL data for detailed analysis");
   }
 
-  const trimmed = content.length > 200000 
-    ? content.slice(0, 200000) + "\n\n[Content truncated due to length]"
+  const trimmed = content.length > 100000 
+    ? content.slice(0, 100000) + "\n\n[Content truncated due to length]"
     : content;
 
   const systemPrompt = getSystemPrompt(category, false, 0);
