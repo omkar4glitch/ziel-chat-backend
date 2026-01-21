@@ -1,5 +1,3 @@
-api analyze file 1-21-26
-
 import fetch from "node-fetch";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
