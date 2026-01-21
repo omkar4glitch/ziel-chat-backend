@@ -1051,7 +1051,7 @@ async function callModel({ fileType, textContent, question, category, preprocess
       model: process.env.OPENROUTER_MODEL || "tngtech/deepseek-r1t2-chimera:free",
       messages,
       temperature: 0.2,
-      max_tokens: 40000
+      max_tokens: 80000
     })
   });
 
