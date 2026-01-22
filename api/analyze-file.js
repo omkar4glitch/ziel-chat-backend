@@ -1080,7 +1080,7 @@ async function callModel({ fileType, textContent, question, category, preprocess
       model: process.env.OPENROUTER_MODEL || "openai/gpt-oss-120b:free",
       messages,
       temperature: 0.1,  // Lower temperature for more consistent output
-      max_tokens: 16000,  // ✅ CRITICAL FIX: Increased from 60000 to 16000 (realistic for GPT models)
+      max_tokens: 26000,  // ✅ CRITICAL FIX: Increased from 60000 to 16000 (realistic for GPT models)
       top_p: 1.0,
       frequency_penalty: 0.0,
       presence_penalty: 0.0
