@@ -239,7 +239,7 @@ function formatDateUS(dateStr) {
 }
 
 /**
- * ✅ IMPROVED: Extract XLSX with proper sheet separation
+ * Extract XLSX with proper sheet separation
  */
 function extractXlsx(buffer) {
   try {
@@ -259,7 +259,6 @@ function extractXlsx(buffer) {
       return { type: "xlsx", textContent: "", sheets: [] };
     }
 
-    // ✅ Store sheets separately instead of combining
     const sheets = [];
     let combinedText = '';
 
@@ -269,7 +268,7 @@ function extractXlsx(buffer) {
       const sheet = workbook.Sheets[sheetName];
       const jsonRows = XLSX.utils.sheet_to_json(sheet, { 
         defval: '', 
-        blankrows: false,  // Skip blank rows
+        blankrows: false,
         raw: false 
       });
       
@@ -281,7 +280,6 @@ function extractXlsx(buffer) {
         rawNumbers: false
       });
 
-      // ✅ Store each sheet separately
       sheets.push({
         name: sheetName,
         rows: jsonRows,
@@ -289,7 +287,6 @@ function extractXlsx(buffer) {
         rowCount: jsonRows.length
       });
 
-      // ✅ Create properly formatted combined text with clear markers
       if (index > 0) combinedText += '\n\n';
       combinedText += `=== SHEET: ${sheetName} (${jsonRows.length} rows) ===\n\n`;
       combinedText += csv;
@@ -300,7 +297,7 @@ function extractXlsx(buffer) {
     return { 
       type: "xlsx", 
       textContent: combinedText, 
-      sheets: sheets,  // ✅ NEW: Separate sheets array
+      sheets: sheets,
       sheetCount: workbook.SheetNames.length 
     };
   } catch (err) {
@@ -572,7 +569,7 @@ function parseCSV(csvText) {
 }
 
 /**
- * ✅ IMPROVED: Process a single sheet's GL data
+ * Process a single sheet's GL data
  */
 function preprocessSingleSheet(rows, sheetName) {
   if (!rows || rows.length === 0) {
@@ -600,7 +597,6 @@ function preprocessSingleSheet(rows, sheetName) {
   const referenceCol = findColumn(['reference', 'ref', 'entry', 'journal', 'voucher', 'transaction', 'check', 'cheque']);
   const balanceCol = findColumn(['balance', 'net', 'amount']);
 
-  // ✅ Better column detection
   if (!accountCol) {
     return { 
       processed: false, 
@@ -618,11 +614,9 @@ function preprocessSingleSheet(rows, sheetName) {
   let minDate = null;
   let maxDate = null;
 
-  // ✅ Process rows with better error handling
   rows.forEach((row, idx) => {
     const account = (row[accountCol] || '').toString().trim();
     
-    // Skip empty rows, totals, and subtotals
     if (!account || 
         account.toLowerCase() === 'total' || 
         account.toLowerCase() === 'subtotal' ||
@@ -638,7 +632,6 @@ function preprocessSingleSheet(rows, sheetName) {
     let debit = parseAmount(debitStr);
     let credit = parseAmount(creditStr);
 
-    // Handle negative amounts
     if (debit < 0) {
       credit += Math.abs(debit);
       debit = 0;
@@ -648,7 +641,6 @@ function preprocessSingleSheet(rows, sheetName) {
       credit = 0;
     }
 
-    // If no debit/credit columns, try balance column
     if (debit === 0 && credit === 0 && balanceCol) {
       const amount = parseAmount(row[balanceCol]);
       if (amount > 0) {
@@ -658,7 +650,6 @@ function preprocessSingleSheet(rows, sheetName) {
       }
     }
 
-    // Track dates
     if (dateCol && row[dateCol]) {
       const dateStr = row[dateCol].toString().trim();
       if (!minDate || dateStr < minDate) minDate = dateStr;
@@ -671,7 +662,7 @@ function preprocessSingleSheet(rows, sheetName) {
         totalDebit: 0, 
         totalCredit: 0, 
         count: 0,
-        firstRow: idx + 2  // Excel row number (header is row 1)
+        firstRow: idx + 2
       };
     }
 
@@ -701,7 +692,6 @@ function preprocessSingleSheet(rows, sheetName) {
   const formattedMinDate = formatDateUS(minDate);
   const formattedMaxDate = formatDateUS(maxDate);
 
-  // ✅ Generate detailed summary for this sheet
   let summary = `**Sheet: ${sheetName}**\n\n`;
   summary += `- Processed Rows: ${processedRows}\n`;
   summary += `- Skipped Rows: ${skippedRows}\n`;
@@ -725,7 +715,7 @@ function preprocessSingleSheet(rows, sheetName) {
   summary += `| Account | Debit | Credit | Balance | Entries |\n`;
   summary += `|---------|-------|--------|---------|----------|\n`;
   
-  const topAccounts = accounts.slice(0, 20);  // Show top 20
+  const topAccounts = accounts.slice(0, 20);
   topAccounts.forEach(acc => {
     summary += `| ${acc.account} | $${Math.round(acc.totalDebit).toLocaleString()} | $${Math.round(acc.totalCredit).toLocaleString()} | $${Math.round(acc.netBalance).toLocaleString()} | ${acc.count} |\n`;
   });
@@ -749,14 +739,13 @@ function preprocessSingleSheet(rows, sheetName) {
 }
 
 /**
- * ✅ IMPROVED: Process GL data with sheet awareness
+ * Process GL data with sheet awareness
  */
 function preprocessGLDataFromSheets(sheets) {
   if (!sheets || sheets.length === 0) {
     return { processed: false, reason: 'No sheets provided' };
   }
 
-  // ✅ Process each sheet separately
   const sheetSummaries = [];
   let totalDebitsAllSheets = 0;
   let totalCreditsAllSheets = 0;
@@ -770,7 +759,6 @@ function preprocessGLDataFromSheets(sheets) {
     }
   });
 
-  // ✅ Generate comprehensive summary with sheet separation
   let summary = `## Complete GL Analysis (${sheets.length} Sheets)\n\n`;
   
   summary += `**Overall Summary:**\n`;
@@ -779,7 +767,6 @@ function preprocessGLDataFromSheets(sheets) {
   summary += `- Combined Credits: $${Math.round(totalCreditsAllSheets).toLocaleString('en-US')}\n`;
   summary += `- Overall Difference: $${Math.round(Math.abs(totalDebitsAllSheets - totalCreditsAllSheets)).toLocaleString('en-US')}\n\n`;
 
-  // ✅ Add each sheet's summary
   sheetSummaries.forEach((sheetSummary, idx) => {
     summary += `---\n\n### Sheet ${idx + 1}: ${sheetSummary.sheetName}\n\n`;
     summary += sheetSummary.summary;
@@ -817,7 +804,7 @@ function detectDocumentCategory(textContent) {
 }
 
 /**
- * ✅ IMPROVED: System prompt with sheet awareness
+ * System prompt with sheet awareness
  */
 function getSystemPrompt(category, sheetInfo) {
   if (category === 'gl') {
@@ -881,12 +868,12 @@ Use markdown tables extensively. Be thorough and precise with numbers.`;
   if (category === 'pl') {
     return `You are an expert accounting assistant analyzing Profit & Loss statements.
 
-Analyze the complete data and provide insights with observations and recommendations in markdown format.`;
+Analyze the complete data and provide insights with observations and recommendations in markdown format. Be comprehensive and detailed in your analysis.`;
   }
 
   return `You are an expert accounting assistant analyzing financial statements.
 
-When totals exist, USE those numbers. Create a markdown table with metrics and insights.`;
+When totals exist, USE those numbers. Create a comprehensive markdown table with metrics and insights. Provide detailed analysis.`;
 }
 
 /**
@@ -1053,19 +1040,18 @@ async function markdownToWord(markdownText) {
 }
 
 /**
- * Model call
+ * ✅ FIXED: Model call with proper max_tokens for OpenAI
  */
 async function callModel({ fileType, textContent, question, category, preprocessedData, fullData, sheetInfo }) {
   let content = textContent;
   
-  // For GL files, send the complete data
   if (category === 'gl' && fullData) {
     content = fullData;
     console.log("Using FULL GL data for detailed analysis");
   }
 
-  const trimmed = content.length > 100000 
-    ? content.slice(0, 100000) + "\n\n[Content truncated due to length]"
+  const trimmed = content.length > 150000 
+    ? content.slice(0, 150000) + "\n\n[Content truncated due to length]"
     : content;
 
   const systemPrompt = getSystemPrompt(category, sheetInfo);
@@ -1078,10 +1064,12 @@ async function callModel({ fileType, textContent, question, category, preprocess
     },
     {
       role: "user",
-      content: question || "Analyze this data in complete detail. If there are multiple sheets, perform reconciliation and identify ALL unmatched items with specific details."
+      content: question || "Analyze this data in complete detail. If there are multiple sheets, perform reconciliation and identify ALL unmatched items with specific details. Provide a comprehensive, thorough analysis without cutting off mid-response."
     }
   ];
 
+  // ✅ KEY FIX: Increased max_tokens significantly for OpenAI models
+  // OpenAI models often need 8000-16000 tokens for complete responses
   const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -1089,10 +1077,13 @@ async function callModel({ fileType, textContent, question, category, preprocess
       Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`
     },
     body: JSON.stringify({
-      model: process.env.OPENROUTER_MODEL || "tngtech/deepseek-r1t2-chimera:free",
+      model: process.env.OPENROUTER_MODEL || "openai/gpt-oss-120b:free",
       messages,
-      temperature: 0.2,
-      max_tokens: 60000
+      temperature: 0.1,  // Lower temperature for more consistent output
+      max_tokens: 16000,  // ✅ CRITICAL FIX: Increased from 60000 to 16000 (realistic for GPT models)
+      top_p: 1.0,
+      frequency_penalty: 0.0,
+      presence_penalty: 0.0
     })
   });
 
@@ -1103,6 +1094,14 @@ async function callModel({ fileType, textContent, question, category, preprocess
     const raw = await r.text().catch(() => "");
     console.error("Model returned non-JSON:", raw.slice(0, 1000));
     return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
+  }
+
+  // ✅ Check for finish_reason to detect truncation
+  const finishReason = data?.choices?.[0]?.finish_reason;
+  console.log(`Model finish reason: ${finishReason}`);
+  
+  if (finishReason === 'length') {
+    console.warn("⚠️ Response was truncated due to token limit!");
   }
 
   let reply = data?.choices?.[0]?.message?.content || data?.reply || null;
@@ -1116,7 +1115,13 @@ async function callModel({ fileType, textContent, question, category, preprocess
       .trim();
   }
 
-  return { reply, raw: data, httpStatus: r.status };
+  return { 
+    reply, 
+    raw: data, 
+    httpStatus: r.status,
+    finishReason: finishReason,
+    tokenUsage: data?.usage
+  };
 }
 
 /**
@@ -1196,7 +1201,6 @@ export default async function handler(req, res) {
     let fullDataForGL = null;
     let sheetInfo = { sheetCount: 1 };
     
-    // ✅ IMPROVED: Handle sheets properly
     if (extracted.sheets && extracted.sheets.length > 0) {
       sheetInfo = { sheetCount: extracted.sheets.length };
       
@@ -1204,10 +1208,8 @@ export default async function handler(req, res) {
       category = detectDocumentCategory(sampleText);
       
       if (category === 'gl') {
-        // ✅ Use the improved sheet-aware preprocessing
         preprocessedData = preprocessGLDataFromSheets(extracted.sheets);
         
-        // ✅ Prepare structured data for AI with clear sheet markers
         fullDataForGL = '';
         extracted.sheets.forEach((sheet, idx) => {
           if (idx > 0) fullDataForGL += '\n\n';
@@ -1240,7 +1242,7 @@ export default async function handler(req, res) {
       }
     }
 
-    const { reply, raw, httpStatus } = await callModel({
+    const { reply, raw, httpStatus, finishReason, tokenUsage } = await callModel({
       fileType: extracted.type,
       textContent: extracted.textContent || '',
       question,
@@ -1284,7 +1286,9 @@ export default async function handler(req, res) {
         stats: preprocessedData?.stats || preprocessedData?.overallStats || null,
         sheetCount: sheetInfo.sheetCount,
         hasWord: !!wordBase64,
-        wordGenerated: !!wordBase64
+        wordGenerated: !!wordBase64,
+        finishReason: finishReason,
+        tokenUsage: tokenUsage
       }
     });
   } catch (err) {
