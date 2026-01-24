@@ -40,10 +40,24 @@ async function downloadFileToBuffer(url) {
 /* -------------------- FILE TYPE -------------------- */
 function detectFileType(url = "", ct = "", buf) {
   const u = url.toLowerCase();
-  if (u.endsWith(".xlsx") || ct.includes("excel")) return "xlsx";
+  const t = ct.toLowerCase();
+
+  if (
+    u.endsWith(".xlsx") ||
+    u.endsWith(".xlsm") ||          // ✅ ADD THIS
+    u.endsWith(".xls") ||
+    t.includes("excel") ||
+    t.includes("spreadsheet")
+  ) {
+    return "xlsx"; // ✅ Treat XLSM as XLSX
+  }
+
   if (u.endsWith(".pdf")) return "pdf";
-  return "csv";
+  if (u.endsWith(".csv")) return "csv";
+
+  return "unknown";
 }
+
 
 /* -------------------- PARSERS -------------------- */
 function parseAmount(v) {
@@ -204,8 +218,13 @@ export default async function handler(req, res) {
     const type = detectFileType(fileUrl, contentType, buffer);
 
     let extracted;
-    if (type === "xlsx") extracted = extractXlsx(buffer);
-    else return res.json({ error: "Only XLSX supported for P&L" });
+    if (type === "xlsx") {
+      extracted = extractXlsx(buffer);
+    } else {
+      return res.json({
+        error: "Only Excel files (.xlsx / .xlsm) are supported for P&L analysis"
+      });
+    }
 
     const sampleText = JSON.stringify(extracted.sheets[0].rows.slice(0, 10));
     const category = detectDocumentCategory(sampleText);
