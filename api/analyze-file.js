@@ -160,12 +160,12 @@ async function extractPdf(buffer) {
     const text = (data && data.text) ? data.text.trim() : "";
 
     if (!text || text.length < 50) {
-      console.log("PDF appears to be scanned or image-based");
+      console.log("PDF appears to be scanned or image-based, attempting OCR...");
       return { 
         type: "pdf", 
         textContent: "", 
         ocrNeeded: true,
-        error: "This PDF appears to be scanned. Please upload a PDF with selectable text or convert to Excel/CSV."
+        error: "This PDF appears to be scanned (image-based). Please try uploading the original image files (PNG/JPG) instead, or use a PDF with selectable text."
       };
     }
 
@@ -177,11 +177,12 @@ async function extractPdf(buffer) {
 }
 
 /**
- * Robust numeric parser
+ * Robust numeric parser for accounting amounts
  */
 function parseAmount(s) {
   if (s === null || s === undefined) return 0;
   let str = String(s).trim();
+
   if (!str) return 0;
 
   const parenMatch = str.match(/^\s*\((.*)\)\s*$/);
@@ -212,7 +213,7 @@ function parseAmount(s) {
 }
 
 /**
- * Format date to US format
+ * Format date to US format (MM/DD/YYYY)
  */
 function formatDateUS(dateStr) {
   if (!dateStr) return dateStr;
@@ -238,7 +239,7 @@ function formatDateUS(dateStr) {
 }
 
 /**
- * Extract XLSX
+ * Extract XLSX with proper sheet separation
  */
 function extractXlsx(buffer) {
   try {
@@ -294,13 +295,16 @@ function extractXlsx(buffer) {
  * Extract Word Document (.docx)
  */
 async function extractDocx(buffer) {
-  console.log("=== DOCX EXTRACTION ===");
+  console.log("=== DOCX EXTRACTION with JSZip ===");
   
   try {
     const zip = await JSZip.loadAsync(buffer);
+    console.log("ZIP loaded, files:", Object.keys(zip.files).join(', '));
+    
     const documentXml = zip.files['word/document.xml'];
     
     if (!documentXml) {
+      console.log("document.xml not found");
       return { 
         type: "docx", 
         textContent: "", 
@@ -309,6 +313,8 @@ async function extractDocx(buffer) {
     }
     
     const xmlContent = await documentXml.async('text');
+    console.log("XML content length:", xmlContent.length);
+    
     const textRegex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
     const textParts = [];
     let match;
@@ -329,17 +335,22 @@ async function extractDocx(buffer) {
       }
     }
     
+    console.log("Extracted text elements:", textParts.length);
+    
     if (textParts.length === 0) {
       return { 
         type: "docx", 
         textContent: "", 
-        error: "No text found in Word document" 
+        error: "No text found in Word document. Document may be empty or contain only images." 
       };
     }
     
+    const fullText = textParts.join(' ');
+    console.log("Final text length:", fullText.length);
+    
     return { 
       type: "docx", 
-      textContent: textParts.join(' ')
+      textContent: fullText 
     };
     
   } catch (error) {
@@ -358,12 +369,14 @@ async function extractDocx(buffer) {
 async function extractPptx(buffer) {
   try {
     const bufferStr = buffer.toString('latin1');
+    
     const textPattern = /<a:t[^>]*>([^<]+)<\/a:t>/g;
     let match;
     let allText = [];
     
     while ((match = textPattern.exec(bufferStr)) !== null) {
-      const cleaned = match[1]
+      const text = match[1];
+      const cleaned = text
         .replace(/&lt;/g, '<')
         .replace(/&gt;/g, '>')
         .replace(/&amp;/g, '&')
@@ -376,15 +389,39 @@ async function extractPptx(buffer) {
       }
     }
     
+    if (allText.length < 5) {
+      const paraPattern = /<a:p[^>]*>(.*?)<\/a:p>/gs;
+      const paraMatches = bufferStr.matchAll(paraPattern);
+      
+      for (const match of paraMatches) {
+        const innerText = match[1].replace(/<[^>]+>/g, ' ').trim();
+        if (innerText.length > 2) {
+          allText.push(innerText);
+        }
+      }
+    }
+    
     if (allText.length === 0) {
       return { 
         type: "pptx", 
         textContent: "", 
-        error: "No text found in PowerPoint" 
+        error: "No text found in PowerPoint. Please try exporting as PDF." 
       };
     }
     
-    return { type: "pptx", textContent: allText.join('\n').trim() };
+    const text = allText.join('\n').trim();
+    
+    console.log(`Extracted ${text.length} characters from PPTX`);
+    
+    if (text.length < 20) {
+      return { 
+        type: "pptx", 
+        textContent: "", 
+        error: "Presentation appears to be empty or contains mostly images" 
+      };
+    }
+    
+    return { type: "pptx", textContent: text };
   } catch (err) {
     console.error("extractPptx failed:", err?.message || err);
     return { 
@@ -399,13 +436,59 @@ async function extractPptx(buffer) {
  * Extract Image
  */
 async function extractImage(buffer, fileType) {
-  const helpMessage = `📸 Image file detected. Please convert to PDF or Excel for analysis.`;
-  return { 
-    type: fileType, 
-    textContent: helpMessage,
-    isImage: true,
-    requiresManualProcessing: true
-  };
+  try {
+    console.log(`Image upload detected: ${fileType}, size: ${(buffer.length / 1024).toFixed(2)} KB`);
+    
+    const helpMessage = `📸 **Image File Detected (${fileType.toUpperCase()})**
+
+I can help you extract text from this image using these **FREE** methods:
+
+**🎯 FASTEST METHOD - Use Google Drive (100% Free):**
+1. Upload your image to Google Drive
+2. Right-click → "Open with" → "Google Docs"
+3. Google will automatically OCR the image and convert to editable text
+4. Copy the text and paste it here, OR
+5. Download as PDF and upload that PDF to me
+
+**📱 METHOD 2 - Use Your Phone:**
+Most phones have built-in scanners:
+- iPhone: Notes app → Scan Documents
+- Android: Google Drive → Scan
+- These create searchable PDFs automatically!
+
+**💻 METHOD 3 - Free Online OCR Tools:**
+- onlineocr.net (no signup needed)
+- i2ocr.com (simple and fast)
+- newocr.com (supports 122 languages)
+
+**📄 METHOD 4 - Convert to PDF:**
+If this is a scan, convert it to a searchable PDF using:
+- Adobe Acrobat (free trial)
+- PDF24 Tools (free online)
+- SmallPDF (3 free conversions/day)
+
+**Image Info:**
+- Type: ${fileType.toUpperCase()}
+- Size: ${(buffer.length / 1024).toFixed(2)} KB
+- Ready for OCR: Yes
+
+Once you have the text or searchable PDF, upload it here and I'll analyze it immediately! 🚀`;
+    
+    return { 
+      type: fileType, 
+      textContent: helpMessage,
+      isImage: true,
+      requiresManualProcessing: true
+    };
+    
+  } catch (err) {
+    console.error("Image handling error:", err?.message || err);
+    return { 
+      type: fileType, 
+      textContent: "", 
+      error: `Error processing image. Please convert to PDF or extract text manually.`
+    };
+  }
 }
 
 /**
@@ -443,160 +526,37 @@ function parseCSV(csvText) {
   };
 
   const headers = parseCSVLine(lines[0]);
+  const headerCount = headers.length;
   const rows = [];
+
+  console.log(`CSV has ${lines.length} lines total (including header)`);
+  console.log(`Headers (${headerCount} columns):`, headers);
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
-    if (!line || line.trim() === '') continue;
+
+    if (!line || line.trim() === '' || line.trim() === ','.repeat(headerCount - 1)) {
+      continue;
+    }
 
     const values = parseCSVLine(line);
+
     const row = {};
     headers.forEach((h, idx) => {
       row[h] = values[idx] !== undefined ? values[idx] : '';
     });
+
     rows.push(row);
   }
 
+  console.log(`✓ Parsed ${rows.length} data rows (should match Excel row count minus header)`);
   return rows;
 }
 
 /**
- * 🆕 IMPROVED: Detect column types more intelligently
+ * 🆕 SMART DATA STRUCTURING - Detects document type and creates JSON structure
  */
-function detectColumnTypes(rows) {
-  if (!rows || rows.length === 0) return {};
-  
-  const headers = Object.keys(rows[0]);
-  const columnTypes = {};
-  
-  headers.forEach(header => {
-    const lowerHeader = header.toLowerCase().trim();
-    
-    // Period/Date columns
-    if (lowerHeader.includes('period') || 
-        lowerHeader.includes('month') || 
-        lowerHeader.includes('quarter') ||
-        lowerHeader.includes('year') ||
-        lowerHeader.match(/\d{1,2}[-/]\d{4}/) ||  // Matches "11-2025", "11/2025"
-        lowerHeader.match(/period \d+/) ||         // Matches "Period 11"
-        lowerHeader.match(/p\d+/)) {                // Matches "P11"
-      columnTypes[header] = 'period';
-    }
-    // Amount/Number columns
-    else if (lowerHeader.includes('amount') || 
-             lowerHeader.includes('total') || 
-             lowerHeader.includes('revenue') ||
-             lowerHeader.includes('expense') ||
-             lowerHeader.includes('profit') ||
-             lowerHeader.includes('loss') ||
-             lowerHeader.includes('cost') ||
-             lowerHeader.includes('ytd') ||
-             lowerHeader.includes('balance')) {
-      columnTypes[header] = 'amount';
-    }
-    // Account/Description columns
-    else if (lowerHeader.includes('account') || 
-             lowerHeader.includes('description') || 
-             lowerHeader.includes('particular') ||
-             lowerHeader.includes('category') ||
-             lowerHeader.includes('item') ||
-             lowerHeader.includes('name')) {
-      columnTypes[header] = 'label';
-    }
-    // Location columns
-    else if (lowerHeader.includes('location') || 
-             lowerHeader.includes('branch') || 
-             lowerHeader.includes('region') ||
-             lowerHeader.includes('city') ||
-             lowerHeader.includes('state')) {
-      columnTypes[header] = 'location';
-    }
-    else {
-      columnTypes[header] = 'text';
-    }
-  });
-  
-  return columnTypes;
-}
-
-/**
- * 🆕 EXTRACT SPECIFIC COLUMNS FROM QUESTION
- */
-function extractRequestedColumns(question, allHeaders) {
-  const lowerQ = question.toLowerCase();
-  const requestedCols = [];
-  
-  // Always include label/description columns
-  const labelCols = allHeaders.filter(h => {
-    const lower = h.toLowerCase();
-    return lower.includes('account') || lower.includes('description') || 
-           lower.includes('particular') || lower.includes('category') ||
-           lower.includes('item') || lower.includes('name');
-  });
-  requestedCols.push(...labelCols);
-  
-  // Check for specific period mentions
-  allHeaders.forEach(header => {
-    const lowerHeader = header.toLowerCase();
-    
-    // Match patterns like "period 11", "11-2025", "p11", "11/2025"
-    if (lowerQ.includes(lowerHeader) ||
-        lowerQ.includes(header) ||
-        (lowerHeader.match(/period\s*\d+/) && lowerQ.includes(lowerHeader.match(/period\s*\d+/)[0])) ||
-        (lowerHeader.match(/\d{1,2}[-/]\d{4}/) && lowerQ.includes(lowerHeader.match(/\d{1,2}[-/]\d{4}/)[0])) ||
-        (lowerHeader.match(/p\d+/) && lowerQ.includes(lowerHeader.match(/p\d+/)[0]))) {
-      if (!requestedCols.includes(header)) {
-        requestedCols.push(header);
-      }
-    }
-  });
-  
-  // Check for YTD
-  if (lowerQ.includes('ytd') || lowerQ.includes('year to date')) {
-    const ytdCols = allHeaders.filter(h => h.toLowerCase().includes('ytd'));
-    requestedCols.push(...ytdCols.filter(c => !requestedCols.includes(c)));
-  }
-  
-  // Check for location mentions
-  if (lowerQ.includes('location') || lowerQ.includes('branch') || 
-      lowerQ.includes('region') || lowerQ.includes('city')) {
-    const locCols = allHeaders.filter(h => {
-      const lower = h.toLowerCase();
-      return lower.includes('location') || lower.includes('branch') || 
-             lower.includes('region') || lower.includes('city');
-    });
-    requestedCols.push(...locCols.filter(c => !requestedCols.includes(c)));
-  }
-  
-  // If nothing specific found, return all columns (fallback)
-  if (requestedCols.length <= labelCols.length) {
-    console.log("⚠️ Could not identify specific columns, using all headers");
-    return allHeaders;
-  }
-  
-  console.log(`✅ Extracted ${requestedCols.length} relevant columns from question`);
-  return requestedCols;
-}
-
-/**
- * 🆕 FILTER DATA TO ONLY REQUESTED COLUMNS
- */
-function filterDataToRequestedColumns(rows, requestedColumns) {
-  return rows.map(row => {
-    const filtered = {};
-    requestedColumns.forEach(col => {
-      if (row[col] !== undefined) {
-        filtered[col] = row[col];
-      }
-    });
-    return filtered;
-  });
-}
-
-/**
- * 🆕 SMART DATA STRUCTURING - MINIMAL VERSION
- */
-function structureDataAsJSON(sheets, question = "") {
+function structureDataAsJSON(sheets) {
   if (!sheets || sheets.length === 0) {
     return { 
       success: false, 
@@ -605,108 +565,327 @@ function structureDataAsJSON(sheets, question = "") {
   }
 
   const allStructuredSheets = [];
+  let documentType = 'UNKNOWN';
 
   sheets.forEach(sheet => {
     const rows = sheet.rows || [];
     if (rows.length === 0) return;
 
-    const allHeaders = Object.keys(rows[0]);
+    const headers = Object.keys(rows[0]).map(h => h.toLowerCase().trim());
     
-    // 🔥 KEY FIX: Extract only requested columns
-    const requestedColumns = extractRequestedColumns(question, allHeaders);
-    console.log(`Sheet "${sheet.name}": Using columns:`, requestedColumns);
+    // Detect document type based on headers
+    const hasDebitCredit = headers.some(h => h.includes('debit')) && headers.some(h => h.includes('credit'));
+    const hasDate = headers.some(h => h.includes('date'));
+    const hasAccount = headers.some(h => h.includes('account') || h.includes('ledger') || h.includes('description'));
+    const hasAmount = headers.some(h => h.includes('amount') || h.includes('balance'));
     
-    // Filter rows to only requested columns
-    const filteredRows = filterDataToRequestedColumns(rows, requestedColumns);
+    let sheetType = 'GENERAL';
     
+    if (hasDebitCredit && hasAccount) {
+      sheetType = 'GENERAL_LEDGER';
+      documentType = 'GENERAL_LEDGER';
+    } else if (hasDate && hasAmount && headers.some(h => h.includes('transaction') || h.includes('reference'))) {
+      sheetType = 'BANK_STATEMENT';
+      if (documentType === 'UNKNOWN') documentType = 'BANK_STATEMENT';
+    } else if (headers.some(h => h.includes('revenue') || h.includes('expense') || h.includes('profit') || h.includes('loss'))) {
+      sheetType = 'PROFIT_LOSS';
+      if (documentType === 'UNKNOWN') documentType = 'PROFIT_LOSS';
+    } else if (headers.some(h => h.includes('asset') || h.includes('liability') || h.includes('equity'))) {
+      sheetType = 'BALANCE_SHEET';
+      if (documentType === 'UNKNOWN') documentType = 'BALANCE_SHEET';
+    }
+
+    // Find key columns
+    const findColumn = (possibleNames) => {
+      for (const name of possibleNames) {
+        const found = Object.keys(rows[0]).find(h => h.toLowerCase().includes(name.toLowerCase()));
+        if (found) return found;
+      }
+      return null;
+    };
+
+    const dateCol = findColumn(['date', 'trans date', 'transaction date', 'posting date']);
+    const accountCol = findColumn(['account', 'description', 'particulars', 'ledger', 'gl account']);
+    const debitCol = findColumn(['debit', 'dr', 'debit amount', 'withdrawal']);
+    const creditCol = findColumn(['credit', 'cr', 'credit amount', 'deposit']);
+    const amountCol = findColumn(['amount', 'balance', 'net']);
+    const referenceCol = findColumn(['reference', 'ref', 'voucher', 'transaction', 'entry']);
+
+    // Structure the data
+    const structuredRows = [];
+    const summary = {
+      totalDebit: 0,
+      totalCredit: 0,
+      totalAmount: 0,
+      uniqueAccounts: new Set(),
+      dateRange: { min: null, max: null },
+      transactionCount: 0
+    };
+
+    rows.forEach(row => {
+      const structuredRow = {};
+      
+      if (dateCol && row[dateCol]) {
+        const rawDate = row[dateCol];
+        structuredRow.date = formatDateUS(rawDate);
+        
+        if (!summary.dateRange.min || rawDate < summary.dateRange.min) {
+          summary.dateRange.min = formatDateUS(rawDate);
+        }
+        if (!summary.dateRange.max || rawDate > summary.dateRange.max) {
+          summary.dateRange.max = formatDateUS(rawDate);
+        }
+      }
+
+      if (accountCol && row[accountCol]) {
+        structuredRow.account = String(row[accountCol]).trim();
+        summary.uniqueAccounts.add(structuredRow.account);
+      }
+
+      if (referenceCol && row[referenceCol]) {
+        structuredRow.reference = String(row[referenceCol]).trim();
+      }
+
+      if (debitCol && row[debitCol]) {
+        const debit = parseAmount(row[debitCol]);
+        structuredRow.debit = debit;
+        summary.totalDebit += debit;
+      }
+
+      if (creditCol && row[creditCol]) {
+        const credit = parseAmount(row[creditCol]);
+        structuredRow.credit = credit;
+        summary.totalCredit += credit;
+      }
+
+      if (amountCol && row[amountCol]) {
+        const amount = parseAmount(row[amountCol]);
+        structuredRow.amount = amount;
+        summary.totalAmount += amount;
+      }
+
+      // Add all other columns as-is
+      Object.keys(row).forEach(key => {
+        if (key !== dateCol && key !== accountCol && key !== debitCol && 
+            key !== creditCol && key !== amountCol && key !== referenceCol) {
+          structuredRow[key] = row[key];
+        }
+      });
+
+      if (Object.keys(structuredRow).length > 0) {
+        structuredRows.push(structuredRow);
+        summary.transactionCount++;
+      }
+    });
+
     allStructuredSheets.push({
       sheetName: sheet.name,
-      rowCount: filteredRows.length,
-      availableColumns: allHeaders,
-      selectedColumns: requestedColumns,
-      // 🔥 CRITICAL: Only send 30 rows max
-      data: filteredRows.slice(0, 30),
-      totalRows: filteredRows.length
+      sheetType: sheetType,
+      rowCount: structuredRows.length,
+      data: structuredRows,
+      summary: {
+        totalDebit: Math.round(summary.totalDebit * 100) / 100,
+        totalCredit: Math.round(summary.totalCredit * 100) / 100,
+        totalAmount: Math.round(summary.totalAmount * 100) / 100,
+        difference: Math.round((summary.totalDebit - summary.totalCredit) * 100) / 100,
+        isBalanced: Math.abs(summary.totalDebit - summary.totalCredit) < 0.01,
+        uniqueAccounts: summary.uniqueAccounts.size,
+        dateRange: summary.dateRange.min && summary.dateRange.max 
+          ? `${summary.dateRange.min} to ${summary.dateRange.max}` 
+          : 'Unknown',
+        transactionCount: summary.transactionCount
+      },
+      columns: {
+        date: dateCol,
+        account: accountCol,
+        debit: debitCol,
+        credit: creditCol,
+        amount: amountCol,
+        reference: referenceCol
+      }
     });
   });
 
   return {
     success: true,
+    documentType: documentType,
     sheetCount: allStructuredSheets.length,
-    sheets: allStructuredSheets
+    sheets: allStructuredSheets,
+    overallSummary: {
+      totalSheets: allStructuredSheets.length,
+      totalTransactions: allStructuredSheets.reduce((sum, s) => sum + s.summary.transactionCount, 0),
+      combinedDebit: allStructuredSheets.reduce((sum, s) => sum + s.summary.totalDebit, 0),
+      combinedCredit: allStructuredSheets.reduce((sum, s) => sum + s.summary.totalCredit, 0)
+    }
   };
 }
 
 /**
- * 🆕 ENHANCED SYSTEM PROMPT - Clear and specific
+ * 🆕 ENHANCED SYSTEM PROMPT - Works with JSON structured data
  */
-function getSystemPrompt() {
-  return `You are a financial analyst. You will receive financial data in a structured JSON format.
-
-**DATA STRUCTURE:**
-- Each sheet contains rows with categorized fields:
-  - labels: Account names, descriptions, categories
-  - periods: Period identifiers (like "Period 11 2025", "11-2025", "P11")
-  - amounts: Numerical values (revenue, expenses, totals)
-  - locations: Geographic identifiers (branches, regions)
+function getEnhancedSystemPrompt(documentType) {
+  const basePrompt = `You are an expert financial analyst and MIS report writer. You will receive financial data in structured JSON format.
 
 **YOUR TASK:**
-1. CAREFULLY READ the user's question
-2. IDENTIFY which periods/columns they're asking about
-3. EXTRACT the relevant data from those SPECIFIC periods/columns
-4. Provide analysis ONLY for what was requested
+Write a comprehensive Management Information System (MIS) commentary analyzing the financial data provided.
 
-**CRITICAL RULES:**
-- If user asks for "Period 11 2025", use ONLY data from columns labeled "Period 11" or "11-2025" or similar
-- If user asks for "YTD", use ONLY the column labeled "YTD" 
-- DO NOT confuse Period 11 with Period 12
-- DO NOT mix up different period columns
-- Always show which column names you're using in your analysis
+**JSON DATA STRUCTURE YOU'LL RECEIVE:**
+- documentType: Type of financial document (GENERAL_LEDGER, BANK_STATEMENT, PROFIT_LOSS, BALANCE_SHEET)
+- sheets: Array of data sheets, each containing:
+  - sheetName: Name of the sheet
+  - sheetType: Type of data in the sheet
+  - data: Array of transactions/entries
+  - summary: Pre-calculated totals and statistics
+  - columns: Column mappings used in the data
 
-**OUTPUT FORMAT:**
-Use markdown with clear tables. Always cite the exact column name you're analyzing.`;
+`;
+
+  if (documentType === 'GENERAL_LEDGER') {
+    return basePrompt + `**SPECIFIC INSTRUCTIONS FOR GENERAL LEDGER:**
+
+1. **Financial Validation**
+   - Verify that total debits equal total credits
+   - If not balanced, identify the exact difference and flag it prominently
+   - Check for duplicate entries (same date, account, and amount)
+
+2. **Account Analysis**
+   - List top 10 accounts by activity (total debits + credits)
+   - Identify accounts with unusual balances (heavily one-sided)
+   - Flag any accounts with zero or minimal activity
+
+3. **Reconciliation** (if multiple sheets exist)
+   - Match transactions between Bank Statement and GL
+   - Create a detailed table of UNMATCHED items with:
+     * Date
+     * Account/Description
+     * Amount
+     * Sheet it appears in
+   - Calculate total unmatched amount
+
+4. **Trend Analysis**
+   - Identify date range of transactions
+   - Note any gaps in transaction dates
+   - Highlight unusual transaction patterns
+
+5. **Output Format**
+   Use markdown with:
+   - ## Executive Summary (key findings in bullet points)
+   - ## Financial Validation (balanced status, totals)
+   - ## Sheet-by-Sheet Analysis (separate section for each sheet)
+   - ## Reconciliation Report (if multiple sheets)
+   - ## Detailed Findings (tables for unmatched items, top accounts)
+   - ## Recommendations (specific action items)
+
+**CRITICAL:** For unmatched items, create detailed tables with ALL relevant columns. Don't summarize - list every single unmatched transaction.`;
+  }
+
+  if (documentType === 'BANK_STATEMENT') {
+    return basePrompt + `**SPECIFIC INSTRUCTIONS FOR BANK STATEMENT:**
+
+1. **Transaction Summary**
+   - Opening balance (if available)
+   - Total deposits
+   - Total withdrawals
+   - Closing balance
+   - Number of transactions
+
+2. **Cash Flow Analysis**
+   - Largest deposits (top 5)
+   - Largest withdrawals (top 5)
+   - Average transaction size
+   - Daily/weekly transaction patterns
+
+3. **Anomaly Detection**
+   - Duplicate transactions
+   - Round number transactions (potential manual entries)
+   - Unusual transaction times/amounts
+   - Negative balances
+
+4. **Output Format**
+   - ## Executive Summary
+   - ## Transaction Overview (with totals table)
+   - ## Cash Flow Analysis
+   - ## Anomalies & Flags
+   - ## Recommendations`;
+  }
+
+  if (documentType === 'PROFIT_LOSS') {
+    return basePrompt + `**SPECIFIC INSTRUCTIONS FOR PROFIT & LOSS:**
+
+1. **Income Statement Analysis**
+   - Total Revenue
+   - Total Expenses (by category)
+   - Gross Profit
+   - Net Profit/Loss
+   - Profit Margin %
+
+2. **Expense Breakdown**
+   - Top expense categories
+   - Fixed vs Variable costs
+   - Cost of Goods Sold (if applicable)
+   - Operating vs Non-operating expenses
+
+3. **Performance Metrics**
+   - Revenue growth (if period comparison available)
+   - Expense ratios
+   - Key profitability indicators
+
+4. **Output Format**
+   - ## Executive Summary
+   - ## Income Statement (formatted table)
+   - ## Expense Analysis (breakdown by category)
+   - ## Performance Metrics
+   - ## Recommendations`;
+  }
+
+  return basePrompt + `**GENERAL ANALYSIS INSTRUCTIONS:**
+
+Analyze the data thoroughly and provide:
+1. Executive summary of key findings
+2. Detailed breakdown of all important metrics
+3. Data quality observations
+4. Actionable recommendations
+
+Use tables extensively for clarity. Be specific with numbers and dates.`;
 }
 
 /**
- * 🆕 CALL OPENAI WITH MINIMAL DATA
+ * 🆕 CALL MODEL WITH JSON DATA - Updated for OpenAI API
  */
-async function callModelWithJSON({ structuredData, question }) {
-  const systemPrompt = `You are a financial analyst. Analyze the provided data and answer the user's question accurately.
+async function callModelWithJSON({ structuredData, question, documentType }) {
+  const systemPrompt = getEnhancedSystemPrompt(documentType);
 
-**CRITICAL RULES:**
-1. Read the user's question carefully
-2. Use ONLY the columns that match what they asked for
-3. When the user asks for "Period 11 2025", use the column named exactly that (or similar like "11-2025")
-4. DO NOT confuse different periods
-5. Always cite which columns you're analyzing
+  // Create a clean, readable JSON representation for the AI
+  const dataForAI = {
+    documentType: structuredData.documentType,
+    sheetCount: structuredData.sheetCount,
+    overallSummary: structuredData.overallSummary,
+    sheets: structuredData.sheets.map(sheet => ({
+      sheetName: sheet.sheetName,
+      sheetType: sheet.sheetType,
+      rowCount: sheet.rowCount,
+      summary: sheet.summary,
+      columns: sheet.columns,
+      // Only send first 500 rows to avoid token limits
+      data: sheet.data.slice(0, 500),
+      dataTruncated: sheet.data.length > 500,
+      totalRows: sheet.data.length
+    }))
+  };
 
-Be precise and detailed in your analysis.`;
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { 
+      role: "user", 
+      content: `Here is the structured financial data in JSON format:
 
-  // 🔥 MINIMAL DATA - Only what's needed
-  const dataForAI = structuredData.sheets.map(sheet => ({
-    sheetName: sheet.sheetName,
-    selectedColumns: sheet.selectedColumns,
-    rows: sheet.data,  // Already limited to 30 rows
-    note: `Total ${sheet.totalRows} rows available, showing first ${sheet.data.length}`
-  }));
-
-  const userMessage = `**Question:** ${question || "Analyze this financial data"}
-
-**Data (columns filtered based on your question):**
 \`\`\`json
 ${JSON.stringify(dataForAI, null, 2)}
 \`\`\`
 
-Provide detailed analysis for the question above.`;
-
-  const messages = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userMessage }
+${question || "Please provide a comprehensive MIS commentary analyzing this financial data. Include all key metrics, findings, reconciliation (if multiple sheets), and actionable recommendations."}`
+    }
   ];
-
-  // Calculate approximate token count
-  const estimatedTokens = JSON.stringify(messages).length / 4;
-  console.log(`📊 Estimated tokens: ~${Math.round(estimatedTokens)}`);
 
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -718,8 +897,10 @@ Provide detailed analysis for the question above.`;
       model: "gpt-4o-mini",
       messages,
       temperature: 0.1,
-      max_tokens: 8000,
-      top_p: 1.0
+      max_tokens: 16000,
+      top_p: 1.0,
+      frequency_penalty: 0.0,
+      presence_penalty: 0.0
     })
   });
 
@@ -728,23 +909,18 @@ Provide detailed analysis for the question above.`;
     data = await r.json();
   } catch (err) {
     const raw = await r.text().catch(() => "");
-    console.error("OpenAI returned non-JSON:", raw.slice(0, 500));
-    return { reply: null, error: "API returned invalid response", httpStatus: r.status };
-  }
-
-  if (data.error) {
-    console.error("OpenAI API Error:", data.error);
-    return {
-      reply: null,
-      error: data.error.message,
-      httpStatus: r.status
-    };
+    console.error("Model returned non-JSON:", raw.slice(0, 1000));
+    return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
   }
 
   const finishReason = data?.choices?.[0]?.finish_reason;
-  console.log(`✅ OpenAI response - finish: ${finishReason}, tokens:`, data?.usage);
+  console.log(`Model finish reason: ${finishReason}`);
+  
+  if (finishReason === 'length') {
+    console.warn("⚠️ Response was truncated due to token limit!");
+  }
 
-  let reply = data?.choices?.[0]?.message?.content || null;
+  let reply = data?.choices?.[0]?.message?.content || data?.reply || null;
 
   if (reply) {
     reply = reply
@@ -757,6 +933,7 @@ Provide detailed analysis for the question above.`;
 
   return { 
     reply, 
+    raw: data, 
     httpStatus: r.status,
     finishReason: finishReason,
     tokenUsage: data?.usage
@@ -764,7 +941,7 @@ Provide detailed analysis for the question above.`;
 }
 
 /**
- * Convert markdown to Word
+ * Convert markdown to Word document
  */
 async function markdownToWord(markdownText) {
   const sections = [];
@@ -790,7 +967,8 @@ async function markdownToWord(markdownText) {
         new Paragraph({
           text: text,
           heading: level === 2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
-          spacing: { before: 240, after: 120 }
+          spacing: { before: 240, after: 120 },
+          thematicBreak: false
         })
       );
       continue;
@@ -935,7 +1113,7 @@ export default async function handler(req, res) {
 
   try {
     if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY environment variable" });
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
     const body = await parseJsonBody(req);
@@ -943,10 +1121,10 @@ export default async function handler(req, res) {
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
-    console.log("📥 Downloading file from:", fileUrl);
+    console.log("📥 Downloading file...");
     const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
     const detectedType = detectFileType(fileUrl, contentType, buffer);
-    console.log(`📄 Detected file type: ${detectedType}`);
+    console.log(`📄 File type detected: ${detectedType}`);
 
     let extracted = { type: detectedType };
     
@@ -969,7 +1147,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // Handle errors
+    // Handle errors and special cases
     if (extracted.error) {
       return res.status(200).json({
         ok: false,
@@ -979,21 +1157,23 @@ export default async function handler(req, res) {
       });
     }
 
-    if (extracted.ocrNeeded || extracted.requiresManualProcessing) {
+    if (extracted.ocrNeeded || extracted.requiresManualProcessing || extracted.requiresConversion) {
       return res.status(200).json({
         ok: true,
         type: extracted.type,
-        reply: extracted.textContent || "This file requires manual processing.",
+        reply: extracted.textContent || "This file requires special processing.",
+        category: "general",
         debug: { 
-          requiresManualProcessing: true,
+          requiresConversion: extracted.requiresConversion || false,
+          requiresManualProcessing: extracted.requiresManualProcessing || false,
           isImage: extracted.isImage || false
         }
       });
     }
 
-    // Structure data
-    console.log("🔄 Structuring data...");
-    const structuredData = structureDataAsJSON(extracted.sheets || [], question);
+    // 🆕 STRUCTURE DATA AS JSON
+    console.log("🔄 Structuring data as JSON...");
+    const structuredData = structureDataAsJSON(extracted.sheets || []);
     
     if (!structuredData.success) {
       return res.status(200).json({
@@ -1004,24 +1184,25 @@ export default async function handler(req, res) {
       });
     }
 
-    console.log(`✅ Data structured - ${structuredData.sheetCount} sheets`);
-    structuredData.sheets.forEach(s => {
-      console.log(`  - ${s.sheetName}: ${s.selectedColumns.length} columns selected, ${s.data.length} rows`);
-    });
+    console.log(`✅ Data structured successfully!`);
+    console.log(`📊 Document Type: ${structuredData.documentType}`);
+    console.log(`📑 Sheets: ${structuredData.sheetCount}`);
+    console.log(`📝 Total Transactions: ${structuredData.overallSummary.totalTransactions}`);
 
-    // Call AI
-    console.log("🤖 Calling OpenAI GPT-4o-mini...");
-    const { reply, httpStatus, finishReason, tokenUsage, error } = await callModelWithJSON({
+    // 🆕 CALL AI WITH STRUCTURED JSON
+    console.log("🤖 Sending structured JSON to AI...");
+    const { reply, raw, httpStatus, finishReason, tokenUsage } = await callModelWithJSON({
       structuredData,
-      question
+      question,
+      documentType: structuredData.documentType
     });
 
     if (!reply) {
       return res.status(200).json({
         ok: false,
         type: extracted.type,
-        reply: error || "No response from AI model",
-        debug: { error: error, httpStatus: httpStatus }
+        reply: "(No reply from model)",
+        debug: { status: httpStatus, raw: raw }
       });
     }
 
@@ -1032,7 +1213,7 @@ export default async function handler(req, res) {
     try {
       console.log("📝 Generating Word document...");
       wordBase64 = await markdownToWord(reply);
-      console.log("✅ Word document generated");
+      console.log("✅ Word document generated successfully");
     } catch (wordError) {
       console.error("❌ Word generation error:", wordError);
     }
@@ -1040,19 +1221,28 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       type: extracted.type,
+      documentType: structuredData.documentType,
+      category: structuredData.documentType.toLowerCase(),
       reply,
       wordDownload: wordBase64,
       downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
-      debug: {
-        httpStatus: httpStatus,
+      structuredData: {
         sheetCount: structuredData.sheetCount,
+        documentType: structuredData.documentType,
+        overallSummary: structuredData.overallSummary
+      },
+      debug: {
+        status: httpStatus,
+        documentType: structuredData.documentType,
+        sheetCount: structuredData.sheetCount,
+        totalTransactions: structuredData.overallSummary.totalTransactions,
         hasWord: !!wordBase64,
         finishReason: finishReason,
         tokenUsage: tokenUsage
       }
     });
   } catch (err) {
-    console.error("❌ Handler error:", err);
+    console.error("❌ analyze-file error:", err);
     return res.status(500).json({ 
       error: String(err?.message || err)
     });
