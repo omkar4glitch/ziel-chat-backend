@@ -239,17 +239,17 @@ function formatDateUS(dateStr) {
 }
 
 /**
- * Extract XLSX with proper sheet separation
+ * Extract XLSX with proper sheet separation and accurate number preservation
  */
 function extractXlsx(buffer) {
   try {
     console.log("Starting XLSX extraction...");
     const workbook = XLSX.read(buffer, {
       type: "buffer",
-      cellDates: false,
+      cellDates: true,
       cellNF: false,
-      cellText: true,
-      raw: false,
+      cellText: false,
+      raw: true,  // CRITICAL: Keep raw numbers as numbers
       defval: ''
     });
 
@@ -266,30 +266,60 @@ function extractXlsx(buffer) {
       console.log(`Processing sheet ${index + 1}: "${sheetName}"`);
       
       const sheet = workbook.Sheets[sheetName];
+      
+      // Get raw data with actual numbers preserved
       const jsonRows = XLSX.utils.sheet_to_json(sheet, { 
         defval: '', 
         blankrows: false,
-        raw: false 
+        raw: true,  // CRITICAL: Preserve exact numeric values
+        header: 1   // Get as array first to preserve order
       });
       
-      const csv = XLSX.utils.sheet_to_csv(sheet, {
-        blankrows: false,
-        FS: ',',
-        RS: '\n',
-        strip: false,
-        rawNumbers: false
-      });
+      // Convert to objects with headers
+      if (jsonRows.length > 0) {
+        const headers = jsonRows[0];
+        const dataRows = jsonRows.slice(1).map(row => {
+          const obj = {};
+          headers.forEach((header, idx) => {
+            obj[header] = row[idx] !== undefined ? row[idx] : '';
+          });
+          return obj;
+        });
+        
+        // Create CSV with precise numbers
+        const csvLines = [];
+        csvLines.push(headers.join(','));
+        
+        dataRows.forEach(row => {
+          const values = headers.map(h => {
+            let val = row[h];
+            // Keep numbers as numbers, wrap text with commas in quotes
+            if (typeof val === 'number') {
+              return val;
+            } else if (typeof val === 'string' && (val.includes(',') || val.includes('"'))) {
+              return `"${val.replace(/"/g, '""')}"`;
+            }
+            return val;
+          });
+          csvLines.push(values.join(','));
+        });
+        
+        const csv = csvLines.join('\n');
 
-      sheets.push({
-        name: sheetName,
-        rows: jsonRows,
-        csv: csv,
-        rowCount: jsonRows.length
-      });
+        sheets.push({
+          name: sheetName,
+          rows: dataRows,
+          csv: csv,
+          rowCount: dataRows.length,
+          headers: headers
+        });
 
-      if (index > 0) combinedText += '\n\n';
-      combinedText += `=== SHEET: ${sheetName} (${jsonRows.length} rows) ===\n\n`;
-      combinedText += csv;
+        if (index > 0) combinedText += '\n\n';
+        combinedText += `=== SHEET: ${sheetName} (${dataRows.length} rows) ===\n\n`;
+        combinedText += csv;
+        
+        console.log(`Sheet "${sheetName}": ${dataRows.length} data rows, ${headers.length} columns`);
+      }
     });
 
     console.log(`Total sheets: ${sheets.length}, Total rows: ${sheets.reduce((sum, s) => sum + s.rowCount, 0)}`);
@@ -590,7 +620,7 @@ function preprocessSingleSheet(rows, sheetName) {
     return null;
   };
 
-  const accountCol = findColumn(['account', 'acc', 'gl account', 'account name', 'ledger', 'description', 'particulars']);
+  const accountCol = findColumn(['account', 'acc', 'gl account', 'account name', 'ledger', 'description', 'particulars', 'store']);
   const debitCol = findColumn(['debit', 'dr', 'debit amount', 'dr amount', 'withdrawal']);
   const creditCol = findColumn(['credit', 'cr', 'credit amount', 'cr amount', 'deposit']);
   const dateCol = findColumn(['date', 'trans date', 'transaction date', 'posting date', 'entry date']);
@@ -613,6 +643,9 @@ function preprocessSingleSheet(rows, sheetName) {
   let skippedRows = 0;
   let minDate = null;
   let maxDate = null;
+
+  console.log(`\n=== Processing Sheet: "${sheetName}" ===`);
+  console.log(`Columns found - Account: ${accountCol}, Debit: ${debitCol}, Credit: ${creditCol}`);
 
   rows.forEach((row, idx) => {
     const account = (row[accountCol] || '').toString().trim();
@@ -675,6 +708,8 @@ function preprocessSingleSheet(rows, sheetName) {
     processedRows++;
   });
 
+  console.log(`Sheet "${sheetName}" totals - Debits: $${totalDebits.toFixed(2)}, Credits: $${totalCredits.toFixed(2)}`);
+
   const accounts = Object.values(accountSummary)
     .map(acc => ({
       account: acc.account,
@@ -702,13 +737,13 @@ function preprocessSingleSheet(rows, sheetName) {
   summary += `\n`;
   
   summary += `**Financial Totals:**\n`;
-  summary += `- Total Debits: $${Math.round(totalDebits).toLocaleString('en-US')}\n`;
-  summary += `- Total Credits: $${Math.round(totalCredits).toLocaleString('en-US')}\n`;
-  summary += `- Difference: $${Math.round(difference).toLocaleString('en-US')}\n`;
+  summary += `- Total Debits: $${totalDebits.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}\n`;
+  summary += `- Total Credits: $${totalCredits.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}\n`;
+  summary += `- Difference: $${difference.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}\n`;
   summary += `- Balanced: ${isBalanced ? '✓ YES' : '✗ NO'}\n\n`;
 
   if (!isBalanced) {
-    summary += `⚠️ **WARNING**: Debits and Credits do not balance by $${Math.round(Math.abs(difference)).toLocaleString('en-US')}!\n\n`;
+    summary += `⚠️ **WARNING**: Debits and Credits do not balance by $${Math.abs(difference).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}!\n\n`;
   }
 
   summary += `### Top Accounts (by activity)\n\n`;
@@ -717,8 +752,26 @@ function preprocessSingleSheet(rows, sheetName) {
   
   const topAccounts = accounts.slice(0, 20);
   topAccounts.forEach(acc => {
-    summary += `| ${acc.account} | $${Math.round(acc.totalDebit).toLocaleString()} | $${Math.round(acc.totalCredit).toLocaleString()} | $${Math.round(acc.netBalance).toLocaleString()} | ${acc.count} |\n`;
+    summary += `| ${acc.account} | $${acc.totalDebit.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} | $${acc.totalCredit.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} | $${acc.netBalance.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} | ${acc.count} |\n`;
   });
+
+  return {
+    processed: true,
+    sheetName: sheetName,
+    summary: summary,
+    stats: {
+      totalDebits: totalDebits,
+      totalCredits: totalCredits,
+      difference: difference,
+      isBalanced: isBalanced,
+      accountCount: accounts.length,
+      processedRows: processedRows,
+      skippedRows: skippedRows,
+      dateRange: formattedMinDate && formattedMaxDate ? `${formattedMinDate} to ${formattedMaxDate}` : 'Unknown'
+    },
+    accounts: accounts
+  };
+}
 
   return {
     processed: true,
@@ -750,12 +803,17 @@ function preprocessGLDataFromSheets(sheets) {
   let totalDebitsAllSheets = 0;
   let totalCreditsAllSheets = 0;
 
+  console.log(`\n=== Processing ${sheets.length} total sheets ===`);
+
   sheets.forEach(sheet => {
     const result = preprocessSingleSheet(sheet.rows, sheet.name);
     if (result.processed) {
       sheetSummaries.push(result);
       totalDebitsAllSheets += result.stats.totalDebits;
       totalCreditsAllSheets += result.stats.totalCredits;
+      console.log(`✓ Sheet "${sheet.name}" processed - Debits: $${result.stats.totalDebits.toFixed(2)}, Credits: $${result.stats.totalCredits.toFixed(2)}`);
+    } else {
+      console.log(`✗ Sheet "${sheet.name}" skipped - ${result.reason}`);
     }
   });
 
@@ -763,9 +821,9 @@ function preprocessGLDataFromSheets(sheets) {
   
   summary += `**Overall Summary:**\n`;
   summary += `- Total Sheets: ${sheets.length}\n`;
-  summary += `- Combined Debits: $${Math.round(totalDebitsAllSheets).toLocaleString('en-US')}\n`;
-  summary += `- Combined Credits: $${Math.round(totalCreditsAllSheets).toLocaleString('en-US')}\n`;
-  summary += `- Overall Difference: $${Math.round(Math.abs(totalDebitsAllSheets - totalCreditsAllSheets)).toLocaleString('en-US')}\n\n`;
+  summary += `- Combined Debits: $${totalDebitsAllSheets.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}\n`;
+  summary += `- Combined Credits: $${totalCreditsAllSheets.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}\n`;
+  summary += `- Overall Difference: $${Math.abs(totalDebitsAllSheets - totalCreditsAllSheets).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}\n\n`;
 
   sheetSummaries.forEach((sheetSummary, idx) => {
     summary += `---\n\n### Sheet ${idx + 1}: ${sheetSummary.sheetName}\n\n`;
@@ -810,57 +868,80 @@ function getSystemPrompt(category, sheetInfo) {
   if (category === 'gl') {
     let prompt = `You are an expert accounting assistant analyzing General Ledger data.
 
-**CRITICAL INSTRUCTIONS:**
+**CRITICAL INSTRUCTIONS - ABSOLUTE ACCURACY REQUIRED:**
 
-1. **Sheet Separation**: This file contains ${sheetInfo?.sheetCount || 1} sheet(s). Each sheet is clearly marked with "=== SHEET: [Name] ===" headers.
+1. **Sheet Separation & Data Integrity**: This file contains ${sheetInfo?.sheetCount || 1} sheet(s). Each sheet is clearly marked with "=== SHEET: [Name] ===" headers.
+   - NEVER mix numbers or data between different sheets
+   - Each sheet represents a DIFFERENT store/entity/account
+   - Keep all calculations strictly within each sheet's boundaries
 
-2. **Analyze Each Sheet Separately**: 
-   - Identify what each sheet represents (e.g., Bank Statement, General Ledger, Trial Balance)
+2. **Number Accuracy - CRITICAL**:
+   - Use EXACT numbers from the data - do not round during calculations
+   - When presenting numbers, verify they match the source data EXACTLY
+   - If a sheet shows $12,345.67, report $12,345.67 - not $12,346 or $12,345
+   - Double-check all totals against the raw data
+   - NEVER swap or confuse numbers between different sheets/stores
+
+3. **Analyze Each Sheet Separately**: 
+   - Identify what each sheet represents (e.g., Store A, Store B, Bank Statement, etc.)
    - Calculate totals for EACH sheet independently
-   - DO NOT mix data from different sheets
+   - Report the sheet name before EVERY analysis section
+   - Cross-verify your totals with the data before reporting
 
-3. **Bank Reconciliation** (if applicable):
+4. **Bank Reconciliation** (if applicable):
    - Match each bank transaction with its corresponding GL entry
    - List ALL unmatched items with transaction details (date, amount, description)
    - Show discrepancies with specific dates, amounts, and references
+   - Verify sheet names when matching transactions
 
-4. **Data Integrity Checks**:
+5. **Data Integrity Checks**:
    - Verify debits equal credits within each sheet
-   - Identify duplicate entries
+   - Identify duplicate entries (same date, same amount, same description)
    - Flag unusual amounts or patterns
    - Check date sequences
+   - Confirm sheet assignments are correct
 
-5. **Output Format**:
-   - Start with an overview of all sheets
-   - Analyze each sheet in detail under separate headings
+6. **Output Format - Precision Required**:
+   - Start with an overview listing ALL sheets by name
+   - Analyze each sheet in detail under separate headings with SHEET NAME clearly visible
+   - Use exact numbers with 2 decimal places (e.g., $1,234.56)
    - Create detailed tables for unmatched/problematic transactions
-   - Provide specific recommendations
+   - Provide specific recommendations per sheet
 
 **Response Structure:**
 ## Overview
-- List all sheets and their purpose
-- Summary statistics
+- List ALL sheets with their exact names
+- Summary statistics per sheet (not combined unless specifically requested)
 
 ## Sheet-by-Sheet Analysis
-### Sheet 1: [Name]
-- Summary statistics
+### Sheet 1: [EXACT SHEET NAME]
+- Summary statistics (exact numbers)
 - Key findings
 - Issues (if any)
 
-### Sheet 2: [Name]
-- Summary statistics
+### Sheet 2: [EXACT SHEET NAME]
+- Summary statistics (exact numbers)
 - Key findings
 - Issues (if any)
 
 ## Reconciliation (if multiple sheets)
-- Matched items count
-- **Unmatched Items Table** (with date, amount, description for each)
-- Discrepancy analysis
+- Clearly identify which sheet each transaction belongs to
+- Matched items count per sheet
+- **Unmatched Items Table** (with sheet name, date, amount, description for each)
+- Discrepancy analysis by sheet
 
 ## Recommendations
-- Specific action items for each issue
+- Specific action items for each sheet
+- Flag any concerns about data accuracy
 
-Use markdown tables extensively. Be thorough and precise with numbers.`;
+**VERIFICATION CHECKLIST (Internal - verify before responding):**
+- [ ] Did I use exact numbers from the source data?
+- [ ] Did I keep each sheet's data separate?
+- [ ] Did I include the sheet name in every analysis section?
+- [ ] Did I verify my totals match the raw data?
+- [ ] Did I avoid mixing data between sheets?
+
+Use markdown tables extensively. Be thorough and PRECISE with numbers. Accuracy is paramount.`;
 
     return prompt;
   }
@@ -1077,7 +1158,7 @@ async function callModel({ fileType, textContent, question, category, preprocess
     body: JSON.stringify({
       model: "gpt-4o-mini",
       messages,
-      temperature: 0.1,
+      temperature: 0,  // CRITICAL: Set to 0 for maximum accuracy and consistency
       max_tokens: 16000,
       top_p: 1.0,
       frequency_penalty: 0.0,
