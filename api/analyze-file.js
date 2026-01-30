@@ -357,52 +357,84 @@ function structurePLData(sheets) {
  * 🆕 CALL OPENAI WITH CLEAN P&L DATA
  */
 async function callOpenAI({ structuredData, question }) {
-  const systemPrompt = `You are a financial analyst. You will receive Profit & Loss data in JSON format.
+  const systemPrompt = `You are a financial analyst analyzing REAL financial data with ACTUAL numbers.
 
-**DATA FORMAT:**
-Each sheet contains store-by-store financial data where:
-- Keys are store names
-- Values are objects with line items (Revenue, COGS, EBITDA, etc.) and their amounts
+**IMPORTANT:** 
+- The data you receive contains REAL dollar amounts, NOT placeholders
+- DO NOT use placeholders like $X, $Y, $A, $B
+- USE THE ACTUAL NUMBERS from the JSON data provided
+- Show exact dollar amounts in your analysis
+- All calculations must use the real numbers provided
 
-**CRITICAL INSTRUCTIONS:**
-1. When comparing years (YoY), use data from BOTH sheets (2024 and 2025)
-2. Calculate growth rates accurately: ((2025 - 2024) / 2024) × 100
-3. For top/bottom performers, rank stores by a specific metric (e.g., EBITDA, Revenue)
-4. DO NOT confuse store names - use exact names from the data
-5. DO NOT invent calculations - use only the line items provided
-6. If "Net Operating Revenue" or "EBITDA" is not in the data, DO NOT calculate it unless explicitly asked
-7. Show your calculations clearly
+**YOUR TASK:**
+Analyze the Profit & Loss data and answer the user's question with:
+1. Exact dollar amounts from the data
+2. Accurate calculations showing your work
+3. Clear comparisons between years if asked
+4. Proper rankings if asked for top/bottom performers
 
-**OUTPUT:**
-- Use markdown tables
-- Show exact numbers from the data
-- Cite which year/sheet each number comes from
-- Be precise with store names`;
+**OUTPUT FORMAT:**
+- Use markdown tables with REAL numbers
+- Show calculations: "Store A: $50,000 (2025) vs $40,000 (2024) = 25% growth"
+- Be specific and detailed`;
 
-  // Prepare minimal, clean data
+  // Prepare data with clear indication these are REAL numbers
   const dataForAI = structuredData.sheets.map(sheet => {
     if (sheet.format === 'financial_statement') {
+      const storeNames = Object.keys(sheet.stores);
+      
+      // If too many stores, sample but make it clear these are real numbers
+      let storesToSend = sheet.stores;
+      let note = null;
+      
+      if (storeNames.length > 25) {
+        console.log(`⚠️ Too many stores (${storeNames.length}), sampling 25...`);
+        storesToSend = {};
+        storeNames.slice(0, 25).forEach(name => {
+          storesToSend[name] = sheet.stores[name];
+        });
+        note = `Dataset contains ${storeNames.length} total stores. Showing 25 stores as a representative sample. All numbers below are ACTUAL financial data, not placeholders.`;
+      }
+      
       return {
-        sheet: sheet.sheetName,
-        stores: sheet.stores,
-        availableLineItems: sheet.lineItems
+        year: sheet.sheetName,
+        note: note,
+        storeCount: Object.keys(storesToSend).length,
+        stores: storesToSend,
+        availableMetrics: sheet.lineItems,
+        dataType: "REAL_FINANCIAL_DATA"
       };
     }
     return {
       sheet: sheet.sheetName,
       format: 'raw',
-      rowCount: sheet.data.length
+      rowCount: sheet.data?.length || 0
     };
   });
 
-  const userMessage = `**Question:** ${question || "Analyze this P&L data"}
+  // Add explicit example to prevent placeholder responses
+  const exampleAnalysis = `
+CRITICAL: The data below contains REAL financial numbers. You MUST use these exact numbers in your analysis.
 
-**P&L Data:**
+CORRECT EXAMPLE:
+If the data shows: "100 Chambers": {"Revenue": 125430, "EBITDA": 45000}
+Then write: "100 Chambers generated $125,430 in revenue with $45,000 EBITDA"
+
+WRONG EXAMPLE (DO NOT DO THIS):
+"Store A generated $X in revenue with $Y EBITDA - replace with actual values"
+
+YOU MUST USE THE ACTUAL NUMBERS FROM THE JSON DATA.`;
+
+  const userMessage = `${exampleAnalysis}
+
+**User Question:** ${question || "Provide a comprehensive analysis of this P&L data"}
+
+**Financial Data (ACTUAL NUMBERS - USE THESE EXACT VALUES):**
 \`\`\`json
 ${JSON.stringify(dataForAI, null, 2)}
 \`\`\`
 
-Answer the question above with accurate calculations and clear citations.`;
+Analyze the data above and answer the question. Use the REAL numbers shown in the JSON. Show calculations with actual dollar amounts.`;
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -412,24 +444,6 @@ Answer the question above with accurate calculations and clear citations.`;
   // Estimate tokens
   const estTokens = Math.round(JSON.stringify(messages).length / 4);
   console.log(`📊 Estimated input tokens: ~${estTokens}`);
-
-  if (estTokens > 25000) {
-    console.warn(`⚠️ Token count high (${estTokens}), reducing data...`);
-    // If too many stores, sample them
-    dataForAI.forEach(sheet => {
-      if (sheet.stores) {
-        const storeNames = Object.keys(sheet.stores);
-        if (storeNames.length > 20) {
-          const sampled = {};
-          storeNames.slice(0, 20).forEach(name => {
-            sampled[name] = sheet.stores[name];
-          });
-          sheet.stores = sampled;
-          sheet.note = `Showing 20 of ${storeNames.length} stores`;
-        }
-      }
-    });
-  }
 
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -462,6 +476,13 @@ Answer the question above with accurate calculations and clear citations.`;
       .replace(/^```(?:markdown|json)\s*\n/gm, '')
       .replace(/\n```\s*$/gm, '')
       .trim();
+    
+    // Check if response still has placeholders
+    if (reply.includes('$X') || reply.includes('$Y') || reply.includes('$A') || 
+        reply.includes('replace with') || reply.includes('placeholder')) {
+      console.warn("⚠️ AI returned placeholders, this shouldn't happen!");
+      console.log("Response preview:", reply.slice(0, 500));
+    }
   }
 
   return { 
@@ -640,6 +661,25 @@ export default async function handler(req, res) {
     }
 
     console.log(`✅ Structured ${structuredData.sheetCount} sheets`);
+    
+    // 🆕 VALIDATE DATA HAS ACTUAL NUMBERS
+    let hasRealNumbers = false;
+    structuredData.sheets.forEach(sheet => {
+      if (sheet.format === 'financial_statement' && sheet.stores) {
+        const firstStore = Object.keys(sheet.stores)[0];
+        const firstStoreData = sheet.stores[firstStore];
+        const values = Object.values(firstStoreData);
+        const hasNumbers = values.some(v => typeof v === 'number' && v !== 0);
+        if (hasNumbers) {
+          hasRealNumbers = true;
+          console.log(`✅ Sheet "${sheet.name}" has real numbers. Sample:`, firstStore, firstStoreData);
+        }
+      }
+    });
+    
+    if (!hasRealNumbers) {
+      console.warn("⚠️ Warning: No numeric data detected in sheets!");
+    }
 
     console.log("🤖 Calling OpenAI...");
     const { reply, httpStatus, finishReason, tokenUsage, error } = await callOpenAI({
