@@ -676,7 +676,7 @@ IMPORTANT: Read the user question carefully and use ONLY the columns/periods the
       "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages,
       temperature: 0.1,
       max_tokens: 12000,
