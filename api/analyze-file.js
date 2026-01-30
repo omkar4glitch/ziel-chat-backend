@@ -239,7 +239,7 @@ function formatDateUS(dateStr) {
 }
 
 /**
- * Extract XLSX with proper sheet separation
+ * ✅ IMPROVED: Extract XLSX with better structure preservation
  */
 function extractXlsx(buffer) {
   try {
@@ -248,8 +248,8 @@ function extractXlsx(buffer) {
       type: "buffer",
       cellDates: false,
       cellNF: false,
-      cellText: true,
-      raw: false,
+      cellText: false,  // Changed to false for better number handling
+      raw: true,        // Changed to true to preserve original values
       defval: ''
     });
 
@@ -266,30 +266,65 @@ function extractXlsx(buffer) {
       console.log(`Processing sheet ${index + 1}: "${sheetName}"`);
       
       const sheet = workbook.Sheets[sheetName];
+      
+      // Get the range of the sheet
+      const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+      
+      // Extract headers from first row
+      const headers = [];
+      for (let col = range.s.c; col <= range.e.c; col++) {
+        const cellAddress = XLSX.utils.encode_cell({ r: range.s.r, c: col });
+        const cell = sheet[cellAddress];
+        headers.push(cell ? String(cell.v || '').trim() : '');
+      }
+      
+      console.log(`Sheet "${sheetName}" headers:`, headers);
+      
+      // Extract all rows with proper structure
       const jsonRows = XLSX.utils.sheet_to_json(sheet, { 
         defval: '', 
         blankrows: false,
-        raw: false 
+        raw: false,
+        header: headers.length > 0 ? headers : undefined
       });
       
-      const csv = XLSX.utils.sheet_to_csv(sheet, {
-        blankrows: false,
-        FS: ',',
-        RS: '\n',
-        strip: false,
-        rawNumbers: false
+      // Create a well-formatted CSV with clear column separation
+      const csvRows = [headers.join(',')];
+      
+      jsonRows.forEach(row => {
+        const rowValues = headers.map(header => {
+          const value = row[header];
+          if (value === null || value === undefined || value === '') return '';
+          
+          // Handle values that contain commas or quotes
+          const stringValue = String(value);
+          if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
+            return `"${stringValue.replace(/"/g, '""')}"`;
+          }
+          return stringValue;
+        });
+        csvRows.push(rowValues.join(','));
       });
+      
+      const csv = csvRows.join('\n');
 
       sheets.push({
         name: sheetName,
         rows: jsonRows,
         csv: csv,
-        rowCount: jsonRows.length
+        rowCount: jsonRows.length,
+        headers: headers
       });
 
-      if (index > 0) combinedText += '\n\n';
-      combinedText += `=== SHEET: ${sheetName} (${jsonRows.length} rows) ===\n\n`;
+      // ✅ CRITICAL: Add very clear sheet boundaries
+      if (index > 0) combinedText += '\n\n' + '='.repeat(80) + '\n\n';
+      
+      combinedText += `SHEET ${index + 1} OF ${workbook.SheetNames.length}: "${sheetName}"\n`;
+      combinedText += `TOTAL ROWS: ${jsonRows.length}\n`;
+      combinedText += `COLUMNS: ${headers.join(' | ')}\n`;
+      combinedText += '='.repeat(80) + '\n\n';
       combinedText += csv;
+      combinedText += '\n\n' + '='.repeat(80);
     });
 
     console.log(`Total sheets: ${sheets.length}, Total rows: ${sheets.reduce((sum, s) => sum + s.rowCount, 0)}`);
@@ -804,63 +839,96 @@ function detectDocumentCategory(textContent) {
 }
 
 /**
- * System prompt with sheet awareness
+ * ✅ IMPROVED: System prompt with stronger sheet separation emphasis
  */
 function getSystemPrompt(category, sheetInfo) {
   if (category === 'gl') {
     let prompt = `You are an expert accounting assistant analyzing General Ledger data.
 
-**CRITICAL INSTRUCTIONS:**
+**CRITICAL INSTRUCTIONS - READ CAREFULLY:**
 
-1. **Sheet Separation**: This file contains ${sheetInfo?.sheetCount || 1} sheet(s). Each sheet is clearly marked with "=== SHEET: [Name] ===" headers.
+1. **SHEET BOUNDARIES ARE SACRED**: 
+   - This file contains ${sheetInfo?.sheetCount || 1} sheet(s)
+   - Each sheet is separated by: ================================================================================
+   - NEVER mix data from different sheets
+   - Each sheet represents a DIFFERENT entity (store, account, period, etc.)
+   - Treat each sheet as a completely independent dataset
 
-2. **Analyze Each Sheet Separately**: 
-   - Identify what each sheet represents (e.g., Bank Statement, General Ledger, Trial Balance)
-   - Calculate totals for EACH sheet independently
-   - DO NOT mix data from different sheets
+2. **Sheet Identification**:
+   - Each sheet header shows: "SHEET X OF Y: [Name]"
+   - The sheet name often indicates what it represents (e.g., "Store A", "Store B", "Jan 2024", etc.)
+   - Pay attention to column headers which may differ between sheets
 
-3. **Bank Reconciliation** (if applicable):
-   - Match each bank transaction with its corresponding GL entry
-   - List ALL unmatched items with transaction details (date, amount, description)
-   - Show discrepancies with specific dates, amounts, and references
+3. **Accurate Number Attribution**:
+   - When reporting numbers, ALWAYS state which sheet they came from
+   - Format: "Sheet 1 (Store A): $X, Sheet 2 (Store B): $Y"
+   - Never say "Store A has $X" if that number actually came from Store B's sheet
+   - Double-check that you're reading from the correct sheet before stating any number
 
-4. **Data Integrity Checks**:
-   - Verify debits equal credits within each sheet
-   - Identify duplicate entries
-   - Flag unusual amounts or patterns
-   - Check date sequences
+4. **Analysis Structure** (MANDATORY):
+   
+   ## Document Overview
+   - Total sheets: [number]
+   - List each sheet with its name and row count
+   
+   ## Individual Sheet Analysis
+   
+   ### Sheet 1: [Exact Sheet Name]
+   - What this sheet represents
+   - Key metrics FROM THIS SHEET ONLY
+   - Data quality issues IN THIS SHEET
+   
+   ### Sheet 2: [Exact Sheet Name]
+   - What this sheet represents
+   - Key metrics FROM THIS SHEET ONLY
+   - Data quality issues IN THIS SHEET
+   
+   (Continue for all sheets)
+   
+   ## Cross-Sheet Comparison (if applicable)
+   - Only compare if sheets represent similar entities
+   - Clearly label which sheet each number comes from
+   
+   ## Reconciliation (if applicable)
+   - Match transactions between sheets if they represent related data
+   - List unmatched items with sheet source clearly labeled
 
-5. **Output Format**:
-   - Start with an overview of all sheets
-   - Analyze each sheet in detail under separate headings
-   - Create detailed tables for unmatched/problematic transactions
-   - Provide specific recommendations
+5. **Quality Checks PER SHEET**:
+   - Verify debits = credits within EACH sheet
+   - Check for duplicates within EACH sheet
+   - Identify unusual patterns within EACH sheet
+   - Never mix totals from different sheets
 
-**Response Structure:**
-## Overview
-- List all sheets and their purpose
-- Summary statistics
+6. **Response Format Rules**:
+   - Use markdown tables with a "Sheet" column when comparing
+   - When stating any number, include the sheet reference
+   - Use clear section breaks between sheet analyses
+   - Be precise with sheet names - use the exact names from the file
 
-## Sheet-by-Sheet Analysis
-### Sheet 1: [Name]
-- Summary statistics
-- Key findings
-- Issues (if any)
+**EXAMPLE OF CORRECT FORMAT:**
 
-### Sheet 2: [Name]
-- Summary statistics
-- Key findings
-- Issues (if any)
+## Individual Sheet Analysis
 
-## Reconciliation (if multiple sheets)
-- Matched items count
-- **Unmatched Items Table** (with date, amount, description for each)
-- Discrepancy analysis
+### Sheet 1: Store A January 2024
+- Total Sales: $45,000 (from Store A data)
+- Total Expenses: $30,000 (from Store A data)
+- Net Income: $15,000
 
-## Recommendations
-- Specific action items for each issue
+### Sheet 2: Store B January 2024
+- Total Sales: $52,000 (from Store B data)
+- Total Expenses: $35,000 (from Store B data)
+- Net Income: $17,000
 
-Use markdown tables extensively. Be thorough and precise with numbers.`;
+## Cross-Sheet Comparison
+
+| Metric | Store A (Sheet 1) | Store B (Sheet 2) |
+|--------|-------------------|-------------------|
+| Sales  | $45,000          | $52,000          |
+| Expenses | $30,000        | $35,000          |
+
+**DO NOT SAY**: "Store A had $52,000 in sales" when that number is from Store B!
+
+Remember: ACCURACY IS CRITICAL. Double-check which sheet each number comes from before reporting it.`;
 
     return prompt;
   }
@@ -868,10 +936,14 @@ Use markdown tables extensively. Be thorough and precise with numbers.`;
   if (category === 'pl') {
     return `You are an expert accounting assistant analyzing Profit & Loss statements.
 
+If multiple sheets exist, analyze each sheet separately and clearly label which sheet each figure comes from.
+
 Analyze the complete data and provide insights with observations and recommendations in markdown format. Be comprehensive and detailed in your analysis.`;
   }
 
   return `You are an expert accounting assistant analyzing financial statements.
+
+If multiple sheets exist, analyze each sheet separately first, then provide comparisons.
 
 When totals exist, USE those numbers. Create a comprehensive markdown table with metrics and insights. Provide detailed analysis.`;
 }
@@ -1040,7 +1112,7 @@ async function markdownToWord(markdownText) {
 }
 
 /**
- * ✅ UPDATED: Model call using OpenAI GPT-4o-mini
+ * ✅ IMPROVED: Model call with better context for sheet separation
  */
 async function callModel({ fileType, textContent, question, category, preprocessedData, fullData, sheetInfo }) {
   let content = textContent;
@@ -1060,15 +1132,23 @@ async function callModel({ fileType, textContent, question, category, preprocess
     { role: "system", content: systemPrompt },
     { 
       role: "user", 
-      content: `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\nData contains ${content.length} characters.\n\n${trimmed}`
+      content: `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\nThis file contains ${sheetInfo?.sheetCount || 1} sheet(s). Each sheet is clearly separated by equal signs (====).\n\nIMPORTANT: Pay very close attention to sheet boundaries. Do not mix data from different sheets.\n\nData:\n\n${trimmed}`
     },
     {
       role: "user",
-      content: question || "Analyze this data in complete detail. If there are multiple sheets, perform reconciliation and identify ALL unmatched items with specific details. Provide a comprehensive, thorough analysis without cutting off mid-response."
+      content: question || `Analyze this data with extreme attention to sheet separation. 
+
+CRITICAL RULES:
+1. Analyze each sheet independently first
+2. When stating any number, explicitly mention which sheet it came from
+3. Never mix numbers from different sheets
+4. If comparing sheets, use a clear table format with sheet labels
+5. Be 100% accurate with number attribution - double-check before stating any figure
+
+Provide a comprehensive analysis following the structure in the system prompt.`
     }
   ];
 
-  // ✅ Using OpenAI API directly
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -1076,10 +1156,10 @@ async function callModel({ fileType, textContent, question, category, preprocess
       "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",  // ✅ Using GPT-4o-mini
+      model: "gpt-4o-mini",
       messages,
-      temperature: 0.1,
-      max_tokens: 16000,  // GPT-4o-mini supports up to 16k output tokens
+      temperature: 0.1,  // Keep low for accuracy
+      max_tokens: 16000,
       top_p: 1.0,
       frequency_penalty: 0.0,
       presence_penalty: 0.0
@@ -1095,7 +1175,6 @@ async function callModel({ fileType, textContent, question, category, preprocess
     return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
   }
 
-  // ✅ Check for finish_reason to detect truncation
   const finishReason = data?.choices?.[0]?.finish_reason;
   console.log(`Model finish reason: ${finishReason}`);
   
@@ -1211,12 +1290,16 @@ export default async function handler(req, res) {
         
         fullDataForGL = '';
         extracted.sheets.forEach((sheet, idx) => {
-          if (idx > 0) fullDataForGL += '\n\n';
-          fullDataForGL += `=== SHEET ${idx + 1}: ${sheet.name} (${sheet.rowCount} rows) ===\n\n`;
+          if (idx > 0) fullDataForGL += '\n\n' + '='.repeat(80) + '\n\n';
+          fullDataForGL += `SHEET ${idx + 1} OF ${extracted.sheets.length}: "${sheet.name}"\n`;
+          fullDataForGL += `TOTAL ROWS: ${sheet.rowCount}\n`;
+          fullDataForGL += `COLUMNS: ${sheet.headers.join(' | ')}\n`;
+          fullDataForGL += '='.repeat(80) + '\n\n';
           fullDataForGL += sheet.csv;
+          fullDataForGL += '\n\n' + '='.repeat(80);
         });
         
-        console.log(`Prepared ${extracted.sheets.length} sheets for GL analysis`);
+        console.log(`Prepared ${extracted.sheets.length} sheets for GL analysis with clear boundaries`);
       }
     } else {
       const textContent = extracted.textContent || '';
