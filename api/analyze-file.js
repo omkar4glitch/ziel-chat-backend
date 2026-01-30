@@ -850,7 +850,7 @@ Use tables extensively for clarity. Be specific with numbers and dates.`;
 }
 
 /**
- * 🆕 CALL MODEL WITH JSON DATA - Updated for OpenAI API
+ * 🆕 CALL MODEL WITH JSON DATA - NOW USING OPENAI GPT-4o-mini
  */
 async function callModelWithJSON({ structuredData, question, documentType }) {
   const systemPrompt = getEnhancedSystemPrompt(documentType);
@@ -866,7 +866,7 @@ async function callModelWithJSON({ structuredData, question, documentType }) {
       rowCount: sheet.rowCount,
       summary: sheet.summary,
       columns: sheet.columns,
-      // Only send first 500 rows to avoid token limits
+      // Send first 500 rows to avoid token limits
       data: sheet.data.slice(0, 500),
       dataTruncated: sheet.data.length > 500,
       totalRows: sheet.data.length
@@ -897,7 +897,7 @@ ${question || "Please provide a comprehensive MIS commentary analyzing this fina
       model: "gpt-4o-mini",
       messages,
       temperature: 0.1,
-      max_tokens: 16000,
+      max_tokens: 8000,
       top_p: 1.0,
       frequency_penalty: 0.0,
       presence_penalty: 0.0
@@ -909,18 +909,32 @@ ${question || "Please provide a comprehensive MIS commentary analyzing this fina
     data = await r.json();
   } catch (err) {
     const raw = await r.text().catch(() => "");
-    console.error("Model returned non-JSON:", raw.slice(0, 1000));
+    console.error("OpenAI returned non-JSON:", raw.slice(0, 1000));
     return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
   }
 
+  // Handle OpenAI errors
+  if (data.error) {
+    console.error("OpenAI API Error:", data.error);
+    return {
+      reply: null,
+      raw: data,
+      httpStatus: r.status,
+      error: data.error.message
+    };
+  }
+
   const finishReason = data?.choices?.[0]?.finish_reason;
-  console.log(`Model finish reason: ${finishReason}`);
+  console.log(`OpenAI finish reason: ${finishReason}`);
+  console.log(`Token usage:`, data?.usage);
   
   if (finishReason === 'length') {
     console.warn("⚠️ Response was truncated due to token limit!");
+  } else if (finishReason === 'stop') {
+    console.log("✅ Response completed successfully!");
   }
 
-  let reply = data?.choices?.[0]?.message?.content || data?.reply || null;
+  let reply = data?.choices?.[0]?.message?.content || null;
 
   if (reply) {
     reply = reply
@@ -1190,8 +1204,8 @@ export default async function handler(req, res) {
     console.log(`📝 Total Transactions: ${structuredData.overallSummary.totalTransactions}`);
 
     // 🆕 CALL AI WITH STRUCTURED JSON
-    console.log("🤖 Sending structured JSON to AI...");
-    const { reply, raw, httpStatus, finishReason, tokenUsage } = await callModelWithJSON({
+    console.log("🤖 Sending structured JSON to OpenAI GPT-4o-mini...");
+    const { reply, raw, httpStatus, finishReason, tokenUsage, error } = await callModelWithJSON({
       structuredData,
       question,
       documentType: structuredData.documentType
@@ -1201,8 +1215,8 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ok: false,
         type: extracted.type,
-        reply: "(No reply from model)",
-        debug: { status: httpStatus, raw: raw }
+        reply: error || "(No reply from model)",
+        debug: { status: httpStatus, raw: raw, error: error }
       });
     }
 
