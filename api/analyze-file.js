@@ -160,12 +160,12 @@ async function extractPdf(buffer) {
     const text = (data && data.text) ? data.text.trim() : "";
 
     if (!text || text.length < 50) {
-      console.log("PDF appears to be scanned or image-based, attempting OCR...");
+      console.log("PDF appears to be scanned or image-based");
       return { 
         type: "pdf", 
         textContent: "", 
         ocrNeeded: true,
-        error: "This PDF appears to be scanned (image-based). Please try uploading the original image files (PNG/JPG) instead, or use a PDF with selectable text."
+        error: "This PDF appears to be scanned. Please upload a PDF with selectable text or convert to Excel/CSV."
       };
     }
 
@@ -177,12 +177,11 @@ async function extractPdf(buffer) {
 }
 
 /**
- * Robust numeric parser for accounting amounts
+ * Robust numeric parser
  */
 function parseAmount(s) {
   if (s === null || s === undefined) return 0;
   let str = String(s).trim();
-
   if (!str) return 0;
 
   const parenMatch = str.match(/^\s*\((.*)\)\s*$/);
@@ -213,7 +212,7 @@ function parseAmount(s) {
 }
 
 /**
- * Format date to US format (MM/DD/YYYY)
+ * Format date to US format
  */
 function formatDateUS(dateStr) {
   if (!dateStr) return dateStr;
@@ -239,7 +238,7 @@ function formatDateUS(dateStr) {
 }
 
 /**
- * ✅ IMPROVED: Extract XLSX with better structure preservation
+ * Extract XLSX
  */
 function extractXlsx(buffer) {
   try {
@@ -248,8 +247,8 @@ function extractXlsx(buffer) {
       type: "buffer",
       cellDates: false,
       cellNF: false,
-      cellText: false,  // Changed to false for better number handling
-      raw: true,        // Changed to true to preserve original values
+      cellText: true,
+      raw: false,
       defval: ''
     });
 
@@ -260,84 +259,34 @@ function extractXlsx(buffer) {
     }
 
     const sheets = [];
-    let combinedText = '';
 
     workbook.SheetNames.forEach((sheetName, index) => {
       console.log(`Processing sheet ${index + 1}: "${sheetName}"`);
       
       const sheet = workbook.Sheets[sheetName];
-      
-      // Get the range of the sheet
-      const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
-      
-      // Extract headers from first row
-      const headers = [];
-      for (let col = range.s.c; col <= range.e.c; col++) {
-        const cellAddress = XLSX.utils.encode_cell({ r: range.s.r, c: col });
-        const cell = sheet[cellAddress];
-        headers.push(cell ? String(cell.v || '').trim() : '');
-      }
-      
-      console.log(`Sheet "${sheetName}" headers:`, headers);
-      
-      // Extract all rows with proper structure
       const jsonRows = XLSX.utils.sheet_to_json(sheet, { 
         defval: '', 
         blankrows: false,
-        raw: false,
-        header: headers.length > 0 ? headers : undefined
+        raw: false 
       });
-      
-      // Create a well-formatted CSV with clear column separation
-      const csvRows = [headers.join(',')];
-      
-      jsonRows.forEach(row => {
-        const rowValues = headers.map(header => {
-          const value = row[header];
-          if (value === null || value === undefined || value === '') return '';
-          
-          // Handle values that contain commas or quotes
-          const stringValue = String(value);
-          if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
-            return `"${stringValue.replace(/"/g, '""')}"`;
-          }
-          return stringValue;
-        });
-        csvRows.push(rowValues.join(','));
-      });
-      
-      const csv = csvRows.join('\n');
 
       sheets.push({
         name: sheetName,
         rows: jsonRows,
-        csv: csv,
-        rowCount: jsonRows.length,
-        headers: headers
+        rowCount: jsonRows.length
       });
-
-      // ✅ CRITICAL: Add very clear sheet boundaries
-      if (index > 0) combinedText += '\n\n' + '='.repeat(80) + '\n\n';
-      
-      combinedText += `SHEET ${index + 1} OF ${workbook.SheetNames.length}: "${sheetName}"\n`;
-      combinedText += `TOTAL ROWS: ${jsonRows.length}\n`;
-      combinedText += `COLUMNS: ${headers.join(' | ')}\n`;
-      combinedText += '='.repeat(80) + '\n\n';
-      combinedText += csv;
-      combinedText += '\n\n' + '='.repeat(80);
     });
 
     console.log(`Total sheets: ${sheets.length}, Total rows: ${sheets.reduce((sum, s) => sum + s.rowCount, 0)}`);
 
     return { 
       type: "xlsx", 
-      textContent: combinedText, 
       sheets: sheets,
       sheetCount: workbook.SheetNames.length 
     };
   } catch (err) {
     console.error("extractXlsx failed:", err?.message || err);
-    return { type: "xlsx", textContent: "", sheets: [], error: String(err?.message || err) };
+    return { type: "xlsx", sheets: [], error: String(err?.message || err) };
   }
 }
 
@@ -345,16 +294,13 @@ function extractXlsx(buffer) {
  * Extract Word Document (.docx)
  */
 async function extractDocx(buffer) {
-  console.log("=== DOCX EXTRACTION with JSZip ===");
+  console.log("=== DOCX EXTRACTION ===");
   
   try {
     const zip = await JSZip.loadAsync(buffer);
-    console.log("ZIP loaded, files:", Object.keys(zip.files).join(', '));
-    
     const documentXml = zip.files['word/document.xml'];
     
     if (!documentXml) {
-      console.log("document.xml not found");
       return { 
         type: "docx", 
         textContent: "", 
@@ -363,8 +309,6 @@ async function extractDocx(buffer) {
     }
     
     const xmlContent = await documentXml.async('text');
-    console.log("XML content length:", xmlContent.length);
-    
     const textRegex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
     const textParts = [];
     let match;
@@ -385,22 +329,17 @@ async function extractDocx(buffer) {
       }
     }
     
-    console.log("Extracted text elements:", textParts.length);
-    
     if (textParts.length === 0) {
       return { 
         type: "docx", 
         textContent: "", 
-        error: "No text found in Word document. Document may be empty or contain only images." 
+        error: "No text found in Word document" 
       };
     }
     
-    const fullText = textParts.join(' ');
-    console.log("Final text length:", fullText.length);
-    
     return { 
       type: "docx", 
-      textContent: fullText 
+      textContent: textParts.join(' ')
     };
     
   } catch (error) {
@@ -419,14 +358,12 @@ async function extractDocx(buffer) {
 async function extractPptx(buffer) {
   try {
     const bufferStr = buffer.toString('latin1');
-    
     const textPattern = /<a:t[^>]*>([^<]+)<\/a:t>/g;
     let match;
     let allText = [];
     
     while ((match = textPattern.exec(bufferStr)) !== null) {
-      const text = match[1];
-      const cleaned = text
+      const cleaned = match[1]
         .replace(/&lt;/g, '<')
         .replace(/&gt;/g, '>')
         .replace(/&amp;/g, '&')
@@ -439,39 +376,15 @@ async function extractPptx(buffer) {
       }
     }
     
-    if (allText.length < 5) {
-      const paraPattern = /<a:p[^>]*>(.*?)<\/a:p>/gs;
-      const paraMatches = bufferStr.matchAll(paraPattern);
-      
-      for (const match of paraMatches) {
-        const innerText = match[1].replace(/<[^>]+>/g, ' ').trim();
-        if (innerText.length > 2) {
-          allText.push(innerText);
-        }
-      }
-    }
-    
     if (allText.length === 0) {
       return { 
         type: "pptx", 
         textContent: "", 
-        error: "No text found in PowerPoint. Please try exporting as PDF." 
+        error: "No text found in PowerPoint" 
       };
     }
     
-    const text = allText.join('\n').trim();
-    
-    console.log(`Extracted ${text.length} characters from PPTX`);
-    
-    if (text.length < 20) {
-      return { 
-        type: "pptx", 
-        textContent: "", 
-        error: "Presentation appears to be empty or contains mostly images" 
-      };
-    }
-    
-    return { type: "pptx", textContent: text };
+    return { type: "pptx", textContent: allText.join('\n').trim() };
   } catch (err) {
     console.error("extractPptx failed:", err?.message || err);
     return { 
@@ -486,59 +399,13 @@ async function extractPptx(buffer) {
  * Extract Image
  */
 async function extractImage(buffer, fileType) {
-  try {
-    console.log(`Image upload detected: ${fileType}, size: ${(buffer.length / 1024).toFixed(2)} KB`);
-    
-    const helpMessage = `📸 **Image File Detected (${fileType.toUpperCase()})**
-
-I can help you extract text from this image using these **FREE** methods:
-
-**🎯 FASTEST METHOD - Use Google Drive (100% Free):**
-1. Upload your image to Google Drive
-2. Right-click → "Open with" → "Google Docs"
-3. Google will automatically OCR the image and convert to editable text
-4. Copy the text and paste it here, OR
-5. Download as PDF and upload that PDF to me
-
-**📱 METHOD 2 - Use Your Phone:**
-Most phones have built-in scanners:
-- iPhone: Notes app → Scan Documents
-- Android: Google Drive → Scan
-- These create searchable PDFs automatically!
-
-**💻 METHOD 3 - Free Online OCR Tools:**
-- onlineocr.net (no signup needed)
-- i2ocr.com (simple and fast)
-- newocr.com (supports 122 languages)
-
-**📄 METHOD 4 - Convert to PDF:**
-If this is a scan, convert it to a searchable PDF using:
-- Adobe Acrobat (free trial)
-- PDF24 Tools (free online)
-- SmallPDF (3 free conversions/day)
-
-**Image Info:**
-- Type: ${fileType.toUpperCase()}
-- Size: ${(buffer.length / 1024).toFixed(2)} KB
-- Ready for OCR: Yes
-
-Once you have the text or searchable PDF, upload it here and I'll analyze it immediately! 🚀`;
-    
-    return { 
-      type: fileType, 
-      textContent: helpMessage,
-      isImage: true,
-      requiresManualProcessing: true
-    };
-    
-  } catch (err) {
-    console.error("Image handling error:", err?.message || err);
-    return { 
-      type: fileType, 
-      textContent: "", 
-      error: `Error processing image. Please convert to PDF or extract text manually.`
-    };
-  }
+  const helpMessage = `📸 Image file detected. Please convert to PDF or Excel for analysis.`;
+  return { 
+    type: fileType, 
+    textContent: helpMessage,
+    isImage: true,
+    requiresManualProcessing: true
+  };
 }
 
 /**
@@ -576,380 +443,328 @@ function parseCSV(csvText) {
   };
 
   const headers = parseCSVLine(lines[0]);
-  const headerCount = headers.length;
   const rows = [];
-
-  console.log(`CSV has ${lines.length} lines total (including header)`);
-  console.log(`Headers (${headerCount} columns):`, headers);
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
-
-    if (!line || line.trim() === '' || line.trim() === ','.repeat(headerCount - 1)) {
-      continue;
-    }
+    if (!line || line.trim() === '') continue;
 
     const values = parseCSVLine(line);
-
     const row = {};
     headers.forEach((h, idx) => {
       row[h] = values[idx] !== undefined ? values[idx] : '';
     });
-
     rows.push(row);
   }
 
-  console.log(`✓ Parsed ${rows.length} data rows (should match Excel row count minus header)`);
   return rows;
 }
 
 /**
- * Process a single sheet's GL data
+ * 🆕 IMPROVED: Detect column types more intelligently
  */
-function preprocessSingleSheet(rows, sheetName) {
-  if (!rows || rows.length === 0) {
-    return { 
-      processed: false, 
-      sheetName, 
-      reason: 'No rows in sheet' 
-    };
-  }
-
+function detectColumnTypes(rows) {
+  if (!rows || rows.length === 0) return {};
+  
   const headers = Object.keys(rows[0]);
-
-  const findColumn = (possibleNames) => {
-    for (const name of possibleNames) {
-      const found = headers.find(h => h.toLowerCase().includes(name.toLowerCase()));
-      if (found) return found;
-    }
-    return null;
-  };
-
-  const accountCol = findColumn(['account', 'acc', 'gl account', 'account name', 'ledger', 'description', 'particulars']);
-  const debitCol = findColumn(['debit', 'dr', 'debit amount', 'dr amount', 'withdrawal']);
-  const creditCol = findColumn(['credit', 'cr', 'credit amount', 'cr amount', 'deposit']);
-  const dateCol = findColumn(['date', 'trans date', 'transaction date', 'posting date', 'entry date']);
-  const referenceCol = findColumn(['reference', 'ref', 'entry', 'journal', 'voucher', 'transaction', 'check', 'cheque']);
-  const balanceCol = findColumn(['balance', 'net', 'amount']);
-
-  if (!accountCol) {
-    return { 
-      processed: false, 
-      sheetName,
-      reason: 'Could not find account/description column',
-      headers 
-    };
-  }
-
-  const accountSummary = {};
-  let totalDebits = 0;
-  let totalCredits = 0;
-  let processedRows = 0;
-  let skippedRows = 0;
-  let minDate = null;
-  let maxDate = null;
-
-  rows.forEach((row, idx) => {
-    const account = (row[accountCol] || '').toString().trim();
+  const columnTypes = {};
+  
+  headers.forEach(header => {
+    const lowerHeader = header.toLowerCase().trim();
     
-    if (!account || 
-        account.toLowerCase() === 'total' || 
-        account.toLowerCase() === 'subtotal' ||
-        account.toLowerCase() === 'balance' ||
-        account === '') {
-      skippedRows++;
-      return;
+    // Period/Date columns
+    if (lowerHeader.includes('period') || 
+        lowerHeader.includes('month') || 
+        lowerHeader.includes('quarter') ||
+        lowerHeader.includes('year') ||
+        lowerHeader.match(/\d{1,2}[-/]\d{4}/) ||  // Matches "11-2025", "11/2025"
+        lowerHeader.match(/period \d+/) ||         // Matches "Period 11"
+        lowerHeader.match(/p\d+/)) {                // Matches "P11"
+      columnTypes[header] = 'period';
     }
-
-    const debitStr = debitCol ? (row[debitCol] || '').toString().trim() : '';
-    const creditStr = creditCol ? (row[creditCol] || '').toString().trim() : '';
-
-    let debit = parseAmount(debitStr);
-    let credit = parseAmount(creditStr);
-
-    if (debit < 0) {
-      credit += Math.abs(debit);
-      debit = 0;
+    // Amount/Number columns
+    else if (lowerHeader.includes('amount') || 
+             lowerHeader.includes('total') || 
+             lowerHeader.includes('revenue') ||
+             lowerHeader.includes('expense') ||
+             lowerHeader.includes('profit') ||
+             lowerHeader.includes('loss') ||
+             lowerHeader.includes('cost') ||
+             lowerHeader.includes('ytd') ||
+             lowerHeader.includes('balance')) {
+      columnTypes[header] = 'amount';
     }
-    if (credit < 0) {
-      debit += Math.abs(credit);
-      credit = 0;
+    // Account/Description columns
+    else if (lowerHeader.includes('account') || 
+             lowerHeader.includes('description') || 
+             lowerHeader.includes('particular') ||
+             lowerHeader.includes('category') ||
+             lowerHeader.includes('item') ||
+             lowerHeader.includes('name')) {
+      columnTypes[header] = 'label';
     }
+    // Location columns
+    else if (lowerHeader.includes('location') || 
+             lowerHeader.includes('branch') || 
+             lowerHeader.includes('region') ||
+             lowerHeader.includes('city') ||
+             lowerHeader.includes('state')) {
+      columnTypes[header] = 'location';
+    }
+    else {
+      columnTypes[header] = 'text';
+    }
+  });
+  
+  return columnTypes;
+}
 
-    if (debit === 0 && credit === 0 && balanceCol) {
-      const amount = parseAmount(row[balanceCol]);
-      if (amount > 0) {
-        debit = amount;
-      } else if (amount < 0) {
-        credit = Math.abs(amount);
+/**
+ * 🆕 EXTRACT SPECIFIC COLUMNS FROM QUESTION
+ */
+function extractRequestedColumns(question, allHeaders) {
+  const lowerQ = question.toLowerCase();
+  const requestedCols = [];
+  
+  // Always include label/description columns
+  const labelCols = allHeaders.filter(h => {
+    const lower = h.toLowerCase();
+    return lower.includes('account') || lower.includes('description') || 
+           lower.includes('particular') || lower.includes('category') ||
+           lower.includes('item') || lower.includes('name');
+  });
+  requestedCols.push(...labelCols);
+  
+  // Check for specific period mentions
+  allHeaders.forEach(header => {
+    const lowerHeader = header.toLowerCase();
+    
+    // Match patterns like "period 11", "11-2025", "p11", "11/2025"
+    if (lowerQ.includes(lowerHeader) ||
+        lowerQ.includes(header) ||
+        (lowerHeader.match(/period\s*\d+/) && lowerQ.includes(lowerHeader.match(/period\s*\d+/)[0])) ||
+        (lowerHeader.match(/\d{1,2}[-/]\d{4}/) && lowerQ.includes(lowerHeader.match(/\d{1,2}[-/]\d{4}/)[0])) ||
+        (lowerHeader.match(/p\d+/) && lowerQ.includes(lowerHeader.match(/p\d+/)[0]))) {
+      if (!requestedCols.includes(header)) {
+        requestedCols.push(header);
       }
     }
-
-    if (dateCol && row[dateCol]) {
-      const dateStr = row[dateCol].toString().trim();
-      if (!minDate || dateStr < minDate) minDate = dateStr;
-      if (!maxDate || dateStr > maxDate) maxDate = dateStr;
-    }
-
-    if (!accountSummary[account]) {
-      accountSummary[account] = { 
-        account, 
-        totalDebit: 0, 
-        totalCredit: 0, 
-        count: 0,
-        firstRow: idx + 2
-      };
-    }
-
-    accountSummary[account].totalDebit += debit;
-    accountSummary[account].totalCredit += credit;
-    accountSummary[account].count += 1;
-
-    totalDebits += debit;
-    totalCredits += credit;
-    processedRows++;
   });
-
-  const accounts = Object.values(accountSummary)
-    .map(acc => ({
-      account: acc.account,
-      totalDebit: acc.totalDebit,
-      totalCredit: acc.totalCredit,
-      netBalance: acc.totalDebit - acc.totalCredit,
-      count: acc.count,
-      firstRow: acc.firstRow
-    }))
-    .sort((a, b) => (b.totalDebit + b.totalCredit) - (a.totalDebit + a.totalCredit));
-
-  const isBalanced = Math.abs(totalDebits - totalCredits) < 0.01;
-  const difference = totalDebits - totalCredits;
-
-  const formattedMinDate = formatDateUS(minDate);
-  const formattedMaxDate = formatDateUS(maxDate);
-
-  let summary = `**Sheet: ${sheetName}**\n\n`;
-  summary += `- Processed Rows: ${processedRows}\n`;
-  summary += `- Skipped Rows: ${skippedRows}\n`;
-  summary += `- Unique Accounts: ${accounts.length}\n`;
-  if (formattedMinDate && formattedMaxDate) {
-    summary += `- Period: ${formattedMinDate} to ${formattedMaxDate}\n`;
-  }
-  summary += `\n`;
   
-  summary += `**Financial Totals:**\n`;
-  summary += `- Total Debits: $${Math.round(totalDebits).toLocaleString('en-US')}\n`;
-  summary += `- Total Credits: $${Math.round(totalCredits).toLocaleString('en-US')}\n`;
-  summary += `- Difference: $${Math.round(difference).toLocaleString('en-US')}\n`;
-  summary += `- Balanced: ${isBalanced ? '✓ YES' : '✗ NO'}\n\n`;
-
-  if (!isBalanced) {
-    summary += `⚠️ **WARNING**: Debits and Credits do not balance by $${Math.round(Math.abs(difference)).toLocaleString('en-US')}!\n\n`;
+  // Check for YTD
+  if (lowerQ.includes('ytd') || lowerQ.includes('year to date')) {
+    const ytdCols = allHeaders.filter(h => h.toLowerCase().includes('ytd'));
+    requestedCols.push(...ytdCols.filter(c => !requestedCols.includes(c)));
   }
-
-  summary += `### Top Accounts (by activity)\n\n`;
-  summary += `| Account | Debit | Credit | Balance | Entries |\n`;
-  summary += `|---------|-------|--------|---------|----------|\n`;
   
-  const topAccounts = accounts.slice(0, 20);
-  topAccounts.forEach(acc => {
-    summary += `| ${acc.account} | $${Math.round(acc.totalDebit).toLocaleString()} | $${Math.round(acc.totalCredit).toLocaleString()} | $${Math.round(acc.netBalance).toLocaleString()} | ${acc.count} |\n`;
-  });
-
-  return {
-    processed: true,
-    sheetName: sheetName,
-    summary: summary,
-    stats: {
-      totalDebits: totalDebits,
-      totalCredits: totalCredits,
-      difference: difference,
-      isBalanced: isBalanced,
-      accountCount: accounts.length,
-      processedRows: processedRows,
-      skippedRows: skippedRows,
-      dateRange: formattedMinDate && formattedMaxDate ? `${formattedMinDate} to ${formattedMaxDate}` : 'Unknown'
-    },
-    accounts: accounts
-  };
+  // Check for location mentions
+  if (lowerQ.includes('location') || lowerQ.includes('branch') || 
+      lowerQ.includes('region') || lowerQ.includes('city')) {
+    const locCols = allHeaders.filter(h => {
+      const lower = h.toLowerCase();
+      return lower.includes('location') || lower.includes('branch') || 
+             lower.includes('region') || lower.includes('city');
+    });
+    requestedCols.push(...locCols.filter(c => !requestedCols.includes(c)));
+  }
+  
+  // If nothing specific found, return all columns (fallback)
+  if (requestedCols.length <= labelCols.length) {
+    console.log("⚠️ Could not identify specific columns, using all headers");
+    return allHeaders;
+  }
+  
+  console.log(`✅ Extracted ${requestedCols.length} relevant columns from question`);
+  return requestedCols;
 }
 
 /**
- * Process GL data with sheet awareness
+ * 🆕 FILTER DATA TO ONLY REQUESTED COLUMNS
  */
-function preprocessGLDataFromSheets(sheets) {
+function filterDataToRequestedColumns(rows, requestedColumns) {
+  return rows.map(row => {
+    const filtered = {};
+    requestedColumns.forEach(col => {
+      if (row[col] !== undefined) {
+        filtered[col] = row[col];
+      }
+    });
+    return filtered;
+  });
+}
+
+/**
+ * 🆕 SMART DATA STRUCTURING - MINIMAL VERSION
+ */
+function structureDataAsJSON(sheets, question = "") {
   if (!sheets || sheets.length === 0) {
-    return { processed: false, reason: 'No sheets provided' };
+    return { 
+      success: false, 
+      reason: 'No data to structure' 
+    };
   }
 
-  const sheetSummaries = [];
-  let totalDebitsAllSheets = 0;
-  let totalCreditsAllSheets = 0;
+  const allStructuredSheets = [];
 
   sheets.forEach(sheet => {
-    const result = preprocessSingleSheet(sheet.rows, sheet.name);
-    if (result.processed) {
-      sheetSummaries.push(result);
-      totalDebitsAllSheets += result.stats.totalDebits;
-      totalCreditsAllSheets += result.stats.totalCredits;
-    }
-  });
+    const rows = sheet.rows || [];
+    if (rows.length === 0) return;
 
-  let summary = `## Complete GL Analysis (${sheets.length} Sheets)\n\n`;
-  
-  summary += `**Overall Summary:**\n`;
-  summary += `- Total Sheets: ${sheets.length}\n`;
-  summary += `- Combined Debits: $${Math.round(totalDebitsAllSheets).toLocaleString('en-US')}\n`;
-  summary += `- Combined Credits: $${Math.round(totalCreditsAllSheets).toLocaleString('en-US')}\n`;
-  summary += `- Overall Difference: $${Math.round(Math.abs(totalDebitsAllSheets - totalCreditsAllSheets)).toLocaleString('en-US')}\n\n`;
-
-  sheetSummaries.forEach((sheetSummary, idx) => {
-    summary += `---\n\n### Sheet ${idx + 1}: ${sheetSummary.sheetName}\n\n`;
-    summary += sheetSummary.summary;
-    summary += '\n\n';
+    const allHeaders = Object.keys(rows[0]);
+    
+    // 🔥 KEY FIX: Extract only requested columns
+    const requestedColumns = extractRequestedColumns(question, allHeaders);
+    console.log(`Sheet "${sheet.name}": Using columns:`, requestedColumns);
+    
+    // Filter rows to only requested columns
+    const filteredRows = filterDataToRequestedColumns(rows, requestedColumns);
+    
+    allStructuredSheets.push({
+      sheetName: sheet.name,
+      rowCount: filteredRows.length,
+      availableColumns: allHeaders,
+      selectedColumns: requestedColumns,
+      // 🔥 CRITICAL: Only send 30 rows max
+      data: filteredRows.slice(0, 30),
+      totalRows: filteredRows.length
+    });
   });
 
   return {
-    processed: true,
-    summary: summary,
-    sheets: sheetSummaries,
-    overallStats: {
-      totalDebits: totalDebitsAllSheets,
-      totalCredits: totalCreditsAllSheets,
-      difference: totalDebitsAllSheets - totalCreditsAllSheets,
-      sheetCount: sheets.length
-    }
+    success: true,
+    sheetCount: allStructuredSheets.length,
+    sheets: allStructuredSheets
   };
 }
 
 /**
- * Detect document category
+ * 🆕 ENHANCED SYSTEM PROMPT - Clear and specific
  */
-function detectDocumentCategory(textContent) {
-  const lower = textContent.toLowerCase();
+function getSystemPrompt() {
+  return `You are a financial analyst. You will receive financial data in a structured JSON format.
 
-  const glScore = (lower.match(/debit|credit|journal|gl entry|ledger|transaction/g) || []).length;
-  const plScore = (lower.match(/revenue|profit|loss|income|expenses|ebitda/g) || []).length;
+**DATA STRUCTURE:**
+- Each sheet contains rows with categorized fields:
+  - labels: Account names, descriptions, categories
+  - periods: Period identifiers (like "Period 11 2025", "11-2025", "P11")
+  - amounts: Numerical values (revenue, expenses, totals)
+  - locations: Geographic identifiers (branches, regions)
 
-  console.log(`Category scores - GL: ${glScore}, P&L: ${plScore}`);
+**YOUR TASK:**
+1. CAREFULLY READ the user's question
+2. IDENTIFY which periods/columns they're asking about
+3. EXTRACT the relevant data from those SPECIFIC periods/columns
+4. Provide analysis ONLY for what was requested
 
-  if (glScore > plScore && glScore > 3) return 'gl';
-  if (plScore > glScore && plScore > 3) return 'pl';
+**CRITICAL RULES:**
+- If user asks for "Period 11 2025", use ONLY data from columns labeled "Period 11" or "11-2025" or similar
+- If user asks for "YTD", use ONLY the column labeled "YTD" 
+- DO NOT confuse Period 11 with Period 12
+- DO NOT mix up different period columns
+- Always show which column names you're using in your analysis
 
-  return 'general';
+**OUTPUT FORMAT:**
+Use markdown with clear tables. Always cite the exact column name you're analyzing.`;
 }
 
 /**
- * ✅ IMPROVED: System prompt with stronger sheet separation emphasis
+ * 🆕 CALL OPENAI WITH MINIMAL DATA
  */
-function getSystemPrompt(category, sheetInfo) {
-  if (category === 'gl') {
-    let prompt = `You are an expert accounting assistant analyzing General Ledger data.
+async function callModelWithJSON({ structuredData, question }) {
+  const systemPrompt = `You are a financial analyst. Analyze the provided data and answer the user's question accurately.
 
-**CRITICAL INSTRUCTIONS - READ CAREFULLY:**
+**CRITICAL RULES:**
+1. Read the user's question carefully
+2. Use ONLY the columns that match what they asked for
+3. When the user asks for "Period 11 2025", use the column named exactly that (or similar like "11-2025")
+4. DO NOT confuse different periods
+5. Always cite which columns you're analyzing
 
-1. **SHEET BOUNDARIES ARE SACRED**: 
-   - This file contains ${sheetInfo?.sheetCount || 1} sheet(s)
-   - Each sheet is separated by: ================================================================================
-   - NEVER mix data from different sheets
-   - Each sheet represents a DIFFERENT entity (store, account, period, etc.)
-   - Treat each sheet as a completely independent dataset
+Be precise and detailed in your analysis.`;
 
-2. **Sheet Identification**:
-   - Each sheet header shows: "SHEET X OF Y: [Name]"
-   - The sheet name often indicates what it represents (e.g., "Store A", "Store B", "Jan 2024", etc.)
-   - Pay attention to column headers which may differ between sheets
+  // 🔥 MINIMAL DATA - Only what's needed
+  const dataForAI = structuredData.sheets.map(sheet => ({
+    sheetName: sheet.sheetName,
+    selectedColumns: sheet.selectedColumns,
+    rows: sheet.data,  // Already limited to 30 rows
+    note: `Total ${sheet.totalRows} rows available, showing first ${sheet.data.length}`
+  }));
 
-3. **Accurate Number Attribution**:
-   - When reporting numbers, ALWAYS state which sheet they came from
-   - Format: "Sheet 1 (Store A): $X, Sheet 2 (Store B): $Y"
-   - Never say "Store A has $X" if that number actually came from Store B's sheet
-   - Double-check that you're reading from the correct sheet before stating any number
+  const userMessage = `**Question:** ${question || "Analyze this financial data"}
 
-4. **Analysis Structure** (MANDATORY):
-   
-   ## Document Overview
-   - Total sheets: [number]
-   - List each sheet with its name and row count
-   
-   ## Individual Sheet Analysis
-   
-   ### Sheet 1: [Exact Sheet Name]
-   - What this sheet represents
-   - Key metrics FROM THIS SHEET ONLY
-   - Data quality issues IN THIS SHEET
-   
-   ### Sheet 2: [Exact Sheet Name]
-   - What this sheet represents
-   - Key metrics FROM THIS SHEET ONLY
-   - Data quality issues IN THIS SHEET
-   
-   (Continue for all sheets)
-   
-   ## Cross-Sheet Comparison (if applicable)
-   - Only compare if sheets represent similar entities
-   - Clearly label which sheet each number comes from
-   
-   ## Reconciliation (if applicable)
-   - Match transactions between sheets if they represent related data
-   - List unmatched items with sheet source clearly labeled
+**Data (columns filtered based on your question):**
+\`\`\`json
+${JSON.stringify(dataForAI, null, 2)}
+\`\`\`
 
-5. **Quality Checks PER SHEET**:
-   - Verify debits = credits within EACH sheet
-   - Check for duplicates within EACH sheet
-   - Identify unusual patterns within EACH sheet
-   - Never mix totals from different sheets
+Provide detailed analysis for the question above.`;
 
-6. **Response Format Rules**:
-   - Use markdown tables with a "Sheet" column when comparing
-   - When stating any number, include the sheet reference
-   - Use clear section breaks between sheet analyses
-   - Be precise with sheet names - use the exact names from the file
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userMessage }
+  ];
 
-**EXAMPLE OF CORRECT FORMAT:**
+  // Calculate approximate token count
+  const estimatedTokens = JSON.stringify(messages).length / 4;
+  console.log(`📊 Estimated tokens: ~${Math.round(estimatedTokens)}`);
 
-## Individual Sheet Analysis
+  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages,
+      temperature: 0.1,
+      max_tokens: 8000,
+      top_p: 1.0
+    })
+  });
 
-### Sheet 1: Store A January 2024
-- Total Sales: $45,000 (from Store A data)
-- Total Expenses: $30,000 (from Store A data)
-- Net Income: $15,000
-
-### Sheet 2: Store B January 2024
-- Total Sales: $52,000 (from Store B data)
-- Total Expenses: $35,000 (from Store B data)
-- Net Income: $17,000
-
-## Cross-Sheet Comparison
-
-| Metric | Store A (Sheet 1) | Store B (Sheet 2) |
-|--------|-------------------|-------------------|
-| Sales  | $45,000          | $52,000          |
-| Expenses | $30,000        | $35,000          |
-
-**DO NOT SAY**: "Store A had $52,000 in sales" when that number is from Store B!
-
-Remember: ACCURACY IS CRITICAL. Double-check which sheet each number comes from before reporting it.`;
-
-    return prompt;
+  let data;
+  try {
+    data = await r.json();
+  } catch (err) {
+    const raw = await r.text().catch(() => "");
+    console.error("OpenAI returned non-JSON:", raw.slice(0, 500));
+    return { reply: null, error: "API returned invalid response", httpStatus: r.status };
   }
 
-  if (category === 'pl') {
-    return `You are an expert accounting assistant analyzing Profit & Loss statements.
-
-If multiple sheets exist, analyze each sheet separately and clearly label which sheet each figure comes from.
-
-Analyze the complete data and provide insights with observations and recommendations in markdown format. Be comprehensive and detailed in your analysis.`;
+  if (data.error) {
+    console.error("OpenAI API Error:", data.error);
+    return {
+      reply: null,
+      error: data.error.message,
+      httpStatus: r.status
+    };
   }
 
-  return `You are an expert accounting assistant analyzing financial statements.
+  const finishReason = data?.choices?.[0]?.finish_reason;
+  console.log(`✅ OpenAI response - finish: ${finishReason}, tokens:`, data?.usage);
 
-If multiple sheets exist, analyze each sheet separately first, then provide comparisons.
+  let reply = data?.choices?.[0]?.message?.content || null;
 
-When totals exist, USE those numbers. Create a comprehensive markdown table with metrics and insights. Provide detailed analysis.`;
+  if (reply) {
+    reply = reply
+      .replace(/^```(?:markdown|json)\s*\n/gm, '')
+      .replace(/\n```\s*$/gm, '')
+      .replace(/```(?:markdown|json)\s*\n/g, '')
+      .replace(/\n```/g, '')
+      .trim();
+  }
+
+  return { 
+    reply, 
+    httpStatus: r.status,
+    finishReason: finishReason,
+    tokenUsage: data?.usage
+  };
 }
 
 /**
- * Convert markdown to Word document
+ * Convert markdown to Word
  */
 async function markdownToWord(markdownText) {
   const sections = [];
@@ -975,8 +790,7 @@ async function markdownToWord(markdownText) {
         new Paragraph({
           text: text,
           heading: level === 2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
-          spacing: { before: 240, after: 120 },
-          thematicBreak: false
+          spacing: { before: 240, after: 120 }
         })
       );
       continue;
@@ -1112,97 +926,6 @@ async function markdownToWord(markdownText) {
 }
 
 /**
- * ✅ IMPROVED: Model call with better context for sheet separation
- */
-async function callModel({ fileType, textContent, question, category, preprocessedData, fullData, sheetInfo }) {
-  let content = textContent;
-  
-  if (category === 'gl' && fullData) {
-    content = fullData;
-    console.log("Using FULL GL data for detailed analysis");
-  }
-
-  const trimmed = content.length > 150000 
-    ? content.slice(0, 150000) + "\n\n[Content truncated due to length]"
-    : content;
-
-  const systemPrompt = getSystemPrompt(category, sheetInfo);
-
-  const messages = [
-    { role: "system", content: systemPrompt },
-    { 
-      role: "user", 
-      content: `File type: ${fileType}\nDocument type: ${category.toUpperCase()}\n\nThis file contains ${sheetInfo?.sheetCount || 1} sheet(s). Each sheet is clearly separated by equal signs (====).\n\nIMPORTANT: Pay very close attention to sheet boundaries. Do not mix data from different sheets.\n\nData:\n\n${trimmed}`
-    },
-    {
-      role: "user",
-      content: question || `Analyze this data with extreme attention to sheet separation. 
-
-CRITICAL RULES:
-1. Analyze each sheet independently first
-2. When stating any number, explicitly mention which sheet it came from
-3. Never mix numbers from different sheets
-4. If comparing sheets, use a clear table format with sheet labels
-5. Be 100% accurate with number attribution - double-check before stating any figure
-
-Provide a comprehensive analysis following the structure in the system prompt.`
-    }
-  ];
-
-  const r = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages,
-      temperature: 0.1,  // Keep low for accuracy
-      max_tokens: 16000,
-      top_p: 1.0,
-      frequency_penalty: 0.0,
-      presence_penalty: 0.0
-    })
-  });
-
-  let data;
-  try {
-    data = await r.json();
-  } catch (err) {
-    const raw = await r.text().catch(() => "");
-    console.error("Model returned non-JSON:", raw.slice(0, 1000));
-    return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
-  }
-
-  const finishReason = data?.choices?.[0]?.finish_reason;
-  console.log(`Model finish reason: ${finishReason}`);
-  
-  if (finishReason === 'length') {
-    console.warn("⚠️ Response was truncated due to token limit!");
-  }
-
-  let reply = data?.choices?.[0]?.message?.content || null;
-
-  if (reply) {
-    reply = reply
-      .replace(/^```(?:markdown|json)\s*\n/gm, '')
-      .replace(/\n```\s*$/gm, '')
-      .replace(/```(?:markdown|json)\s*\n/g, '')
-      .replace(/\n```/g, '')
-      .trim();
-  }
-
-  return { 
-    reply, 
-    raw: data, 
-    httpStatus: r.status,
-    finishReason: finishReason,
-    tokenUsage: data?.usage
-  };
-}
-
-/**
  * MAIN handler
  */
 export default async function handler(req, res) {
@@ -1212,20 +935,22 @@ export default async function handler(req, res) {
 
   try {
     if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY environment variable" });
     }
 
     const body = await parseJsonBody(req);
     const { fileUrl, question = "" } = body || {};
-    const exportExcel = body.exportExcel !== undefined ? body.exportExcel : true;
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
+    console.log("📥 Downloading file from:", fileUrl);
     const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
     const detectedType = detectFileType(fileUrl, contentType, buffer);
+    console.log(`📄 Detected file type: ${detectedType}`);
 
-    let extracted = { type: detectedType, textContent: "" };
+    let extracted = { type: detectedType };
     
+    // Extract based on file type
     if (detectedType === "pdf") {
       extracted = await extractPdf(buffer);
     } else if (detectedType === "docx") {
@@ -1238,8 +963,13 @@ export default async function handler(req, res) {
       extracted = await extractImage(buffer, detectedType);
     } else {
       extracted = extractCsv(buffer);
+      if (extracted.textContent) {
+        const rows = parseCSV(extracted.textContent);
+        extracted.sheets = [{ name: 'Main Sheet', rows: rows, rowCount: rows.length }];
+      }
     }
 
+    // Handle errors
     if (extracted.error) {
       return res.status(200).json({
         ok: false,
@@ -1249,132 +979,80 @@ export default async function handler(req, res) {
       });
     }
 
-    if (extracted.ocrNeeded) {
-      return res.status(200).json({
-        ok: false,
-        type: "pdf",
-        reply: "This PDF appears to be scanned (image-based) and requires OCR. Please upload the scanned document as an image file (PNG, JPG) instead - our OCR system works better with direct image files than scanned PDFs.",
-        debug: { ocrNeeded: true, error: extracted.error }
-      });
-    }
-    
-    if (extracted.requiresVision || extracted.requiresManualProcessing || extracted.requiresConversion) {
+    if (extracted.ocrNeeded || extracted.requiresManualProcessing) {
       return res.status(200).json({
         ok: true,
         type: extracted.type,
-        reply: extracted.textContent || "This file type requires conversion. Please see the instructions below.",
-        category: "general",
-        preprocessed: false,
+        reply: extracted.textContent || "This file requires manual processing.",
         debug: { 
-          requiresConversion: extracted.requiresConversion || false,
-          requiresManualProcessing: extracted.requiresManualProcessing || false,
-          isImage: extracted.isImage || false,
-          message: "File needs to be converted to a supported format"
+          requiresManualProcessing: true,
+          isImage: extracted.isImage || false
         }
       });
     }
 
-    let preprocessedData = null;
-    let category = 'general';
-    let fullDataForGL = null;
-    let sheetInfo = { sheetCount: 1 };
+    // Structure data
+    console.log("🔄 Structuring data...");
+    const structuredData = structureDataAsJSON(extracted.sheets || [], question);
     
-    if (extracted.sheets && extracted.sheets.length > 0) {
-      sheetInfo = { sheetCount: extracted.sheets.length };
-      
-      const sampleText = JSON.stringify(extracted.sheets[0].rows.slice(0, 20)).toLowerCase();
-      category = detectDocumentCategory(sampleText);
-      
-      if (category === 'gl') {
-        preprocessedData = preprocessGLDataFromSheets(extracted.sheets);
-        
-        fullDataForGL = '';
-        extracted.sheets.forEach((sheet, idx) => {
-          if (idx > 0) fullDataForGL += '\n\n' + '='.repeat(80) + '\n\n';
-          fullDataForGL += `SHEET ${idx + 1} OF ${extracted.sheets.length}: "${sheet.name}"\n`;
-          fullDataForGL += `TOTAL ROWS: ${sheet.rowCount}\n`;
-          fullDataForGL += `COLUMNS: ${sheet.headers.join(' | ')}\n`;
-          fullDataForGL += '='.repeat(80) + '\n\n';
-          fullDataForGL += sheet.csv;
-          fullDataForGL += '\n\n' + '='.repeat(80);
-        });
-        
-        console.log(`Prepared ${extracted.sheets.length} sheets for GL analysis with clear boundaries`);
-      }
-    } else {
-      const textContent = extracted.textContent || '';
-      if (!textContent.trim()) {
-        return res.status(200).json({
-          ok: false,
-          type: extracted.type,
-          reply: "No text could be extracted from this file.",
-          debug: { contentType, bytesReceived }
-        });
-      }
-
-      category = detectDocumentCategory(textContent);
-      console.log(`Category: ${category}`);
-
-      if (category === 'gl') {
-        fullDataForGL = textContent;
-        const rows = parseCSV(textContent);
-        if (rows.length > 0) {
-          preprocessedData = preprocessSingleSheet(rows, 'Main Sheet');
-        }
-      }
+    if (!structuredData.success) {
+      return res.status(200).json({
+        ok: false,
+        type: extracted.type,
+        reply: `Could not structure data: ${structuredData.reason}`,
+        debug: { structureError: structuredData.reason }
+      });
     }
 
-    const { reply, raw, httpStatus, finishReason, tokenUsage } = await callModel({
-      fileType: extracted.type,
-      textContent: extracted.textContent || '',
-      question,
-      category,
-      preprocessedData,
-      fullData: fullDataForGL,
-      sheetInfo
+    console.log(`✅ Data structured - ${structuredData.sheetCount} sheets`);
+    structuredData.sheets.forEach(s => {
+      console.log(`  - ${s.sheetName}: ${s.selectedColumns.length} columns selected, ${s.data.length} rows`);
+    });
+
+    // Call AI
+    console.log("🤖 Calling OpenAI GPT-4o-mini...");
+    const { reply, httpStatus, finishReason, tokenUsage, error } = await callModelWithJSON({
+      structuredData,
+      question
     });
 
     if (!reply) {
       return res.status(200).json({
         ok: false,
         type: extracted.type,
-        reply: "(No reply from model)",
-        debug: { status: httpStatus, raw: raw }
+        reply: error || "No response from AI model",
+        debug: { error: error, httpStatus: httpStatus }
       });
     }
 
+    console.log("✅ AI analysis complete!");
+
+    // Generate Word document
     let wordBase64 = null;
     try {
-      console.log("Starting Word document generation...");
+      console.log("📝 Generating Word document...");
       wordBase64 = await markdownToWord(reply);
-      console.log("✓ Word document generated successfully, length:", wordBase64.length);
+      console.log("✅ Word document generated");
     } catch (wordError) {
-      console.error("✗ Word generation error:", wordError);
+      console.error("❌ Word generation error:", wordError);
     }
 
     return res.status(200).json({
       ok: true,
       type: extracted.type,
-      category,
       reply,
       wordDownload: wordBase64,
       downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
-      wordSize: wordBase64 ? wordBase64.length : 0,
-      preprocessed: preprocessedData?.processed || false,
       debug: {
-        status: httpStatus,
-        category,
-        preprocessed: preprocessedData?.processed || false,
-        stats: preprocessedData?.stats || preprocessedData?.overallStats || null,
-        sheetCount: sheetInfo.sheetCount,
+        httpStatus: httpStatus,
+        sheetCount: structuredData.sheetCount,
         hasWord: !!wordBase64,
-        wordGenerated: !!wordBase64,
         finishReason: finishReason,
         tokenUsage: tokenUsage
       }
     });
   } catch (err) {
-    console.error("analyze-file error:", err);
+    console.error("❌ Handler error:", err);
     return res.status(500).json({ 
       error: String(err?.message || err)
     });
