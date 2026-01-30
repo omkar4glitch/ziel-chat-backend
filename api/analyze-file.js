@@ -554,7 +554,59 @@ function parseCSV(csvText) {
 }
 
 /**
- * 🆕 SMART DATA STRUCTURING - Detects document type and creates JSON structure
+ * 🔥 NEW: SMART DATA DETECTION - Detects if data is transactional or period-based
+ */
+function detectDataStructure(sheets) {
+  if (!sheets || sheets.length === 0) return 'UNKNOWN';
+  
+  const firstSheet = sheets[0];
+  const rows = firstSheet.rows || [];
+  if (rows.length === 0) return 'UNKNOWN';
+  
+  const headers = Object.keys(rows[0]).map(h => h.toLowerCase().trim());
+  
+  // Check for transactional data (General Ledger, Bank Statement)
+  const hasDebitCredit = headers.some(h => h.includes('debit')) && headers.some(h => h.includes('credit'));
+  const hasDate = headers.some(h => h.includes('date'));
+  const hasTransaction = headers.some(h => h.includes('transaction') || h.includes('reference'));
+  
+  if (hasDebitCredit || (hasDate && hasTransaction)) {
+    return 'TRANSACTIONAL';
+  }
+  
+  // Check for period-based data (P&L, multi-period reports)
+  const hasPeriodColumns = headers.some(h => 
+    h.includes('period') || 
+    h.includes('month') || 
+    h.includes('jan') || h.includes('feb') || h.includes('mar') ||
+    h.includes('q1') || h.includes('q2') || 
+    /\d{1,2}\/\d{1,2}\/\d{4}/.test(h) || // Date format
+    h.includes('ytd') ||
+    h.includes('total')
+  );
+  
+  // Check if first column looks like account names and other columns are numbers
+  const firstColumnKey = Object.keys(rows[0])[0];
+  const firstColumnValues = rows.slice(0, 10).map(r => r[firstColumnKey]);
+  const hasAccountNames = firstColumnValues.some(v => 
+    v && String(v).length > 3 && isNaN(parseFloat(String(v)))
+  );
+  
+  const otherColumns = Object.keys(rows[0]).slice(1);
+  const hasNumericColumns = otherColumns.length > 0 && otherColumns.some(col => {
+    const values = rows.slice(0, 10).map(r => r[col]);
+    return values.some(v => v && !isNaN(parseFloat(String(v).replace(/[^0-9.\-]/g, ''))));
+  });
+  
+  if ((hasPeriodColumns || (hasAccountNames && hasNumericColumns)) && !hasDebitCredit) {
+    return 'PERIOD_BASED';
+  }
+  
+  return 'TRANSACTIONAL'; // Default to transactional
+}
+
+/**
+ * 🔥 FIXED: Structure data based on detected type
  */
 function structureDataAsJSON(sheets) {
   if (!sheets || sheets.length === 0) {
@@ -564,6 +616,58 @@ function structureDataAsJSON(sheets) {
     };
   }
 
+  const dataStructure = detectDataStructure(sheets);
+  console.log(`📊 Detected data structure: ${dataStructure}`);
+  
+  if (dataStructure === 'PERIOD_BASED') {
+    return structurePeriodBasedData(sheets);
+  } else {
+    return structureTransactionalData(sheets);
+  }
+}
+
+/**
+ * 🔥 NEW: Structure period-based data (P&L, multi-period reports)
+ */
+function structurePeriodBasedData(sheets) {
+  const allStructuredSheets = [];
+  let documentType = 'PROFIT_LOSS';
+
+  sheets.forEach(sheet => {
+    const rows = sheet.rows || [];
+    if (rows.length === 0) return;
+
+    console.log(`Processing period-based sheet: ${sheet.name}`);
+    console.log(`Rows: ${rows.length}`);
+    console.log(`Sample row:`, JSON.stringify(rows[0]).slice(0, 200));
+    
+    // Send RAW data directly to AI - let AI figure out the structure
+    allStructuredSheets.push({
+      sheetName: sheet.name,
+      sheetType: 'PERIOD_BASED',
+      rowCount: rows.length,
+      data: rows, // 🔥 SEND ALL RAW DATA
+      columns: Object.keys(rows[0] || {})
+    });
+  });
+
+  return {
+    success: true,
+    documentType: documentType,
+    sheetCount: allStructuredSheets.length,
+    sheets: allStructuredSheets,
+    overallSummary: {
+      totalSheets: allStructuredSheets.length,
+      totalRows: allStructuredSheets.reduce((sum, s) => sum + s.rowCount, 0),
+      dataType: 'PERIOD_BASED'
+    }
+  };
+}
+
+/**
+ * 🔥 EXISTING: Structure transactional data (unchanged)
+ */
+function structureTransactionalData(sheets) {
   const allStructuredSheets = [];
   let documentType = 'UNKNOWN';
 
@@ -587,9 +691,6 @@ function structureDataAsJSON(sheets) {
     } else if (hasDate && hasAmount && headers.some(h => h.includes('transaction') || h.includes('reference'))) {
       sheetType = 'BANK_STATEMENT';
       if (documentType === 'UNKNOWN') documentType = 'BANK_STATEMENT';
-    } else if (headers.some(h => h.includes('revenue') || h.includes('expense') || h.includes('profit') || h.includes('loss'))) {
-      sheetType = 'PROFIT_LOSS';
-      if (documentType === 'UNKNOWN') documentType = 'PROFIT_LOSS';
     } else if (headers.some(h => h.includes('asset') || h.includes('liability') || h.includes('equity'))) {
       sheetType = 'BALANCE_SHEET';
       if (documentType === 'UNKNOWN') documentType = 'BALANCE_SHEET';
@@ -721,7 +822,7 @@ function structureDataAsJSON(sheets) {
 }
 
 /**
- * 🆕 ENHANCED SYSTEM PROMPT - Works with JSON structured data
+ * 🔥 UPDATED: Enhanced system prompt for period-based data
  */
 function getEnhancedSystemPrompt(documentType) {
   const basePrompt = `You are an expert financial analyst and MIS report writer. You will receive financial data in structured JSON format.
@@ -729,16 +830,69 @@ function getEnhancedSystemPrompt(documentType) {
 **YOUR TASK:**
 Write a comprehensive Management Information System (MIS) commentary analyzing the financial data provided.
 
-**JSON DATA STRUCTURE YOU'LL RECEIVE:**
-- documentType: Type of financial document (GENERAL_LEDGER, BANK_STATEMENT, PROFIT_LOSS, BALANCE_SHEET)
-- sheets: Array of data sheets, each containing:
-  - sheetName: Name of the sheet
-  - sheetType: Type of data in the sheet
-  - data: Array of transactions/entries
-  - summary: Pre-calculated totals and statistics
-  - columns: Column mappings used in the data
+**CRITICAL INSTRUCTIONS:**
+- Pay close attention to ALL column names in the data
+- Extract exact numbers from the data - do NOT approximate or round
+- When the user asks for a specific period, use ONLY that period's data
+- When the user asks for YTD, use the YTD column if present
+- Verify all calculations against the source data
 
 `;
+
+  if (documentType === 'PROFIT_LOSS') {
+    return basePrompt + `**SPECIFIC INSTRUCTIONS FOR PROFIT & LOSS (PERIOD-BASED DATA):**
+
+**DATA STRUCTURE:**
+The data contains rows (line items like Revenue, COGS, Expenses) and columns (time periods).
+- First column: Account/Line item names
+- Subsequent columns: Period 1, Period 2, ..., Period 12, YTD (or similar)
+
+**YOUR ANALYSIS MUST:**
+
+1. **Understand the Structure First**
+   - Identify which columns represent which periods
+   - Note the exact column names (Period 1, Period 2, etc.)
+   - Identify if there's a YTD or Total column
+
+2. **When User Asks for Specific Period:**
+   - If user says "Period 11 2025", use ONLY the "Period 11" column
+   - Do NOT use Period 12 or any other period
+   - Extract the EXACT numbers from that column
+
+3. **When User Asks for YTD:**
+   - Use the YTD column if it exists
+   - If no YTD column, sum all periods mentioned
+
+4. **Revenue & Expense Analysis:**
+   - Total Revenue (from correct period/YTD)
+   - Total COGS (from correct period/YTD)
+   - Gross Profit = Revenue - COGS
+   - Gross Margin % = (Gross Profit / Revenue) × 100
+   - Total Operating Expenses
+   - EBITDA = Gross Profit - Operating Expenses
+   - EBITDA Margin % = (EBITDA / Revenue) × 100
+   - Net Profit/Loss
+
+5. **Expense Breakdown:**
+   - Categorize expenses (Operating, SG&A, etc.)
+   - Identify top 5 expense categories by amount
+   - Calculate each expense as % of revenue
+
+6. **Period-over-Period Analysis (if multiple periods requested):**
+   - Compare requested periods
+   - Calculate % change
+   - Identify trends
+
+7. **Output Format:**
+   - ## Executive Summary
+   - ## Financial Performance (with specific period mentioned)
+   - ## Revenue Analysis
+   - ## Expense Analysis (detailed table)
+   - ## Profitability Metrics
+   - ## Recommendations
+
+**CRITICAL:** Always state which period you're analyzing (e.g., "Period 11 2025" or "YTD Through Period 12"). Never mix periods!`;
+  }
 
   if (documentType === 'GENERAL_LEDGER') {
     return basePrompt + `**SPECIFIC INSTRUCTIONS FOR GENERAL LEDGER:**
@@ -809,35 +963,6 @@ Write a comprehensive Management Information System (MIS) commentary analyzing t
    - ## Recommendations`;
   }
 
-  if (documentType === 'PROFIT_LOSS') {
-    return basePrompt + `**SPECIFIC INSTRUCTIONS FOR PROFIT & LOSS:**
-
-1. **Income Statement Analysis**
-   - Total Revenue
-   - Total Expenses (by category)
-   - Gross Profit
-   - Net Profit/Loss
-   - Profit Margin %
-
-2. **Expense Breakdown**
-   - Top expense categories
-   - Fixed vs Variable costs
-   - Cost of Goods Sold (if applicable)
-   - Operating vs Non-operating expenses
-
-3. **Performance Metrics**
-   - Revenue growth (if period comparison available)
-   - Expense ratios
-   - Key profitability indicators
-
-4. **Output Format**
-   - ## Executive Summary
-   - ## Income Statement (formatted table)
-   - ## Expense Analysis (breakdown by category)
-   - ## Performance Metrics
-   - ## Recommendations`;
-  }
-
   return basePrompt + `**GENERAL ANALYSIS INSTRUCTIONS:**
 
 Analyze the data thoroughly and provide:
@@ -850,12 +975,14 @@ Use tables extensively for clarity. Be specific with numbers and dates.`;
 }
 
 /**
- * 🆕 CALL MODEL WITH JSON DATA - NOW USING OPENAI GPT-4o-mini
+ * 🔥 UPDATED: Call model with proper data handling
  */
 async function callModelWithJSON({ structuredData, question, documentType }) {
   const systemPrompt = getEnhancedSystemPrompt(documentType);
 
-  // Create a clean, readable JSON representation for the AI
+  // 🔥 SEND MORE DATA FOR PERIOD-BASED REPORTS
+  const maxRows = documentType === 'PROFIT_LOSS' ? 1000 : 500;
+
   const dataForAI = {
     documentType: structuredData.documentType,
     sheetCount: structuredData.sheetCount,
@@ -866,9 +993,8 @@ async function callModelWithJSON({ structuredData, question, documentType }) {
       rowCount: sheet.rowCount,
       summary: sheet.summary,
       columns: sheet.columns,
-      // Send first 500 rows to avoid token limits
-      data: sheet.data.slice(0, 500),
-      dataTruncated: sheet.data.length > 500,
+      data: sheet.data.slice(0, maxRows),
+      dataTruncated: sheet.data.length > maxRows,
       totalRows: sheet.data.length
     }))
   };
@@ -883,9 +1009,11 @@ async function callModelWithJSON({ structuredData, question, documentType }) {
 ${JSON.stringify(dataForAI, null, 2)}
 \`\`\`
 
-${question || "Please provide a comprehensive MIS commentary analyzing this financial data. Include all key metrics, findings, reconciliation (if multiple sheets), and actionable recommendations."}`
+${question || "Please provide a comprehensive MIS commentary analyzing this financial data. Include all key metrics, findings, and actionable recommendations."}`
     }
   ];
+
+  console.log(`Sending ${JSON.stringify(dataForAI).length} characters to OpenAI...`);
 
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -1185,7 +1313,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 🆕 STRUCTURE DATA AS JSON
+    // 🔥 IMPROVED: Structure data based on detected type
     console.log("🔄 Structuring data as JSON...");
     const structuredData = structureDataAsJSON(extracted.sheets || []);
     
@@ -1201,9 +1329,13 @@ export default async function handler(req, res) {
     console.log(`✅ Data structured successfully!`);
     console.log(`📊 Document Type: ${structuredData.documentType}`);
     console.log(`📑 Sheets: ${structuredData.sheetCount}`);
-    console.log(`📝 Total Transactions: ${structuredData.overallSummary.totalTransactions}`);
+    if (structuredData.overallSummary.totalTransactions) {
+      console.log(`📝 Total Transactions: ${structuredData.overallSummary.totalTransactions}`);
+    } else {
+      console.log(`📝 Total Rows: ${structuredData.overallSummary.totalRows}`);
+    }
 
-    // 🆕 CALL AI WITH STRUCTURED JSON
+    // 🔥 CALL AI WITH STRUCTURED JSON
     console.log("🤖 Sending structured JSON to OpenAI GPT-4o-mini...");
     const { reply, raw, httpStatus, finishReason, tokenUsage, error } = await callModelWithJSON({
       structuredData,
@@ -1249,7 +1381,7 @@ export default async function handler(req, res) {
         status: httpStatus,
         documentType: structuredData.documentType,
         sheetCount: structuredData.sheetCount,
-        totalTransactions: structuredData.overallSummary.totalTransactions,
+        totalRows: structuredData.overallSummary.totalRows || structuredData.overallSummary.totalTransactions,
         hasWord: !!wordBase64,
         finishReason: finishReason,
         tokenUsage: tokenUsage
