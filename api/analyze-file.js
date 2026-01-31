@@ -1,4 +1,3 @@
-
 import fetch from "node-fetch";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
@@ -553,9 +552,58 @@ const MAX_CONTENT_CHARS = 120000;
 /** Max rows per sheet to include (avoids huge tables). */
 const MAX_ROWS_PER_SHEET = 2500;
 
+/** Keywords that suggest a row is a header (column names). */
+const HEADER_KEYWORDS = [
+  "store", "location", "branch", "outlet", "site", "entity",
+  "revenue", "income", "sales", "expense", "expenses", "cost", "cogs",
+  "ebitda", "margin", "profit", "loss", "gross", "net",
+  "total", "amount", "balance", "debit", "credit",
+  "date", "period", "month", "year", "q1", "q2", "q3", "q4",
+  "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+  "account", "description", "particulars", "reference", "ref"
+];
+
+/**
+ * Detect which row in the sheet is most likely the header (column names).
+ * Headers can be on row 0, 3, 5, etc. Returns the row index (0-based).
+ */
+function detectHeaderRow(rows, toCells, maxScan = 20) {
+  if (!rows || rows.length === 0) return 0;
+  const scanRows = rows.slice(0, Math.min(maxScan, rows.length));
+  let bestIdx = 0;
+  let bestScore = -1;
+  for (let r = 0; r < scanRows.length; r++) {
+    const cells = toCells(scanRows[r]);
+    const cellStrs = cells.map((c) => String(c ?? "").trim().toLowerCase());
+    let score = 0;
+    let numericCount = 0;
+    let textCount = 0;
+    for (const s of cellStrs) {
+      if (s.length === 0) continue;
+      if (/^[\d.,\s\-\(\)]+$/.test(s)) {
+        numericCount++;
+      } else {
+        textCount++;
+        for (const kw of HEADER_KEYWORDS) {
+          if (s.includes(kw)) {
+            score += 2;
+            break;
+          }
+        }
+      }
+    }
+    if (textCount > 0 && numericCount <= textCount) score += textCount;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = r;
+    }
+  }
+  return bestIdx;
+}
+
 /**
  * Format extracted file content for the AI (ChatGPT-style: one block of content).
- * Works with any file: text (PDF/DOCX/PPTX) or sheets (XLSX/CSV) as readable tables.
+ * Detects header row (can be any row) and labels it so store/location columns are clear.
  */
 function formatExtractedContentForAI(extracted) {
   let content = "";
@@ -564,30 +612,41 @@ function formatExtractedContentForAI(extracted) {
   if (extracted.sheets && extracted.sheets.length > 0) {
     const sheets = extracted.sheets;
     const parts = [];
+    const toCells = (row) =>
+      Array.isArray(row)
+        ? row
+        : typeof row === "object" && row !== null
+          ? Object.values(row)
+          : [row];
+
     for (const sheet of sheets) {
       const name = sheet.name || "Sheet";
       const rows = sheet.rows || [];
       const maxRows = Math.min(rows.length, MAX_ROWS_PER_SHEET);
       const sheetRows = rows.slice(0, maxRows);
 
-      const toCells = (row) =>
-        Array.isArray(row)
-          ? row
-          : typeof row === "object" && row !== null
-            ? Object.values(row)
-            : [row];
       const maxCols = sheetRows.length
         ? Math.max(...sheetRows.map((row) => toCells(row).length))
         : 0;
+      const headerRowIndex = detectHeaderRow(sheetRows, toCells);
 
       parts.push(`--- Sheet: ${name} ---`);
-      parts.push(`(Columns 0 to ${maxCols - 1}; each row has ${maxCols} values. Use this to cite figures correctly.)`);
+      parts.push(`(Columns 0 to ${maxCols - 1}; each row has ${maxCols} values. Cite figures with Sheet, Row, and Column index.)`);
+      parts.push(`(The HEADER row may be Row 0, Row 3, Row 5, etc.—it is marked below. Use it to interpret data rows.)`);
+
+      const headerCells = toCells(sheetRows[headerRowIndex] || []);
+      const paddedHeader = Array.from({ length: maxCols }, (_, j) => (headerCells[j] != null && headerCells[j] !== "" ? String(headerCells[j]).trim() : `(col ${j})`));
+      parts.push(`Column meanings (from header row): ${paddedHeader.map((h, j) => `${j}=${h}`).join(", ")}`);
+
       sheetRows.forEach((row, i) => {
         const cells = toCells(row);
         const padded = Array.from({ length: maxCols }, (_, j) => formatCellForDisplay(cells[j]));
         const line = padded.map((c, j) => `[${j}] ${c}`).join(" | ");
-        parts.push(`Row ${i}: ${line}`);
+        const isHeader = i === headerRowIndex;
+        const suffix = isHeader ? "  ← HEADER (column names)" : "";
+        parts.push(`Row ${i}: ${line}${suffix}`);
       });
+
       if (rows.length > maxRows) {
         parts.push(`(... ${rows.length - maxRows} more rows not shown)`);
         truncated = true;
@@ -619,15 +678,15 @@ function formatExtractedContentForAI(extracted) {
 const GENERIC_SYSTEM_PROMPT = `You are a helpful accounting and financial assistant. The user will share document content (extracted from a file they uploaded) and a question or prompt.
 
 **CRITICAL – Figure accuracy (you MUST follow this):**
-- Use ONLY figures that appear in the document content. Do NOT invent, approximate, or calculate numbers.
-- When citing ANY figure, you MUST state exactly where it comes from: Sheet name, Row number, and Column index (e.g. "Sheet1 Row 3 column 2: 1,234.56"). Copy the number exactly as shown in that cell.
-- Do NOT swap figures between rows, columns, or sheets. Each number belongs to one cell only—cite that cell when you use it.
-- Rows are labeled "Row 0", "Row 1", etc. Columns are labeled [0], [1], [2], etc. Use these to identify the source of every figure you cite.
+- Use ONLY figures that appear in the document content. Do NOT invent, approximate, round, or calculate numbers.
+- When citing ANY figure, state exactly where it comes from: Sheet name, Row number, and Column index (e.g. "Sheet1 Row 5 column 3: 2751317.38"). Copy the number exactly as shown in that cell—including decimals.
+- Do NOT swap figures between rows, columns, or sheets. Each number belongs to one cell only.
+- For store-wise or location-wise breakdowns: each store/location is one DATA ROW. Use the EXACT number from that row and that column (e.g. EBITDA column for that row). Do NOT round (e.g. do not write 1200000 if the cell shows 1234567.89). Do NOT invent or estimate—if you cannot find the figure in the content, say so.
+- The document includes a "Column meanings" line per sheet (e.g. 0=Store, 1=Revenue, 5=EBITDA). Use it to pick the correct column for each metric. Rows are "Row 0", "Row 1", etc.; the HEADER row is marked and may be Row 0, Row 3, Row 5, etc. Data rows are all other rows.
 - If the content is truncated, only use and cite figures from the portion that was provided.
 
 **Other rules:**
 - Answer based ONLY on the provided document content.
-- Row 0 is often a header row (column names); use it to interpret what each column means.
 - Reply in clear markdown. Use tables or bullet points when helpful.`;
 
 /**
