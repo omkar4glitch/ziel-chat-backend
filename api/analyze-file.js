@@ -240,7 +240,80 @@ function formatDateUS(dateStr) {
 }
 
 /**
- * Extract XLSX with proper sheet separation
+ * Find the best header row index from raw rows (handles title rows in P&L, etc.)
+ * Returns the row index (0-based) that looks most like column headers.
+ */
+function findHeaderRowIndex(rawRows, maxScan = 15) {
+  if (!rawRows || rawRows.length === 0) return 0;
+  const scanRows = rawRows.slice(0, Math.min(maxScan, rawRows.length));
+  const headerKeywords = [
+    "store", "location", "branch", "revenue", "expense", "profit", "loss",
+    "date", "account", "debit", "credit", "amount", "balance", "description",
+    "total", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    "q1", "q2", "q3", "q4", "period", "month", "year"
+  ];
+  let bestIdx = 0;
+  let bestScore = -1;
+  for (let r = 0; r < scanRows.length; r++) {
+    const row = scanRows[r];
+    if (!Array.isArray(row)) continue;
+    const cells = row.map(c => String(c ?? "").trim().toLowerCase());
+    let score = 0;
+    let hasText = false;
+    let allNumeric = true;
+    for (const cell of cells) {
+      if (cell.length > 0) {
+        hasText = true;
+        if (/^[\d.,\s\-\(\)]+$/.test(cell)) {
+          // looks like a number
+        } else {
+          allNumeric = false;
+          for (const kw of headerKeywords) {
+            if (cell.includes(kw)) { score += 2; break; }
+          }
+        }
+      }
+    }
+    if (hasText && !allNumeric) score += 1;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = r;
+    }
+  }
+  return bestIdx;
+}
+
+/**
+ * Build array of objects from raw rows using a specific header row, preserving column order.
+ */
+function rowsWithHeader(rawRows, headerRowIndex) {
+  if (!rawRows || rawRows.length <= headerRowIndex) return { headers: [], rows: [], columnOrder: [] };
+  const headerRow = rawRows[headerRowIndex];
+  const columnOrder = headerRow.map((h, i) => {
+    const v = String(h ?? "").trim();
+    return v || `Column_${i + 1}`;
+  });
+  const rows = [];
+  for (let r = headerRowIndex + 1; r < rawRows.length; r++) {
+    const row = rawRows[r];
+    if (!Array.isArray(row)) continue;
+    const obj = {};
+    for (let c = 0; c < columnOrder.length; c++) {
+      const key = columnOrder[c];
+      const val = row[c];
+      if (val !== undefined && val !== null && val !== "") {
+        obj[key] = val;
+      } else {
+        obj[key] = "";
+      }
+    }
+    rows.push(obj);
+  }
+  return { headers: columnOrder, rows, columnOrder };
+}
+
+/**
+ * Extract XLSX with proper sheet separation and robust header detection
  */
 function extractXlsx(buffer) {
   try {
@@ -249,9 +322,8 @@ function extractXlsx(buffer) {
       type: "buffer",
       cellDates: false,
       cellNF: false,
-      cellText: true,
       raw: false,
-      defval: ''
+      defval: ""
     });
 
     console.log(`XLSX has ${workbook.SheetNames.length} sheets:`, workbook.SheetNames);
@@ -264,27 +336,28 @@ function extractXlsx(buffer) {
 
     workbook.SheetNames.forEach((sheetName, index) => {
       console.log(`Processing sheet ${index + 1}: "${sheetName}"`);
-      
       const sheet = workbook.Sheets[sheetName];
-      const jsonRows = XLSX.utils.sheet_to_json(sheet, { 
-        defval: '', 
-        blankrows: false,
-        raw: false 
-      });
-
+      const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", blankrows: false });
+      if (!rawRows || rawRows.length === 0) {
+        sheets.push({ name: sheetName, rows: [], rowCount: 0, columnOrder: [] });
+        return;
+      }
+      const headerIdx = findHeaderRowIndex(rawRows);
+      const { rows, columnOrder } = rowsWithHeader(rawRows, headerIdx);
       sheets.push({
         name: sheetName,
-        rows: jsonRows,
-        rowCount: jsonRows.length
+        rows,
+        rowCount: rows.length,
+        columnOrder
       });
     });
 
     console.log(`Total sheets: ${sheets.length}, Total rows: ${sheets.reduce((sum, s) => sum + s.rowCount, 0)}`);
 
-    return { 
-      type: "xlsx", 
+    return {
+      type: "xlsx",
       sheets: sheets,
-      sheetCount: workbook.SheetNames.length 
+      sheetCount: workbook.SheetNames.length
     };
   } catch (err) {
     console.error("extractXlsx failed:", err?.message || err);
@@ -555,123 +628,173 @@ function parseCSV(csvText) {
 }
 
 /**
- * 🆕 SMART DATA STRUCTURING - Detects document type and creates JSON structure
+ * Normalize a cell value: if it looks like a numeric amount, return number; otherwise return string.
+ * Ensures AI receives consistent numeric types and avoids figure mixups from string formatting.
+ */
+function normalizeCellValue(val) {
+  if (val === null || val === undefined || val === "") return val;
+  if (typeof val === "number" && !Number.isNaN(val)) return val;
+  const str = String(val).trim();
+  if (!str) return val;
+  if (!/^[\d.,\s\-\(\)]+$/.test(str)) return val;
+  const num = parseAmount(str);
+  return Number.isNaN(num) ? val : num;
+}
+
+/**
+ * Parse date to comparable value (timestamp) for min/max comparison
+ */
+function dateToComparable(rawDate) {
+  if (rawDate == null || rawDate === "") return null;
+  const num = parseFloat(rawDate);
+  if (!Number.isNaN(num) && num > 40000 && num < 50000) {
+    return (num - 25569) * 86400 * 1000;
+  }
+  const d = new Date(rawDate);
+  return Number.isNaN(d.getTime()) ? null : d.getTime();
+}
+
+/**
+ * SMART DATA STRUCTURING - Detects document type and creates JSON structure.
+ * Preserves column order, detects store/location, normalizes numbers, fixes date comparison.
  */
 function structureDataAsJSON(sheets) {
   if (!sheets || sheets.length === 0) {
-    return { 
-      success: false, 
-      reason: 'No data to structure' 
+    return {
+      success: false,
+      reason: "No data to structure"
     };
   }
 
   const allStructuredSheets = [];
-  let documentType = 'UNKNOWN';
+  let documentType = "UNKNOWN";
 
-  sheets.forEach(sheet => {
+  sheets.forEach((sheet) => {
     const rows = sheet.rows || [];
-    if (rows.length === 0) return;
+    const columnOrder = sheet.columnOrder || (rows[0] ? Object.keys(rows[0]) : []);
 
-    const headers = Object.keys(rows[0]).map(h => h.toLowerCase().trim());
-    
-    // Detect document type based on headers
-    const hasDebitCredit = headers.some(h => h.includes('debit')) && headers.some(h => h.includes('credit'));
-    const hasDate = headers.some(h => h.includes('date'));
-    const hasAccount = headers.some(h => h.includes('account') || h.includes('ledger') || h.includes('description'));
-    const hasAmount = headers.some(h => h.includes('amount') || h.includes('balance'));
-    
-    let sheetType = 'GENERAL';
-    
-    if (hasDebitCredit && hasAccount) {
-      sheetType = 'GENERAL_LEDGER';
-      documentType = 'GENERAL_LEDGER';
-    } else if (hasDate && hasAmount && headers.some(h => h.includes('transaction') || h.includes('reference'))) {
-      sheetType = 'BANK_STATEMENT';
-      if (documentType === 'UNKNOWN') documentType = 'BANK_STATEMENT';
-    } else if (headers.some(h => h.includes('revenue') || h.includes('expense') || h.includes('profit') || h.includes('loss'))) {
-      sheetType = 'PROFIT_LOSS';
-      if (documentType === 'UNKNOWN') documentType = 'PROFIT_LOSS';
-    } else if (headers.some(h => h.includes('asset') || h.includes('liability') || h.includes('equity'))) {
-      sheetType = 'BALANCE_SHEET';
-      if (documentType === 'UNKNOWN') documentType = 'BALANCE_SHEET';
+    if (rows.length === 0) {
+      allStructuredSheets.push({
+        sheetName: sheet.name,
+        sheetType: "GENERAL",
+        rowCount: 0,
+        data: [],
+        summary: { transactionCount: 0, totalDebit: 0, totalCredit: 0, totalAmount: 0, uniqueAccounts: 0, dateRange: "N/A", difference: 0, isBalanced: true },
+        columns: {},
+        columnOrder: []
+      });
+      return;
     }
 
-    // Find key columns
+    const headers = columnOrder.length ? columnOrder : Object.keys(rows[0]);
+    const headerLower = headers.map((h) => String(h).toLowerCase().trim());
+
+    const hasDebitCredit = headerLower.some((h) => h.includes("debit")) && headerLower.some((h) => h.includes("credit"));
+    const hasDate = headerLower.some((h) => h.includes("date"));
+    const hasAccount = headerLower.some((h) => h.includes("account") || h.includes("ledger") || h.includes("description"));
+    const hasAmount = headerLower.some((h) => h.includes("amount") || h.includes("balance"));
+
+    let sheetType = "GENERAL";
+    if (hasDebitCredit && hasAccount) {
+      sheetType = "GENERAL_LEDGER";
+      documentType = "GENERAL_LEDGER";
+    } else if (hasDate && hasAmount && headerLower.some((h) => h.includes("transaction") || h.includes("reference"))) {
+      sheetType = "BANK_STATEMENT";
+      if (documentType === "UNKNOWN") documentType = "BANK_STATEMENT";
+    } else if (headerLower.some((h) => h.includes("revenue") || h.includes("expense") || h.includes("profit") || h.includes("loss") || h.includes("store") || h.includes("location"))) {
+      sheetType = "PROFIT_LOSS";
+      if (documentType === "UNKNOWN") documentType = "PROFIT_LOSS";
+    } else if (headerLower.some((h) => h.includes("asset") || h.includes("liability") || h.includes("equity"))) {
+      sheetType = "BALANCE_SHEET";
+      if (documentType === "UNKNOWN") documentType = "BALANCE_SHEET";
+    }
+
     const findColumn = (possibleNames) => {
       for (const name of possibleNames) {
-        const found = Object.keys(rows[0]).find(h => h.toLowerCase().includes(name.toLowerCase()));
+        const found = headers.find((h) => String(h).toLowerCase().includes(name.toLowerCase()));
         if (found) return found;
       }
       return null;
     };
 
-    const dateCol = findColumn(['date', 'trans date', 'transaction date', 'posting date']);
-    const accountCol = findColumn(['account', 'description', 'particulars', 'ledger', 'gl account']);
-    const debitCol = findColumn(['debit', 'dr', 'debit amount', 'withdrawal']);
-    const creditCol = findColumn(['credit', 'cr', 'credit amount', 'deposit']);
-    const amountCol = findColumn(['amount', 'balance', 'net']);
-    const referenceCol = findColumn(['reference', 'ref', 'voucher', 'transaction', 'entry']);
+    const dateCol = findColumn(["date", "trans date", "transaction date", "posting date"]);
+    const accountCol = findColumn(["account", "description", "particulars", "ledger", "gl account"]);
+    const storeCol = findColumn(["store", "location", "branch", "entity", "site", "outlet"]);
+    const debitCol = findColumn(["debit", "dr", "debit amount", "withdrawal"]);
+    const creditCol = findColumn(["credit", "cr", "credit amount", "deposit"]);
+    const amountCol = findColumn(["amount", "balance", "net"]);
+    const referenceCol = findColumn(["reference", "ref", "voucher", "transaction", "entry"]);
 
-    // Structure the data
     const structuredRows = [];
     const summary = {
       totalDebit: 0,
       totalCredit: 0,
       totalAmount: 0,
       uniqueAccounts: new Set(),
-      dateRange: { min: null, max: null },
+      uniqueStores: new Set(),
+      dateRange: { minTs: null, maxTs: null, minStr: null, maxStr: null },
       transactionCount: 0
     };
 
-    rows.forEach(row => {
+    rows.forEach((row) => {
       const structuredRow = {};
-      
-      if (dateCol && row[dateCol]) {
+      const orderedKeys = columnOrder.length ? columnOrder : Object.keys(row);
+
+      if (dateCol && row[dateCol] != null && row[dateCol] !== "") {
         const rawDate = row[dateCol];
-        structuredRow.date = formatDateUS(rawDate);
-        
-        if (!summary.dateRange.min || rawDate < summary.dateRange.min) {
-          summary.dateRange.min = formatDateUS(rawDate);
-        }
-        if (!summary.dateRange.max || rawDate > summary.dateRange.max) {
-          summary.dateRange.max = formatDateUS(rawDate);
+        const formatted = formatDateUS(rawDate);
+        structuredRow.date = formatted;
+        const ts = dateToComparable(rawDate);
+        if (ts != null) {
+          if (summary.dateRange.minTs == null || ts < summary.dateRange.minTs) {
+            summary.dateRange.minTs = ts;
+            summary.dateRange.minStr = formatted;
+          }
+          if (summary.dateRange.maxTs == null || ts > summary.dateRange.maxTs) {
+            summary.dateRange.maxTs = ts;
+            summary.dateRange.maxStr = formatted;
+          }
         }
       }
 
-      if (accountCol && row[accountCol]) {
+      if (accountCol && row[accountCol] != null && row[accountCol] !== "") {
         structuredRow.account = String(row[accountCol]).trim();
         summary.uniqueAccounts.add(structuredRow.account);
       }
 
-      if (referenceCol && row[referenceCol]) {
+      if (storeCol && row[storeCol] != null && row[storeCol] !== "") {
+        structuredRow.store = String(row[storeCol]).trim();
+        summary.uniqueStores.add(structuredRow.store);
+      }
+
+      if (referenceCol && row[referenceCol] != null && row[referenceCol] !== "") {
         structuredRow.reference = String(row[referenceCol]).trim();
       }
 
-      if (debitCol && row[debitCol]) {
+      if (debitCol && row[debitCol] != null && row[debitCol] !== "") {
         const debit = parseAmount(row[debitCol]);
         structuredRow.debit = debit;
         summary.totalDebit += debit;
       }
 
-      if (creditCol && row[creditCol]) {
+      if (creditCol && row[creditCol] != null && row[creditCol] !== "") {
         const credit = parseAmount(row[creditCol]);
         structuredRow.credit = credit;
         summary.totalCredit += credit;
       }
 
-      if (amountCol && row[amountCol]) {
+      if (amountCol && row[amountCol] != null && row[amountCol] !== "") {
         const amount = parseAmount(row[amountCol]);
         structuredRow.amount = amount;
         summary.totalAmount += amount;
       }
 
-      // Add all other columns as-is
-      Object.keys(row).forEach(key => {
-        if (key !== dateCol && key !== accountCol && key !== debitCol && 
-            key !== creditCol && key !== amountCol && key !== referenceCol) {
-          structuredRow[key] = row[key];
-        }
-      });
+      for (const key of orderedKeys) {
+        if (key === dateCol || key === accountCol || key === storeCol || key === debitCol || key === creditCol || key === amountCol || key === referenceCol) continue;
+        const val = row[key];
+        if (val === undefined) continue;
+        structuredRow[key] = normalizeCellValue(val);
+      }
 
       if (Object.keys(structuredRow).length > 0) {
         structuredRows.push(structuredRow);
@@ -681,7 +804,7 @@ function structureDataAsJSON(sheets) {
 
     allStructuredSheets.push({
       sheetName: sheet.name,
-      sheetType: sheetType,
+      sheetType,
       rowCount: structuredRows.length,
       data: structuredRows,
       summary: {
@@ -691,25 +814,26 @@ function structureDataAsJSON(sheets) {
         difference: Math.round((summary.totalDebit - summary.totalCredit) * 100) / 100,
         isBalanced: Math.abs(summary.totalDebit - summary.totalCredit) < 0.01,
         uniqueAccounts: summary.uniqueAccounts.size,
-        dateRange: summary.dateRange.min && summary.dateRange.max 
-          ? `${summary.dateRange.min} to ${summary.dateRange.max}` 
-          : 'Unknown',
+        uniqueStores: summary.uniqueStores.size,
+        dateRange: summary.dateRange.minStr && summary.dateRange.maxStr ? `${summary.dateRange.minStr} to ${summary.dateRange.maxStr}` : "Unknown",
         transactionCount: summary.transactionCount
       },
       columns: {
         date: dateCol,
         account: accountCol,
+        store: storeCol,
         debit: debitCol,
         credit: creditCol,
         amount: amountCol,
         reference: referenceCol
-      }
+      },
+      columnOrder: columnOrder
     });
   });
 
   return {
     success: true,
-    documentType: documentType,
+    documentType,
     sheetCount: allStructuredSheets.length,
     sheets: allStructuredSheets,
     overallSummary: {
@@ -722,10 +846,18 @@ function structureDataAsJSON(sheets) {
 }
 
 /**
- * 🆕 ENHANCED SYSTEM PROMPT - Works with JSON structured data
+ * ENHANCED SYSTEM PROMPT - Works with JSON structured data
  */
 function getEnhancedSystemPrompt(documentType) {
   const basePrompt = `You are an expert financial analyst and MIS report writer. You will receive financial data in structured JSON format.
+
+**CRITICAL – FIGURE ACCURACY (MUST FOLLOW):**
+- Use ONLY the exact numbers from the JSON. Do NOT round, approximate, or recalculate.
+- When citing any figure, ALWAYS state which sheet it comes from (sheetName) and, if present, which store/location (store column).
+- NEVER swap figures between stores, sheets, or line items. Each number belongs to one row and one column—cite it with that context.
+- If the data has a "store" or "location" column, always pair amounts with the correct store name from the same row.
+- columnOrder in each sheet shows the exact order of columns; use it to avoid mixing up columns (e.g. Store A's revenue vs Store B's revenue).
+- When data is truncated (dataTruncated: true), rely on the pre-calculated summary totals for sheet-level figures; do not sum truncated rows.
 
 **YOUR TASK:**
 Write a comprehensive Management Information System (MIS) commentary analyzing the financial data provided.
@@ -735,9 +867,11 @@ Write a comprehensive Management Information System (MIS) commentary analyzing t
 - sheets: Array of data sheets, each containing:
   - sheetName: Name of the sheet
   - sheetType: Type of data in the sheet
-  - data: Array of transactions/entries
-  - summary: Pre-calculated totals and statistics
-  - columns: Column mappings used in the data
+  - columnOrder: Order of columns (use this to interpret rows correctly)
+  - columns: Mapped column names (date, account, store, debit, credit, amount, reference)
+  - data: Array of transactions/entries (numbers are numeric; cite sheet + store when relevant)
+  - summary: Pre-calculated totals and statistics (use these for totals when data is truncated)
+  - dataTruncated / totalRows: If dataTruncated is true, use summary for totals, not sum of visible rows
 
 `;
 
@@ -850,41 +984,54 @@ Analyze the data thoroughly and provide:
 Use tables extensively for clarity. Be specific with numbers and dates.`;
 }
 
+/** Max rows per sheet to send to the model to stay within token limits */
+const MAX_DATA_ROWS_PER_SHEET = 500;
+
 /**
- * 🆕 CALL MODEL WITH JSON DATA - NOW USING OPENAI GPT-4o-mini
+ * CALL MODEL WITH JSON DATA - OpenAI GPT-4o-mini.
+ * Sends column order, full summary (from all rows), and truncation note when applicable.
  */
 async function callModelWithJSON({ structuredData, question, documentType }) {
   const systemPrompt = getEnhancedSystemPrompt(documentType);
 
-  // Create a clean, readable JSON representation for the AI
   const dataForAI = {
     documentType: structuredData.documentType,
     sheetCount: structuredData.sheetCount,
     overallSummary: structuredData.overallSummary,
-    sheets: structuredData.sheets.map(sheet => ({
-      sheetName: sheet.sheetName,
-      sheetType: sheet.sheetType,
-      rowCount: sheet.rowCount,
-      summary: sheet.summary,
-      columns: sheet.columns,
-      // Send first 500 rows to avoid token limits
-      data: sheet.data.slice(0, 500),
-      dataTruncated: sheet.data.length > 500,
-      totalRows: sheet.data.length
-    }))
+    sheets: structuredData.sheets.map((sheet) => {
+      const totalRows = sheet.data.length;
+      const truncated = totalRows > MAX_DATA_ROWS_PER_SHEET;
+      return {
+        sheetName: sheet.sheetName,
+        sheetType: sheet.sheetType,
+        rowCount: sheet.rowCount,
+        columnOrder: sheet.columnOrder || [],
+        columns: sheet.columns,
+        summary: sheet.summary,
+        data: sheet.data.slice(0, MAX_DATA_ROWS_PER_SHEET),
+        dataTruncated: truncated,
+        totalRows,
+        note: truncated ? `Only first ${MAX_DATA_ROWS_PER_SHEET} of ${totalRows} rows shown. Use "summary" for totals, not sum of visible rows.` : null
+      };
+    })
   };
+
+  const truncationNote = dataForAI.sheets.some((s) => s.dataTruncated)
+    ? "\n[Data in one or more sheets was truncated for length. Use the pre-calculated summary totals for each sheet; do not sum the visible rows.]"
+    : "";
 
   const messages = [
     { role: "system", content: systemPrompt },
-    { 
-      role: "user", 
+    {
+      role: "user",
       content: `Here is the structured financial data in JSON format:
+${truncationNote}
 
 \`\`\`json
 ${JSON.stringify(dataForAI, null, 2)}
 \`\`\`
 
-${question || "Please provide a comprehensive MIS commentary analyzing this financial data. Include all key metrics, findings, reconciliation (if multiple sheets), and actionable recommendations."}`
+${question || "Please provide a comprehensive MIS commentary analyzing this financial data. Include all key metrics, findings, reconciliation (if multiple sheets), and actionable recommendations. When citing figures, always state the sheet name and store/location when present."}`
     }
   ];
 
@@ -897,7 +1044,7 @@ ${question || "Please provide a comprehensive MIS commentary analyzing this fina
     body: JSON.stringify({
       model: "gpt-4o-mini",
       messages,
-      temperature: 0.1,
+      temperature: 0,
       max_tokens: 8000,
       top_p: 1.0,
       frequency_penalty: 0.0,
@@ -1158,7 +1305,8 @@ export default async function handler(req, res) {
       extracted = extractCsv(buffer);
       if (extracted.textContent) {
         const rows = parseCSV(extracted.textContent);
-        extracted.sheets = [{ name: 'Main Sheet', rows: rows, rowCount: rows.length }];
+        const columnOrder = rows.length > 0 ? Object.keys(rows[0]) : [];
+        extracted.sheets = [{ name: "Main Sheet", rows, rowCount: rows.length, columnOrder }];
       }
     }
 
