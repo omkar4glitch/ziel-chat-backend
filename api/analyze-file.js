@@ -1149,6 +1149,10 @@ async function callModel({ fileType, textContent, question, category, preprocess
     }
   ];
 
+  console.log("Calling OpenAI API...");
+  console.log(`API Key present: ${!!process.env.OPENAI_API_KEY}`);
+  console.log(`API Key starts with: ${process.env.OPENAI_API_KEY?.substring(0, 7)}...`);
+
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -1166,13 +1170,54 @@ async function callModel({ fileType, textContent, question, category, preprocess
     })
   });
 
+  console.log(`OpenAI API Response Status: ${r.status} ${r.statusText}`);
+
+  // Check if request was successful
+  if (!r.ok) {
+    const errorText = await r.text().catch(() => "");
+    console.error(`OpenAI API Error (${r.status}):`, errorText);
+    
+    let errorMessage = `OpenAI API Error (${r.status})`;
+    try {
+      const errorJson = JSON.parse(errorText);
+      errorMessage = errorJson.error?.message || errorMessage;
+    } catch (e) {
+      // If not JSON, use first 200 chars of error
+      errorMessage = errorText.slice(0, 200) || errorMessage;
+    }
+    
+    return { 
+      reply: null, 
+      raw: { error: errorMessage, status: r.status }, 
+      httpStatus: r.status 
+    };
+  }
+
   let data;
   try {
     data = await r.json();
   } catch (err) {
     const raw = await r.text().catch(() => "");
     console.error("Model returned non-JSON:", raw.slice(0, 1000));
-    return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
+    return { 
+      reply: null, 
+      raw: { 
+        rawText: raw.slice(0, 2000), 
+        parseError: err.message,
+        hint: "Check if OPENAI_API_KEY is valid and properly set"
+      }, 
+      httpStatus: r.status 
+    };
+  }
+
+  // Check for API errors in response
+  if (data.error) {
+    console.error("OpenAI API returned error:", data.error);
+    return {
+      reply: null,
+      raw: data,
+      httpStatus: r.status
+    };
   }
 
   const finishReason = data?.choices?.[0]?.finish_reason;
@@ -1212,7 +1257,16 @@ export default async function handler(req, res) {
 
   try {
     if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY environment variable" });
+    }
+
+    // Validate API key format
+    const apiKey = process.env.OPENAI_API_KEY.trim();
+    if (!apiKey.startsWith('sk-')) {
+      return res.status(500).json({ 
+        error: "Invalid OPENAI_API_KEY format. OpenAI API keys should start with 'sk-'",
+        hint: "Please check your environment variable configuration"
+      });
     }
 
     const body = await parseJsonBody(req);
