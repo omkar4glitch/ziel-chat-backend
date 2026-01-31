@@ -532,7 +532,7 @@ When analyzing multi-sheet Excel files, treat each sheet's data separately unles
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
       },
       body: JSON.stringify({
-        model: "gpt-4o",  // Using full GPT-4o for better accuracy
+        model: "gpt-4o-mini",  // Using full GPT-4o for better accuracy
         messages,
         temperature: 0,  // Zero temperature for maximum accuracy
         max_tokens: 16000,
