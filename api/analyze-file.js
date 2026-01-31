@@ -144,7 +144,7 @@ function bufferToText(buffer) {
 }
 
 /**
- * Extract CSV
+ * Extract CSV - Simple text extraction
  */
 function extractCsv(buffer) {
   const text = bufferToText(buffer);
@@ -160,16 +160,15 @@ async function extractPdf(buffer) {
     const text = (data && data.text) ? data.text.trim() : "";
 
     if (!text || text.length < 50) {
-      console.log("PDF appears to be scanned or image-based, attempting OCR...");
+      console.log("PDF appears to be scanned or image-based");
       return { 
         type: "pdf", 
         textContent: "", 
-        ocrNeeded: true,
         error: "This PDF appears to be scanned (image-based). Please try uploading the original image files (PNG/JPG) instead, or use a PDF with selectable text."
       };
     }
 
-    return { type: "pdf", textContent: text, ocrNeeded: false };
+    return { type: "pdf", textContent: text };
   } catch (err) {
     console.error("extractPdf failed:", err?.message || err);
     return { type: "pdf", textContent: "", error: String(err?.message || err) };
@@ -177,81 +176,7 @@ async function extractPdf(buffer) {
 }
 
 /**
- * Robust numeric parser for accounting amounts
- */
-function parseAmount(s) {
-  if (s === null || s === undefined) return 0;
-  let str = String(s).trim();
-
-  if (!str) return 0;
-
-  const parenMatch = str.match(/^\s*\((.*)\)\s*$/);
-  if (parenMatch) str = '-' + parenMatch[1];
-
-  const trailingMinus = str.match(/^(.*?)[\s-]+$/);
-  if (trailingMinus && !/^-/.test(str)) {
-    str = '-' + trailingMinus[1];
-  }
-
-  const crMatch = str.match(/\bCR\b/i);
-  const drMatch = str.match(/\bDR\b/i);
-  if (crMatch && !drMatch) {
-    if (!str.includes('-')) str = '-' + str;
-  } else if (drMatch && !crMatch) {
-    str = str.replace('-', '');
-  }
-
-  str = str.replace(/[^0-9.\-]/g, '');
-  const parts = str.split('.');
-  if (parts.length > 2) {
-    str = parts.shift() + '.' + parts.join('');
-  }
-
-  const n = parseFloat(str);
-  if (Number.isNaN(n)) return 0;
-  return n;
-}
-
-/**
- * Format date to US format (MM/DD/YYYY)
- */
-function formatDateUS(dateStr) {
-  if (!dateStr) return dateStr;
-  
-  const num = parseFloat(dateStr);
-  if (!isNaN(num) && num > 40000 && num < 50000) {
-    const date = new Date((num - 25569) * 86400 * 1000);
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const year = date.getFullYear();
-    return `${month}/${day}/${year}`;
-  }
-  
-  const date = new Date(dateStr);
-  if (!isNaN(date.getTime())) {
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const year = date.getFullYear();
-    return `${month}/${day}/${year}`;
-  }
-  
-  return dateStr;
-}
-
-/**
- * Format a cell for display: use raw numbers and Excel date serials as dates so figures are exact.
- */
-function formatCellForDisplay(c) {
-  if (c == null || c === "") return "";
-  if (typeof c === "number") {
-    if (!Number.isNaN(c) && c > 40000 && c < 50000) return formatDateUS(c);
-    return String(c);
-  }
-  return String(c).trim();
-}
-
-/**
- * Extract XLSX as raw rows (array of arrays). Uses raw: true so numbers are exact (no display rounding).
+ * Extract XLSX - Convert all sheets to simple text representation
  */
 function extractXlsx(buffer) {
   try {
@@ -260,29 +185,50 @@ function extractXlsx(buffer) {
       type: "buffer",
       cellDates: false,
       cellNF: false,
+      cellText: false,
       raw: true,
-      defval: ""
+      defval: ''
     });
+
+    console.log(`XLSX has ${workbook.SheetNames.length} sheets:`, workbook.SheetNames);
 
     if (workbook.SheetNames.length === 0) {
-      return { type: "xlsx", sheets: [] };
+      return { type: "xlsx", textContent: "", error: "No sheets found in Excel file" };
     }
 
-    const sheets = workbook.SheetNames.map((sheetName) => {
+    let fullText = "";
+
+    workbook.SheetNames.forEach((sheetName, index) => {
+      console.log(`Processing sheet ${index + 1}: "${sheetName}"`);
+      
       const sheet = workbook.Sheets[sheetName];
-      const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true, blankrows: false });
-      const rows = Array.isArray(rawRows) ? rawRows : [];
-      return {
-        name: sheetName,
-        rows: rows.map((row) => (Array.isArray(row) ? row : []).map((c) => (c == null ? "" : c)))
-      };
+      
+      // Convert sheet to CSV format for better readability
+      const csvText = XLSX.utils.sheet_to_csv(sheet, { 
+        blankrows: false,
+        strip: true
+      });
+
+      if (csvText && csvText.trim()) {
+        fullText += `\n\n=== SHEET: ${sheetName} ===\n`;
+        fullText += csvText;
+        fullText += `\n=== END OF SHEET: ${sheetName} ===\n`;
+      }
     });
 
-    console.log(`XLSX: ${sheets.length} sheet(s), ${sheets.reduce((sum, s) => sum + s.rows.length, 0)} total rows`);
-    return { type: "xlsx", sheets };
+    console.log(`Extracted ${fullText.length} characters from XLSX`);
+
+    if (!fullText.trim()) {
+      return { type: "xlsx", textContent: "", error: "No data found in Excel sheets" };
+    }
+
+    return { 
+      type: "xlsx", 
+      textContent: fullText.trim()
+    };
   } catch (err) {
     console.error("extractXlsx failed:", err?.message || err);
-    return { type: "xlsx", sheets: [], error: String(err?.message || err) };
+    return { type: "xlsx", textContent: "", error: String(err?.message || err) };
   }
 }
 
@@ -290,7 +236,7 @@ function extractXlsx(buffer) {
  * Extract Word Document (.docx)
  */
 async function extractDocx(buffer) {
-  console.log("=== DOCX EXTRACTION with JSZip ===");
+  console.log("=== DOCX EXTRACTION ===");
   
   try {
     const zip = await JSZip.loadAsync(buffer);
@@ -487,278 +433,191 @@ Once you have the text or searchable PDF, upload it here and I'll analyze it imm
 }
 
 /**
- * Parse a single CSV line (quote-aware) into array of values
+ * Smart chunking for large files
+ * Splits text into chunks that fit within token limits while preserving context
  */
-function parseCSVLineToValues(line) {
-  const result = [];
-  let current = "";
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    const nextChar = line[i + 1];
-    if (char === '"') {
-      if (inQuotes && nextChar === '"') {
-        current += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === "," && !inQuotes) {
-      result.push(current.trim());
-      current = "";
+function smartChunkText(text, maxChunkSize = 25000) {
+  if (text.length <= maxChunkSize) {
+    return [text];
+  }
+
+  const chunks = [];
+  const lines = text.split('\n');
+  let currentChunk = '';
+  let currentSize = 0;
+
+  for (const line of lines) {
+    const lineSize = line.length + 1; // +1 for newline
+
+    if (currentSize + lineSize > maxChunkSize && currentChunk) {
+      // Save current chunk
+      chunks.push(currentChunk.trim());
+      currentChunk = line + '\n';
+      currentSize = lineSize;
     } else {
-      current += char;
+      currentChunk += line + '\n';
+      currentSize += lineSize;
     }
   }
-  result.push(current.trim());
-  return result;
+
+  if (currentChunk.trim()) {
+    chunks.push(currentChunk.trim());
+  }
+
+  console.log(`Split into ${chunks.length} chunks. Sizes:`, chunks.map(c => c.length));
+  return chunks;
 }
 
 /**
- * Parse CSV to array of arrays (all rows, no header assumption)
+ * Call OpenAI API with natural file content - like ChatGPT does
  */
-function parseCSVToRows(csvText) {
-  const lines = csvText.trim().split(/\r?\n/).filter((l) => l.length > 0);
-  return lines.map((line) => parseCSVLineToValues(line));
-}
+async function callOpenAI({ fileContent, fileType, question, fileName = "uploaded_file" }) {
+  console.log(`📤 Calling OpenAI with ${fileContent.length} characters of ${fileType} content`);
 
-/**
- * Parse CSV to array of objects (first line = headers)
- */
-function parseCSV(csvText) {
-  const lines = csvText.trim().split('\n');
-  if (lines.length < 2) return [];
+  // Smart chunking for large files
+  const chunks = smartChunkText(fileContent, 25000);
+  
+  let systemPrompt = `You are an expert financial analyst and accounting professional. You have been provided with the complete content of a ${fileType.toUpperCase()} file.
 
-  const headers = parseCSVLineToValues(lines[0]);
-  const headerCount = headers.length;
-  const rows = [];
+**YOUR CAPABILITIES:**
+- Analyze financial data with precision and accuracy
+- Identify trends, anomalies, and insights
+- Provide detailed commentary on financial statements
+- Perform reconciliations and validations
+- Answer specific questions about the data
+- Generate comprehensive reports
 
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line || line.trim() === "" || line.trim() === ",".repeat(Math.max(0, headerCount - 1))) continue;
-    const values = parseCSVLineToValues(line);
-    const row = {};
-    headers.forEach((h, idx) => {
-      row[h] = values[idx] !== undefined ? values[idx] : "";
-    });
-    rows.push(row);
+**CRITICAL INSTRUCTIONS:**
+1. **ACCURACY IS PARAMOUNT**: Double-check all numbers before including them in your response
+2. **PRESERVE EXACT VALUES**: Never approximate or round numbers unless explicitly asked
+3. **VERIFY SOURCES**: Only cite numbers that actually appear in the provided data
+4. **SHOW YOUR WORK**: When performing calculations, show the formula
+5. **BE SPECIFIC**: Reference exact line items, account names, and dates from the file
+6. **NO HALLUCINATIONS**: If you're unsure about a number, say so - never make up data
+7. **CONTEXT MATTERS**: Consider the entire file content before drawing conclusions
+
+**OUTPUT FORMAT:**
+- Use markdown for clear formatting
+- Create tables for numerical comparisons
+- Use headers (##) to organize sections
+- Bold important figures and findings
+- Include executive summary at the start
+- Cite specific rows/sections when referencing data
+
+**IMPORTANT**: The file content is provided exactly as it appears in the original file. Treat it as the single source of truth.`;
+
+  // For multi-chunk files, adjust the prompt
+  if (chunks.length > 1) {
+    systemPrompt += `\n\n**NOTE**: Due to the large size of this file, the content has been split into ${chunks.length} parts. All parts are from the same file and should be analyzed together as a complete dataset.`;
   }
-
-  return rows;
-}
-
-/** Max content length to stay within model context (chars). */
-const MAX_CONTENT_CHARS = 120000;
-/** Max rows per sheet to include (avoids huge tables). */
-const MAX_ROWS_PER_SHEET = 2500;
-
-/** Keywords that suggest a row is a header (column names). */
-const HEADER_KEYWORDS = [
-  "store", "location", "branch", "outlet", "site", "entity",
-  "revenue", "income", "sales", "expense", "expenses", "cost", "cogs",
-  "ebitda", "margin", "profit", "loss", "gross", "net",
-  "total", "amount", "balance", "debit", "credit",
-  "date", "period", "month", "year", "q1", "q2", "q3", "q4",
-  "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
-  "account", "description", "particulars", "reference", "ref"
-];
-
-/**
- * Detect which row in the sheet is most likely the header (column names).
- * Headers can be on row 0, 3, 5, etc. Returns the row index (0-based).
- */
-function detectHeaderRow(rows, toCells, maxScan = 20) {
-  if (!rows || rows.length === 0) return 0;
-  const scanRows = rows.slice(0, Math.min(maxScan, rows.length));
-  let bestIdx = 0;
-  let bestScore = -1;
-  for (let r = 0; r < scanRows.length; r++) {
-    const cells = toCells(scanRows[r]);
-    const cellStrs = cells.map((c) => String(c ?? "").trim().toLowerCase());
-    let score = 0;
-    let numericCount = 0;
-    let textCount = 0;
-    for (const s of cellStrs) {
-      if (s.length === 0) continue;
-      if (/^[\d.,\s\-\(\)]+$/.test(s)) {
-        numericCount++;
-      } else {
-        textCount++;
-        for (const kw of HEADER_KEYWORDS) {
-          if (s.includes(kw)) {
-            score += 2;
-            break;
-          }
-        }
-      }
-    }
-    if (textCount > 0 && numericCount <= textCount) score += textCount;
-    if (score > bestScore) {
-      bestScore = score;
-      bestIdx = r;
-    }
-  }
-  return bestIdx;
-}
-
-/**
- * Format extracted file content for the AI (ChatGPT-style: one block of content).
- * Detects header row (can be any row) and labels it so store/location columns are clear.
- */
-function formatExtractedContentForAI(extracted) {
-  let content = "";
-  let truncated = false;
-
-  if (extracted.sheets && extracted.sheets.length > 0) {
-    const sheets = extracted.sheets;
-    const parts = [];
-    const toCells = (row) =>
-      Array.isArray(row)
-        ? row
-        : typeof row === "object" && row !== null
-          ? Object.values(row)
-          : [row];
-
-    for (const sheet of sheets) {
-      const name = sheet.name || "Sheet";
-      const rows = sheet.rows || [];
-      const maxRows = Math.min(rows.length, MAX_ROWS_PER_SHEET);
-      const sheetRows = rows.slice(0, maxRows);
-
-      const maxCols = sheetRows.length
-        ? Math.max(...sheetRows.map((row) => toCells(row).length))
-        : 0;
-      const headerRowIndex = detectHeaderRow(sheetRows, toCells);
-
-      parts.push(`--- Sheet: ${name} ---`);
-      parts.push(`(Columns 0 to ${maxCols - 1}; each row has ${maxCols} values. Cite figures with Sheet, Row, and Column index.)`);
-      parts.push(`(The HEADER row may be Row 0, Row 3, Row 5, etc.—it is marked below. Use it to interpret data rows.)`);
-
-      const headerCells = toCells(sheetRows[headerRowIndex] || []);
-      const paddedHeader = Array.from({ length: maxCols }, (_, j) => (headerCells[j] != null && headerCells[j] !== "" ? String(headerCells[j]).trim() : `(col ${j})`));
-      parts.push(`Column meanings (from header row): ${paddedHeader.map((h, j) => `${j}=${h}`).join(", ")}`);
-
-      sheetRows.forEach((row, i) => {
-        const cells = toCells(row);
-        const padded = Array.from({ length: maxCols }, (_, j) => formatCellForDisplay(cells[j]));
-        const line = padded.map((c, j) => `[${j}] ${c}`).join(" | ");
-        const isHeader = i === headerRowIndex;
-        const suffix = isHeader ? "  ← HEADER (column names)" : "";
-        parts.push(`Row ${i}: ${line}${suffix}`);
-      });
-
-      if (rows.length > maxRows) {
-        parts.push(`(... ${rows.length - maxRows} more rows not shown)`);
-        truncated = true;
-      }
-      parts.push("");
-    }
-    content = parts.join("\n").trim();
-    if (content.length > MAX_CONTENT_CHARS) {
-      content = content.slice(0, MAX_CONTENT_CHARS);
-      truncated = true;
-      content += "\n\n[Content truncated due to length. Answer based on the portion above.]";
-    }
-    return { content, truncated };
-  }
-
-  if (extracted.textContent && typeof extracted.textContent === "string") {
-    content = extracted.textContent.trim();
-    if (content.length > MAX_CONTENT_CHARS) {
-      content = content.slice(0, MAX_CONTENT_CHARS);
-      truncated = true;
-      content += "\n\n[Content truncated due to length. Answer based on the portion above.]";
-    }
-    return { content, truncated };
-  }
-
-  return { content: "", truncated: false };
-}
-
-const GENERIC_SYSTEM_PROMPT = `You are a helpful accounting and financial assistant. The user will share document content (extracted from a file they uploaded) and a question or prompt.
-
-**CRITICAL – Figure accuracy (you MUST follow this):**
-- Use ONLY figures that appear in the document content. Do NOT invent, approximate, round, or calculate numbers.
-- When citing ANY figure, state exactly where it comes from: Sheet name, Row number, and Column index (e.g. "Sheet1 Row 5 column 3: 2751317.38"). Copy the number exactly as shown in that cell—including decimals.
-- Do NOT swap figures between rows, columns, or sheets. Each number belongs to one cell only.
-- For store-wise or location-wise breakdowns: each store/location is one DATA ROW. Use the EXACT number from that row and that column (e.g. EBITDA column for that row). Do NOT round (e.g. do not write 1200000 if the cell shows 1234567.89). Do NOT invent or estimate—if you cannot find the figure in the content, say so.
-- The document includes a "Column meanings" line per sheet (e.g. 0=Store, 1=Revenue, 5=EBITDA). Use it to pick the correct column for each metric. Rows are "Row 0", "Row 1", etc.; the HEADER row is marked and may be Row 0, Row 3, Row 5, etc. Data rows are all other rows.
-- If the content is truncated, only use and cite figures from the portion that was provided.
-
-**Other rules:**
-- Answer based ONLY on the provided document content.
-- Reply in clear markdown. Use tables or bullet points when helpful.`;
-
-/**
- * Call OpenAI with extracted content + user prompt (ChatGPT-style).
- */
-async function callModelWithContent({ content, question }) {
-  const questionText = question?.trim() || "Please analyze this document and summarize the key points and figures.";
-  const userMessage = content
-    ? `Document content (figures must be cited with Sheet name, Row number, and column index):\n\n${content}\n\n---\nUser's question: ${questionText}`
-    : `User's question: ${questionText}`;
 
   const messages = [
-    { role: "system", content: GENERIC_SYSTEM_PROMPT },
-    { role: "user", content: userMessage }
+    { role: "system", content: systemPrompt }
   ];
 
-  const r = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages,
-      temperature: 0,
-      max_tokens: 8000,
-      top_p: 1.0,
-      frequency_penalty: 0.0,
-      presence_penalty: 0.0
-    })
-  });
+  // Add file content in chunks
+  if (chunks.length === 1) {
+    messages.push({
+      role: "user",
+      content: `Here is the complete content of the ${fileType.toUpperCase()} file "${fileName}":\n\n${chunks[0]}\n\n${question || "Please analyze this file and provide a comprehensive financial commentary."}`
+    });
+  } else {
+    // For multiple chunks, send them sequentially
+    chunks.forEach((chunk, index) => {
+      messages.push({
+        role: "user",
+        content: `Part ${index + 1} of ${chunks.length} of the ${fileType.toUpperCase()} file "${fileName}":\n\n${chunk}`
+      });
+      
+      if (index < chunks.length - 1) {
+        messages.push({
+          role: "assistant",
+          content: `Received part ${index + 1} of ${chunks.length}. Ready for the next part.`
+        });
+      }
+    });
 
-  let data;
-  try {
-    data = await r.json();
-  } catch (err) {
-    const raw = await r.text().catch(() => "");
-    console.error("OpenAI returned non-JSON:", raw.slice(0, 1000));
-    return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
+    // Add the actual question after all chunks
+    messages.push({
+      role: "user",
+      content: question || "Now that you have the complete file, please analyze it and provide a comprehensive financial commentary."
+    });
   }
 
-  if (data.error) {
-    console.error("OpenAI API Error:", data.error);
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages,
+        temperature: 0.1,
+        max_tokens: 16000,
+        top_p: 1.0,
+        frequency_penalty: 0.0,
+        presence_penalty: 0.0
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("OpenAI API error:", response.status, errorText);
+      return {
+        reply: null,
+        error: `OpenAI API error: ${response.status}`,
+        raw: errorText
+      };
+    }
+
+    const data = await response.json();
+
+    if (data.error) {
+      console.error("OpenAI API Error:", data.error);
+      return {
+        reply: null,
+        error: data.error.message,
+        raw: data
+      };
+    }
+
+    const finishReason = data?.choices?.[0]?.finish_reason;
+    console.log(`OpenAI finish reason: ${finishReason}`);
+    console.log(`Token usage:`, data?.usage);
+
+    if (finishReason === 'length') {
+      console.warn("⚠️ Response was truncated due to token limit!");
+    }
+
+    let reply = data?.choices?.[0]?.message?.content || null;
+
+    if (reply) {
+      // Clean up markdown artifacts
+      reply = reply
+        .replace(/^```(?:markdown|json)\s*\n/gm, '')
+        .replace(/\n```\s*$/gm, '')
+        .replace(/```(?:markdown|json)\s*\n/g, '')
+        .replace(/\n```/g, '')
+        .trim();
+    }
+
+    return {
+      reply,
+      raw: data,
+      finishReason,
+      tokenUsage: data?.usage
+    };
+
+  } catch (err) {
+    console.error("OpenAI API call failed:", err);
     return {
       reply: null,
-      raw: data,
-      httpStatus: r.status,
-      error: data.error.message
+      error: err.message,
+      raw: null
     };
   }
-
-  const finishReason = data?.choices?.[0]?.finish_reason;
-  console.log(`OpenAI finish reason: ${finishReason}`, data?.usage);
-
-  let reply = data?.choices?.[0]?.message?.content || null;
-  if (reply) {
-    reply = reply
-      .replace(/^```(?:markdown|json)\s*\n/gm, "")
-      .replace(/\n```\s*$/gm, "")
-      .replace(/```(?:markdown|json)\s*\n/g, "")
-      .replace(/\n```/g, "")
-      .trim();
-  }
-
-  return {
-    reply,
-    raw: data,
-    httpStatus: r.status,
-    finishReason,
-    tokenUsage: data?.usage
-  };
 }
 
 /**
@@ -934,114 +793,160 @@ export default async function handler(req, res) {
 
   try {
     if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY environment variable" });
     }
 
     const body = await parseJsonBody(req);
     const { fileUrl, question = "" } = body || {};
 
-    if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
+    if (!fileUrl) {
+      return res.status(400).json({ error: "fileUrl is required" });
+    }
 
-    console.log("📥 Downloading file...");
-    const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
-    const detectedType = detectFileType(fileUrl, contentType, buffer);
-    console.log(`📄 File type detected: ${detectedType}`);
-
-    let extracted = { type: detectedType };
+    console.log("📥 Downloading file from:", fileUrl);
     
-    // Extract based on file type
-    if (detectedType === "pdf") {
-      extracted = await extractPdf(buffer);
-    } else if (detectedType === "docx") {
-      extracted = await extractDocx(buffer);
-    } else if (detectedType === "pptx") {
-      extracted = await extractPptx(buffer);
-    } else if (detectedType === "xlsx") {
-      extracted = extractXlsx(buffer);
-    } else if (["png", "jpg", "jpeg", "gif", "bmp", "webp"].includes(detectedType)) {
-      extracted = await extractImage(buffer, detectedType);
-    } else {
-      extracted = extractCsv(buffer);
-      if (extracted.textContent) {
-        const rawRows = parseCSVToRows(extracted.textContent);
-        extracted.sheets = [{ name: "CSV", rows: rawRows }];
-      }
+    const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
+    const fileType = detectFileType(fileUrl, contentType, buffer);
+    
+    console.log(`📄 Detected file type: ${fileType}`);
+    console.log(`📊 File size: ${(bytesReceived / 1024).toFixed(2)} KB`);
+
+    let extractedContent = "";
+    let extractionError = null;
+
+    // Extract content based on file type
+    switch (fileType) {
+      case "pdf":
+        const pdfResult = await extractPdf(buffer);
+        extractedContent = pdfResult.textContent;
+        extractionError = pdfResult.error;
+        break;
+
+      case "docx":
+        const docxResult = await extractDocx(buffer);
+        extractedContent = docxResult.textContent;
+        extractionError = docxResult.error;
+        break;
+
+      case "pptx":
+        const pptxResult = await extractPptx(buffer);
+        extractedContent = pptxResult.textContent;
+        extractionError = pptxResult.error;
+        break;
+
+      case "xlsx":
+        const xlsxResult = extractXlsx(buffer);
+        extractedContent = xlsxResult.textContent;
+        extractionError = xlsxResult.error;
+        break;
+
+      case "csv":
+        const csvResult = extractCsv(buffer);
+        extractedContent = csvResult.textContent;
+        break;
+
+      case "png":
+      case "jpg":
+      case "jpeg":
+      case "gif":
+      case "bmp":
+      case "webp":
+        const imageResult = await extractImage(buffer, fileType);
+        return res.status(200).json({
+          ok: true,
+          type: fileType,
+          reply: imageResult.textContent,
+          requiresManualProcessing: true,
+          isImage: true
+        });
+
+      default:
+        // Try as CSV
+        const defaultResult = extractCsv(buffer);
+        extractedContent = defaultResult.textContent;
     }
 
-    // Handle errors and special cases
-    if (extracted.error) {
+    // Handle extraction errors
+    if (extractionError) {
       return res.status(200).json({
         ok: false,
-        type: extracted.type,
-        reply: `Failed to parse file: ${extracted.error}`,
-        debug: { error: extracted.error }
+        type: fileType,
+        reply: `Failed to extract content from file: ${extractionError}`,
+        error: extractionError
       });
     }
 
-    if (extracted.ocrNeeded || extracted.requiresManualProcessing || extracted.requiresConversion) {
-      return res.status(200).json({
-        ok: true,
-        type: extracted.type,
-        reply: extracted.textContent || "This file requires special processing.",
-        category: "general",
-        debug: {
-          requiresManualProcessing: extracted.requiresManualProcessing ?? false,
-          isImage: extracted.isImage ?? false
-        }
-      });
-    }
-
-    const { content, truncated } = formatExtractedContentForAI(extracted);
-    if (!content || !content.trim()) {
+    if (!extractedContent || extractedContent.trim().length === 0) {
       return res.status(200).json({
         ok: false,
-        type: extracted.type,
-        reply: "No content could be extracted from this file. Try a different file or format.",
-        debug: { reason: "empty_content" }
+        type: fileType,
+        reply: "No content could be extracted from this file. The file may be empty or in an unsupported format.",
+        error: "Empty file content"
       });
     }
 
-    console.log("🤖 Sending content to OpenAI GPT-4o-mini...");
-    const { reply, raw, httpStatus, finishReason, tokenUsage, error } = await callModelWithContent({
-      content,
-      question
+    console.log(`✅ Extracted ${extractedContent.length} characters from ${fileType} file`);
+
+    // Get file name from URL
+    const fileName = fileUrl.split('/').pop().split('?')[0] || 'uploaded_file';
+
+    // Call OpenAI with the natural file content
+    console.log("🤖 Sending file content to OpenAI...");
+    
+    const aiResult = await callOpenAI({
+      fileContent: extractedContent,
+      fileType: fileType,
+      question: question,
+      fileName: fileName
     });
 
-    if (!reply) {
+    if (!aiResult.reply) {
       return res.status(200).json({
         ok: false,
-        type: extracted.type,
-        reply: error || "No reply from model",
-        debug: { status: httpStatus, error }
+        type: fileType,
+        reply: aiResult.error || "No response from AI model",
+        error: aiResult.error,
+        debug: aiResult.raw
       });
     }
 
     console.log("✅ AI analysis complete!");
+    console.log(`📊 Token usage:`, aiResult.tokenUsage);
 
+    // Generate Word document
     let wordBase64 = null;
     try {
-      wordBase64 = await markdownToWord(reply);
+      console.log("📝 Generating Word document...");
+      wordBase64 = await markdownToWord(aiResult.reply);
+      console.log("✅ Word document generated successfully");
     } catch (wordError) {
-      console.error("Word generation error:", wordError);
+      console.error("❌ Word generation error:", wordError.message);
     }
 
     return res.status(200).json({
       ok: true,
-      type: extracted.type,
-      reply,
+      type: fileType,
+      reply: aiResult.reply,
       wordDownload: wordBase64,
-      downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
-      debug: {
-        contentTruncated: truncated,
-        hasWord: !!wordBase64,
-        finishReason,
-        tokenUsage
+      downloadUrl: wordBase64 
+        ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` 
+        : null,
+      metadata: {
+        fileType: fileType,
+        fileName: fileName,
+        fileSize: bytesReceived,
+        contentLength: extractedContent.length,
+        finishReason: aiResult.finishReason,
+        tokenUsage: aiResult.tokenUsage,
+        hasWordDoc: !!wordBase64
       }
     });
+
   } catch (err) {
-    console.error("❌ analyze-file error:", err);
+    console.error("❌ Handler error:", err);
     return res.status(500).json({ 
-      error: String(err?.message || err)
+      error: String(err?.message || err),
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   }
 }
