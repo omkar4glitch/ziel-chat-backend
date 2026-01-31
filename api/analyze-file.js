@@ -14,6 +14,11 @@ function cors(res) {
 }
 
 /**
+ * Sleep helper for retry logic
+ */
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
  * Tolerant body parser
  */
 async function parseJsonBody(req) {
@@ -176,8 +181,7 @@ async function extractPdf(buffer) {
 }
 
 /**
- * 🔥 IMPROVED: Extract XLSX with proper structure preservation
- * Returns array of sheets with row objects, NOT text
+ * Extract XLSX with proper structure preservation
  */
 function extractXlsx(buffer) {
   try {
@@ -209,7 +213,7 @@ function extractXlsx(buffer) {
         defval: '',
         blankrows: false,
         raw: false,
-        header: undefined // Use first row as headers
+        header: undefined
       });
 
       console.log(`  - Sheet "${sheetName}": ${jsonRows.length} rows`);
@@ -375,93 +379,156 @@ Once converted to text/PDF, upload here for analysis! 🚀`;
 }
 
 /**
- * 🔥 NEW: Smart data preparation for GPT-4o
- * Converts structured data to optimized format for AI
+ * 🔥 IMPROVED: Smart data compression for large files
+ * Compresses data to fit within token limits while maintaining accuracy
  */
-function prepareDataForAI(sheets, maxRowsPerSheet = 10000) {
+function compressDataForAI(sheets, targetSize = 'auto') {
   if (!sheets || sheets.length === 0) {
     return null;
   }
 
-  const preparedSheets = sheets.map(sheet => {
+  // Estimate token count (rough: 1 token ≈ 4 characters)
+  const estimateTokens = (text) => Math.ceil(text.length / 4);
+
+  // Calculate total data size
+  const totalRows = sheets.reduce((sum, s) => sum + s.data.length, 0);
+  console.log(`📊 Total rows across all sheets: ${totalRows}`);
+
+  // Define limits based on target
+  const limits = {
+    small: { maxRowsPerSheet: 5000, modelSuggestion: 'gpt-4o' },
+    medium: { maxRowsPerSheet: 3000, modelSuggestion: 'gpt-4o-mini' },
+    large: { maxRowsPerSheet: 1500, modelSuggestion: 'gpt-4o-mini' },
+    xlarge: { maxRowsPerSheet: 500, modelSuggestion: 'gpt-4o-mini' }
+  };
+
+  // Auto-detect size category
+  let sizeCategory = 'small';
+  if (totalRows > 5000) sizeCategory = 'medium';
+  if (totalRows > 10000) sizeCategory = 'large';
+  if (totalRows > 20000) sizeCategory = 'xlarge';
+
+  if (targetSize !== 'auto') {
+    sizeCategory = targetSize;
+  }
+
+  const limit = limits[sizeCategory];
+  console.log(`📏 Size category: ${sizeCategory}, Max rows per sheet: ${limit.maxRowsPerSheet}`);
+
+  const compressedSheets = sheets.map(sheet => {
     const { name, data, columns } = sheet;
     
-    // If too many rows, sample intelligently
     let sampledData = data;
-    if (data.length > maxRowsPerSheet) {
-      console.log(`⚠️ Sheet "${name}" has ${data.length} rows, sampling to ${maxRowsPerSheet}`);
+    let compressionApplied = false;
+
+    // If too many rows, apply intelligent sampling
+    if (data.length > limit.maxRowsPerSheet) {
+      console.log(`⚠️ Sheet "${name}" has ${data.length} rows, compressing to ${limit.maxRowsPerSheet}`);
       
-      // Take first 100, last 100, and sample middle
-      const firstRows = data.slice(0, 100);
-      const lastRows = data.slice(-100);
-      const middleRows = data.slice(100, -100);
+      const maxRows = limit.maxRowsPerSheet;
       
-      // Sample middle rows evenly
-      const sampleRate = Math.max(1, Math.floor(middleRows.length / (maxRowsPerSheet - 200)));
-      const sampledMiddle = middleRows.filter((_, idx) => idx % sampleRate === 0);
+      // Strategy: First 20%, last 20%, evenly sampled middle 60%
+      const firstChunk = Math.floor(maxRows * 0.2);
+      const lastChunk = Math.floor(maxRows * 0.2);
+      const middleChunk = maxRows - firstChunk - lastChunk;
+
+      const firstRows = data.slice(0, firstChunk);
+      const lastRows = data.slice(-lastChunk);
       
+      const middleStartIdx = firstChunk;
+      const middleEndIdx = data.length - lastChunk;
+      const middleRowsTotal = middleEndIdx - middleStartIdx;
+      const sampleRate = Math.max(1, Math.floor(middleRowsTotal / middleChunk));
+      
+      const sampledMiddle = [];
+      for (let i = middleStartIdx; i < middleEndIdx && sampledMiddle.length < middleChunk; i += sampleRate) {
+        sampledMiddle.push(data[i]);
+      }
+
       sampledData = [...firstRows, ...sampledMiddle, ...lastRows];
-      console.log(`✓ Sampled ${sampledData.length} rows from ${data.length}`);
+      compressionApplied = true;
+      
+      console.log(`✓ Compressed to ${sampledData.length} rows (first ${firstChunk}, middle ${sampledMiddle.length}, last ${lastChunk})`);
     }
 
     return {
       sheetName: name,
       columns: columns,
-      rowCount: data.length,
-      sampledRowCount: sampledData.length,
-      isSampled: data.length > maxRowsPerSheet,
+      totalRows: data.length,
+      includedRows: sampledData.length,
+      compressionApplied: compressionApplied,
+      compressionRatio: compressionApplied ? ((sampledData.length / data.length) * 100).toFixed(1) + '%' : '100%',
       data: sampledData
     };
   });
 
-  return preparedSheets;
+  return {
+    sheets: compressedSheets,
+    sizeCategory: sizeCategory,
+    recommendedModel: limit.modelSuggestion,
+    totalOriginalRows: totalRows,
+    totalIncludedRows: compressedSheets.reduce((sum, s) => sum + s.includedRows, 0)
+  };
 }
 
 /**
- * 🔥 NEW: Call GPT-4o (full version) with structured JSON
- * Much better at handling large datasets and maintaining accuracy
+ * 🔥 HYBRID: Auto-select best model based on data size with retry logic
  */
-async function callGPT4o({ sheets, rawText, fileType, question, fileName = "uploaded_file" }) {
-  console.log(`📤 Calling GPT-4o for analysis...`);
+async function callOpenAIWithRetry({ compressedData, rawText, fileType, question, fileName = "uploaded_file" }) {
+  console.log(`📤 Preparing AI analysis...`);
 
   let dataContent = "";
-  let dataSize = 0;
+  let modelToUse = "gpt-4o-mini"; // Default to mini
+  let useStructuredData = false;
 
   // Prepare data based on file type
-  if (sheets && sheets.length > 0) {
-    // Excel/CSV with structured data
-    const preparedData = prepareDataForAI(sheets);
+  if (compressedData && compressedData.sheets && compressedData.sheets.length > 0) {
+    useStructuredData = true;
+    const { sheets, sizeCategory, recommendedModel, totalOriginalRows, totalIncludedRows } = compressedData;
     
-    console.log(`📊 Prepared data summary:`);
-    preparedData.forEach(sheet => {
-      console.log(`  - ${sheet.sheetName}: ${sheet.sampledRowCount} rows (${sheet.columns.length} columns)`);
-    });
+    modelToUse = recommendedModel;
+    
+    console.log(`📊 Data Summary:`);
+    console.log(`  - Total original rows: ${totalOriginalRows}`);
+    console.log(`  - Total included rows: ${totalIncludedRows}`);
+    console.log(`  - Compression: ${((totalIncludedRows/totalOriginalRows)*100).toFixed(1)}%`);
+    console.log(`  - Recommended model: ${modelToUse}`);
 
     dataContent = `**FILE TYPE**: ${fileType.toUpperCase()}
 **FILE NAME**: ${fileName}
-**TOTAL SHEETS**: ${preparedData.length}
+**TOTAL SHEETS**: ${sheets.length}
+**DATA SIZE**: ${sizeCategory.toUpperCase()} (${totalOriginalRows} total rows, ${totalIncludedRows} analyzed)
 
 `;
 
-    preparedData.forEach((sheet, idx) => {
+    sheets.forEach((sheet, idx) => {
       dataContent += `\n## SHEET ${idx + 1}: "${sheet.sheetName}"\n`;
       dataContent += `**Columns**: ${sheet.columns.join(', ')}\n`;
-      dataContent += `**Total Rows**: ${sheet.rowCount}${sheet.isSampled ? ` (showing ${sheet.sampledRowCount} sampled rows)` : ''}\n\n`;
+      dataContent += `**Total Rows**: ${sheet.totalRows}`;
       
-      // Convert to clean JSON
+      if (sheet.compressionApplied) {
+        dataContent += ` (showing ${sheet.includedRows} sampled rows - ${sheet.compressionRatio} of data)\n`;
+        dataContent += `**Sampling Method**: Intelligent sampling - first 20%, middle 60% (evenly sampled), last 20%\n`;
+      } else {
+        dataContent += ` (all data included)\n`;
+      }
+      
+      dataContent += `\n**DATA**:\n`;
       dataContent += `\`\`\`json\n${JSON.stringify(sheet.data, null, 2)}\n\`\`\`\n`;
     });
-
-    dataSize = dataContent.length;
     
   } else if (rawText) {
-    // Text-based files (PDF, DOCX, etc.)
+    // Text-based files - use mini for large, 4o for small
+    const textLength = rawText.length;
+    modelToUse = textLength > 50000 ? "gpt-4o-mini" : "gpt-4o";
+    
+    console.log(`📝 Text file: ${textLength} characters, using ${modelToUse}`);
+    
     dataContent = `**FILE TYPE**: ${fileType.toUpperCase()}
 **FILE NAME**: ${fileName}
 
 **CONTENT**:
 ${rawText}`;
-    dataSize = dataContent.length;
   } else {
     return {
       reply: null,
@@ -469,9 +536,10 @@ ${rawText}`;
     };
   }
 
-  console.log(`📏 Data size: ${(dataSize / 1024).toFixed(2)} KB`);
+  console.log(`🤖 Using model: ${modelToUse}`);
+  console.log(`📏 Data size: ${(dataContent.length / 1024).toFixed(2)} KB`);
 
-  // Build system prompt
+  // Build enhanced system prompt
   const systemPrompt = `You are an expert financial analyst with deep expertise in accounting, P&L analysis, and financial reporting.
 
 **YOUR CORE MISSION**: Provide accurate, precise analysis based ONLY on the data provided. Never make up numbers.
@@ -505,6 +573,8 @@ ${rawText}`;
 - "Profitability" = Revenue minus expenses, show calculation
 - "Trends" = Compare periods if data has dates/months
 
+${useStructuredData && compressedData.totalIncludedRows < compressedData.totalOriginalRows ? `\n**IMPORTANT**: This dataset has been intelligently sampled. You are seeing ${compressedData.totalIncludedRows} out of ${compressedData.totalOriginalRows} total rows. The sampling includes first 20%, last 20%, and evenly distributed middle 60% to ensure representative analysis. When providing insights, acknowledge that this is based on a representative sample.` : ''}
+
 When analyzing multi-sheet Excel files, treat each sheet's data separately unless asked to combine.`;
 
   const userMessage = `${dataContent}
@@ -517,90 +587,153 @@ When analyzing multi-sheet Excel files, treat each sheet's data separately unles
 - Answer the question precisely using ONLY the data above
 - If the question asks for "top/bottom performing locations", rank by REVENUE/SALES (not expenses)
 - Double-check all numbers before including them
-- If something is unclear or data is missing, say so explicitly`;
+- If something is unclear or data is missing, say so explicitly
+${useStructuredData && compressedData.totalIncludedRows < compressedData.totalOriginalRows ? '- Note: You are analyzing a representative sample of the complete dataset\n- Extrapolate insights appropriately when discussing overall trends' : ''}`;
 
   const messages = [
     { role: "system", content: systemPrompt },
     { role: "user", content: userMessage }
   ];
 
-  try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",  // Using full GPT-4o for better accuracy
-        messages,
-        temperature: 0,  // Zero temperature for maximum accuracy
-        max_tokens: 16000,
-        top_p: 1.0,
-        frequency_penalty: 0,
-        presence_penalty: 0
-      })
-    });
+  // Retry configuration
+  const maxRetries = 3;
+  const baseDelay = 2000; // 2 seconds
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("OpenAI API error:", response.status, errorText);
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`🔄 API call attempt ${attempt}/${maxRetries}...`);
+      
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: modelToUse,
+          messages,
+          temperature: 0,
+          max_tokens: 16000,
+          top_p: 1.0,
+          frequency_penalty: 0,
+          presence_penalty: 0
+        })
+      });
+
+      // Handle rate limit (429) with retry
+      if (response.status === 429) {
+        if (attempt < maxRetries) {
+          const delay = baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
+          console.log(`⚠️ Rate limit hit (429). Retrying in ${delay/1000} seconds...`);
+          await sleep(delay);
+          continue; // Retry
+        } else {
+          console.error("❌ Rate limit exceeded after all retries");
+          return {
+            reply: null,
+            error: "Rate limit exceeded. Please wait a moment and try again, or upgrade your OpenAI API plan for higher limits.",
+            raw: await response.text()
+          };
+        }
+      }
+
+      // Handle other errors
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("OpenAI API error:", response.status, errorText);
+        
+        // Don't retry on authentication or bad request errors
+        if (response.status === 401 || response.status === 400) {
+          return {
+            reply: null,
+            error: `OpenAI API error: ${response.status}`,
+            raw: errorText
+          };
+        }
+        
+        // Retry on other errors
+        if (attempt < maxRetries) {
+          const delay = baseDelay * Math.pow(2, attempt - 1);
+          console.log(`⚠️ Error ${response.status}. Retrying in ${delay/1000} seconds...`);
+          await sleep(delay);
+          continue;
+        } else {
+          return {
+            reply: null,
+            error: `OpenAI API error: ${response.status}`,
+            raw: errorText
+          };
+        }
+      }
+
+      // Success! Parse response
+      const data = await response.json();
+
+      if (data.error) {
+        console.error("OpenAI API Error:", data.error);
+        return {
+          reply: null,
+          error: data.error.message,
+          raw: data
+        };
+      }
+
+      const finishReason = data?.choices?.[0]?.finish_reason;
+      const usage = data?.usage;
+
+      console.log(`✅ Success with ${modelToUse}!`);
+      console.log(`  - Finish reason: ${finishReason}`);
+      console.log(`  - Tokens: ${usage?.total_tokens} (prompt: ${usage?.prompt_tokens}, completion: ${usage?.completion_tokens})`);
+
+      if (finishReason === 'length') {
+        console.warn("⚠️ Response truncated due to length");
+      }
+
+      let reply = data?.choices?.[0]?.message?.content || null;
+
+      if (reply) {
+        // Clean up markdown
+        reply = reply
+          .replace(/^```(?:markdown|json)\s*\n/gm, '')
+          .replace(/\n```\s*$/gm, '')
+          .replace(/```(?:markdown|json)\s*\n/g, '')
+          .replace(/\n```/g, '')
+          .trim();
+      }
+
       return {
-        reply: null,
-        error: `OpenAI API error: ${response.status}`,
-        raw: errorText
+        reply,
+        raw: data,
+        finishReason,
+        tokenUsage: usage,
+        modelUsed: modelToUse,
+        attemptNumber: attempt
       };
+
+    } catch (err) {
+      console.error(`API call attempt ${attempt} failed:`, err);
+      
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt - 1);
+        console.log(`⚠️ Retrying in ${delay/1000} seconds...`);
+        await sleep(delay);
+        continue;
+      } else {
+        return {
+          reply: null,
+          error: err.message,
+          raw: null
+        };
+      }
     }
-
-    const data = await response.json();
-
-    if (data.error) {
-      console.error("OpenAI API Error:", data.error);
-      return {
-        reply: null,
-        error: data.error.message,
-        raw: data
-      };
-    }
-
-    const finishReason = data?.choices?.[0]?.finish_reason;
-    const usage = data?.usage;
-
-    console.log(`✅ GPT-4o Response:`);
-    console.log(`  - Finish reason: ${finishReason}`);
-    console.log(`  - Tokens: ${usage?.total_tokens} (prompt: ${usage?.prompt_tokens}, completion: ${usage?.completion_tokens})`);
-
-    if (finishReason === 'length') {
-      console.warn("⚠️ Response truncated! Consider reducing data or asking more specific questions.");
-    }
-
-    let reply = data?.choices?.[0]?.message?.content || null;
-
-    if (reply) {
-      // Clean up markdown
-      reply = reply
-        .replace(/^```(?:markdown|json)\s*\n/gm, '')
-        .replace(/\n```\s*$/gm, '')
-        .replace(/```(?:markdown|json)\s*\n/g, '')
-        .replace(/\n```/g, '')
-        .trim();
-    }
-
-    return {
-      reply,
-      raw: data,
-      finishReason,
-      tokenUsage: usage
-    };
-
-  } catch (err) {
-    console.error("OpenAI API call failed:", err);
-    return {
-      reply: null,
-      error: err.message,
-      raw: null
-    };
   }
+
+  // This should never be reached, but just in case
+  return {
+    reply: null,
+    error: "Failed after all retry attempts",
+    raw: null
+  };
 }
 
 /**
@@ -815,7 +948,6 @@ export default async function handler(req, res) {
 
       case "csv":
         const csvResult = extractCsv(buffer);
-        // Parse CSV into structured data
         const csvText = csvResult.rawText;
         const lines = csvText.split('\n').filter(l => l.trim());
         if (lines.length > 1) {
@@ -901,11 +1033,17 @@ export default async function handler(req, res) {
     // Get file name
     const fileName = fileUrl.split('/').pop().split('?')[0] || 'uploaded_file';
 
-    // Call GPT-4o
-    console.log("🤖 Sending to GPT-4o for analysis...");
+    // Compress data if needed
+    let compressedData = null;
+    if (hasSheets) {
+      compressedData = compressDataForAI(extractedData.sheets);
+    }
+
+    // Call OpenAI with retry logic
+    console.log("🤖 Sending to OpenAI for analysis...");
     
-    const aiResult = await callGPT4o({
-      sheets: extractedData.sheets,
+    const aiResult = await callOpenAIWithRetry({
+      compressedData: compressedData,
       rawText: extractedData.rawText,
       fileType: fileType,
       question: question,
@@ -946,10 +1084,13 @@ export default async function handler(req, res) {
         fileName: fileName,
         fileSize: bytesReceived,
         sheetCount: extractedData.sheets?.length || 0,
+        totalRows: compressedData?.totalOriginalRows || 0,
+        analyzedRows: compressedData?.totalIncludedRows || 0,
+        compressionApplied: compressedData ? compressedData.totalIncludedRows < compressedData.totalOriginalRows : false,
         finishReason: aiResult.finishReason,
         tokenUsage: aiResult.tokenUsage,
-        hasWordDoc: !!wordBase64,
-        model: "gpt-4o"
+        modelUsed: aiResult.modelUsed,
+        hasWordDoc: !!wordBase64
       }
     });
 
