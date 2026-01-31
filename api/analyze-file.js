@@ -240,7 +240,19 @@ function formatDateUS(dateStr) {
 }
 
 /**
- * Extract XLSX as raw rows (array of arrays). No header assumption — works with any layout.
+ * Format a cell for display: use raw numbers and Excel date serials as dates so figures are exact.
+ */
+function formatCellForDisplay(c) {
+  if (c == null || c === "") return "";
+  if (typeof c === "number") {
+    if (!Number.isNaN(c) && c > 40000 && c < 50000) return formatDateUS(c);
+    return String(c);
+  }
+  return String(c).trim();
+}
+
+/**
+ * Extract XLSX as raw rows (array of arrays). Uses raw: true so numbers are exact (no display rounding).
  */
 function extractXlsx(buffer) {
   try {
@@ -249,7 +261,7 @@ function extractXlsx(buffer) {
       type: "buffer",
       cellDates: false,
       cellNF: false,
-      raw: false,
+      raw: true,
       defval: ""
     });
 
@@ -259,11 +271,11 @@ function extractXlsx(buffer) {
 
     const sheets = workbook.SheetNames.map((sheetName) => {
       const sheet = workbook.Sheets[sheetName];
-      const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", blankrows: false });
+      const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true, blankrows: false });
       const rows = Array.isArray(rawRows) ? rawRows : [];
       return {
         name: sheetName,
-        rows: rows.map((row) => (Array.isArray(row) ? row : []).map((c) => (c != null && c !== "" ? c : "")))
+        rows: rows.map((row) => (Array.isArray(row) ? row : []).map((c) => (c == null ? "" : c)))
       };
     });
 
@@ -557,14 +569,23 @@ function formatExtractedContentForAI(extracted) {
       const rows = sheet.rows || [];
       const maxRows = Math.min(rows.length, MAX_ROWS_PER_SHEET);
       const sheetRows = rows.slice(0, maxRows);
-      parts.push(`--- Sheet: ${name} ---`);
-      sheetRows.forEach((row, i) => {
-        const cells = Array.isArray(row)
+
+      const toCells = (row) =>
+        Array.isArray(row)
           ? row
           : typeof row === "object" && row !== null
             ? Object.values(row)
             : [row];
-        const line = cells.map((c) => String(c ?? "").trim()).join(" | ");
+      const maxCols = sheetRows.length
+        ? Math.max(...sheetRows.map((row) => toCells(row).length))
+        : 0;
+
+      parts.push(`--- Sheet: ${name} ---`);
+      parts.push(`(Columns 0 to ${maxCols - 1}; each row has ${maxCols} values. Use this to cite figures correctly.)`);
+      sheetRows.forEach((row, i) => {
+        const cells = toCells(row);
+        const padded = Array.from({ length: maxCols }, (_, j) => formatCellForDisplay(cells[j]));
+        const line = padded.map((c, j) => `[${j}] ${c}`).join(" | ");
         parts.push(`Row ${i}: ${line}`);
       });
       if (rows.length > maxRows) {
@@ -597,19 +618,26 @@ function formatExtractedContentForAI(extracted) {
 
 const GENERIC_SYSTEM_PROMPT = `You are a helpful accounting and financial assistant. The user will share document content (extracted from a file they uploaded) and a question or prompt.
 
-**Rules:**
-- Answer based ONLY on the provided document content. Do not invent or assume information that is not in the content.
-- When citing numbers or figures, use the EXACT values from the content and say where they appear (e.g. sheet name, row, or section). Do not round, approximate, or swap figures between different rows/sheets/stores.
-- If the content is in table form (Sheet / Row 0, Row 1, ...), interpret rows and columns correctly. Row 0 might be a header row; use it to understand column meanings.
+**CRITICAL – Figure accuracy (you MUST follow this):**
+- Use ONLY figures that appear in the document content. Do NOT invent, approximate, or calculate numbers.
+- When citing ANY figure, you MUST state exactly where it comes from: Sheet name, Row number, and Column index (e.g. "Sheet1 Row 3 column 2: 1,234.56"). Copy the number exactly as shown in that cell.
+- Do NOT swap figures between rows, columns, or sheets. Each number belongs to one cell only—cite that cell when you use it.
+- Rows are labeled "Row 0", "Row 1", etc. Columns are labeled [0], [1], [2], etc. Use these to identify the source of every figure you cite.
+- If the content is truncated, only use and cite figures from the portion that was provided.
+
+**Other rules:**
+- Answer based ONLY on the provided document content.
+- Row 0 is often a header row (column names); use it to interpret what each column means.
 - Reply in clear markdown. Use tables or bullet points when helpful.`;
 
 /**
  * Call OpenAI with extracted content + user prompt (ChatGPT-style).
  */
 async function callModelWithContent({ content, question }) {
+  const questionText = question?.trim() || "Please analyze this document and summarize the key points and figures.";
   const userMessage = content
-    ? `Document content:\n\n${content}\n\n---\nUser's question: ${question || "Please analyze this document and summarize the key points and figures."}`
-    : `User's question: ${question || "No document content was extracted. Please ask the user to upload a supported file."}`;
+    ? `Document content (figures must be cited with Sheet name, Row number, and column index):\n\n${content}\n\n---\nUser's question: ${questionText}`
+    : `User's question: ${questionText}`;
 
   const messages = [
     { role: "system", content: GENERIC_SYSTEM_PROMPT },
