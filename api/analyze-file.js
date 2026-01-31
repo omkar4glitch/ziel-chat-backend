@@ -14,7 +14,7 @@ function cors(res) {
 }
 
 /**
- * Sleep helper for retry logic
+ * Sleep helper
  */
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -149,7 +149,7 @@ function bufferToText(buffer) {
 }
 
 /**
- * Extract CSV - Simple text extraction
+ * Extract CSV
  */
 function extractCsv(buffer) {
   const text = bufferToText(buffer);
@@ -165,27 +165,24 @@ async function extractPdf(buffer) {
     const text = (data && data.text) ? data.text.trim() : "";
 
     if (!text || text.length < 50) {
-      console.log("PDF appears to be scanned or image-based");
       return { 
         type: "pdf", 
         rawText: "", 
-        error: "This PDF appears to be scanned (image-based). Please try uploading the original image files (PNG/JPG) instead, or use a PDF with selectable text."
+        error: "This PDF appears to be scanned. Please convert to searchable PDF first."
       };
     }
 
     return { type: "pdf", rawText: text };
   } catch (err) {
-    console.error("extractPdf failed:", err?.message || err);
     return { type: "pdf", rawText: "", error: String(err?.message || err) };
   }
 }
 
 /**
- * Extract XLSX with proper structure preservation
+ * Extract XLSX
  */
 function extractXlsx(buffer) {
   try {
-    console.log("Starting XLSX extraction...");
     const workbook = XLSX.read(buffer, {
       type: "buffer",
       cellDates: false,
@@ -195,28 +192,19 @@ function extractXlsx(buffer) {
       defval: ''
     });
 
-    console.log(`XLSX has ${workbook.SheetNames.length} sheets:`, workbook.SheetNames);
-
     if (workbook.SheetNames.length === 0) {
-      return { type: "xlsx", sheets: [], error: "No sheets found in Excel file" };
+      return { type: "xlsx", sheets: [], error: "No sheets found" };
     }
 
     const sheets = [];
 
-    workbook.SheetNames.forEach((sheetName, index) => {
-      console.log(`Processing sheet ${index + 1}: "${sheetName}"`);
-      
+    workbook.SheetNames.forEach((sheetName) => {
       const sheet = workbook.Sheets[sheetName];
-      
-      // Convert to JSON with proper handling
       const jsonRows = XLSX.utils.sheet_to_json(sheet, { 
         defval: '',
         blankrows: false,
-        raw: false,
-        header: undefined
+        raw: false
       });
-
-      console.log(`  - Sheet "${sheetName}": ${jsonRows.length} rows`);
 
       if (jsonRows.length > 0) {
         sheets.push({
@@ -228,34 +216,22 @@ function extractXlsx(buffer) {
       }
     });
 
-    console.log(`Extracted ${sheets.length} sheets with total ${sheets.reduce((sum, s) => sum + s.rowCount, 0)} rows`);
-
-    return { 
-      type: "xlsx", 
-      sheets: sheets
-    };
+    return { type: "xlsx", sheets: sheets };
   } catch (err) {
-    console.error("extractXlsx failed:", err?.message || err);
     return { type: "xlsx", sheets: [], error: String(err?.message || err) };
   }
 }
 
 /**
- * Extract Word Document (.docx)
+ * Extract DOCX
  */
 async function extractDocx(buffer) {
-  console.log("=== DOCX EXTRACTION ===");
-  
   try {
     const zip = await JSZip.loadAsync(buffer);
     const documentXml = zip.files['word/document.xml'];
     
     if (!documentXml) {
-      return { 
-        type: "docx", 
-        rawText: "", 
-        error: "Invalid Word document structure" 
-      };
+      return { type: "docx", rawText: "", error: "Invalid Word document" };
     }
     
     const xmlContent = await documentXml.async('text');
@@ -273,35 +249,18 @@ async function extractDocx(buffer) {
           .replace(/&apos;/g, "'")
           .trim();
         
-        if (text.length > 0) {
-          textParts.push(text);
-        }
+        if (text.length > 0) textParts.push(text);
       }
     }
     
-    if (textParts.length === 0) {
-      return { 
-        type: "docx", 
-        rawText: "", 
-        error: "No text found in Word document." 
-      };
-    }
-    
-    const fullText = textParts.join(' ');
-    return { type: "docx", rawText: fullText };
-    
+    return { type: "docx", rawText: textParts.join(' ') };
   } catch (error) {
-    console.error("DOCX extraction error:", error.message);
-    return { 
-      type: "docx", 
-      rawText: "", 
-      error: `Failed to read Word document: ${error.message}` 
-    };
+    return { type: "docx", rawText: "", error: error.message };
   }
 }
 
 /**
- * Extract PowerPoint (.pptx)
+ * Extract PPTX
  */
 async function extractPptx(buffer) {
   try {
@@ -311,37 +270,18 @@ async function extractPptx(buffer) {
     let allText = [];
     
     while ((match = textPattern.exec(bufferStr)) !== null) {
-      const text = match[1];
-      const cleaned = text
+      const cleaned = match[1]
         .replace(/&lt;/g, '<')
         .replace(/&gt;/g, '>')
         .replace(/&amp;/g, '&')
-        .replace(/&quot;/g, '"')
-        .replace(/&apos;/g, "'")
         .trim();
       
-      if (cleaned && cleaned.length > 0) {
-        allText.push(cleaned);
-      }
+      if (cleaned) allText.push(cleaned);
     }
     
-    if (allText.length === 0) {
-      return { 
-        type: "pptx", 
-        rawText: "", 
-        error: "No text found in PowerPoint." 
-      };
-    }
-    
-    const text = allText.join('\n').trim();
-    return { type: "pptx", rawText: text };
+    return { type: "pptx", rawText: allText.join('\n') };
   } catch (err) {
-    console.error("extractPptx failed:", err?.message || err);
-    return { 
-      type: "pptx", 
-      rawText: "", 
-      error: String(err?.message || err) 
-    };
+    return { type: "pptx", rawText: "", error: String(err?.message || err) };
   }
 }
 
@@ -349,260 +289,276 @@ async function extractPptx(buffer) {
  * Extract Image
  */
 async function extractImage(buffer, fileType) {
-  const helpMessage = `📸 **Image File Detected (${fileType.toUpperCase()})**
-
-To extract text from this image, please use one of these FREE methods:
-
-**🎯 METHOD 1 - Google Drive (Recommended):**
-1. Upload image to Google Drive
-2. Right-click → "Open with" → "Google Docs"
-3. Google will OCR the image automatically
-4. Download as PDF and upload here
-
-**📱 METHOD 2 - Phone Scanner:**
-- iPhone: Notes app → Scan Documents
-- Android: Google Drive → Scan
-
-**💻 METHOD 3 - Free Online OCR:**
-- onlineocr.net
-- i2ocr.com
-- newocr.com
-
-Once converted to text/PDF, upload here for analysis! 🚀`;
-  
   return { 
     type: fileType, 
-    rawText: helpMessage,
+    rawText: `Image file detected. Please convert to searchable PDF using Google Drive or online OCR tools.`,
     isImage: true,
     requiresManualProcessing: true
   };
 }
 
 /**
- * 🔥 IMPROVED: Smart data compression for large files
- * Compresses data to fit within token limits while maintaining accuracy
+ * 🔥 NEW: Calculate summary statistics from large dataset
+ * This avoids sending raw data - we pre-calculate insights
  */
-function compressDataForAI(sheets, targetSize = 'auto') {
-  if (!sheets || sheets.length === 0) {
-    return null;
-  }
-
-  // Estimate token count (rough: 1 token ≈ 4 characters)
-  const estimateTokens = (text) => Math.ceil(text.length / 4);
-
-  // Calculate total data size
-  const totalRows = sheets.reduce((sum, s) => sum + s.data.length, 0);
-  console.log(`📊 Total rows across all sheets: ${totalRows}`);
-
-  // Define limits based on target
-  const limits = {
-    small: { maxRowsPerSheet: 5000, modelSuggestion: 'gpt-4o' },
-    medium: { maxRowsPerSheet: 3000, modelSuggestion: 'gpt-4o-mini' },
-    large: { maxRowsPerSheet: 1500, modelSuggestion: 'gpt-4o-mini' },
-    xlarge: { maxRowsPerSheet: 500, modelSuggestion: 'gpt-4o-mini' }
-  };
-
-  // Auto-detect size category
-  let sizeCategory = 'small';
-  if (totalRows > 5000) sizeCategory = 'medium';
-  if (totalRows > 10000) sizeCategory = 'large';
-  if (totalRows > 20000) sizeCategory = 'xlarge';
-
-  if (targetSize !== 'auto') {
-    sizeCategory = targetSize;
-  }
-
-  const limit = limits[sizeCategory];
-  console.log(`📏 Size category: ${sizeCategory}, Max rows per sheet: ${limit.maxRowsPerSheet}`);
-
-  const compressedSheets = sheets.map(sheet => {
+function calculateSummaryStatistics(sheets) {
+  console.log("📊 Calculating summary statistics...");
+  
+  const summaries = sheets.map(sheet => {
     const { name, data, columns } = sheet;
     
-    let sampledData = data;
-    let compressionApplied = false;
+    // Detect numeric columns
+    const numericColumns = columns.filter(col => {
+      const sampleValues = data.slice(0, 10).map(row => row[col]);
+      const numericCount = sampleValues.filter(val => {
+        const num = parseFloat(String(val).replace(/[^0-9.-]/g, ''));
+        return !isNaN(num) && val !== '';
+      }).length;
+      return numericCount >= 7; // 70% numeric = numeric column
+    });
 
-    // If too many rows, apply intelligent sampling
-    if (data.length > limit.maxRowsPerSheet) {
-      console.log(`⚠️ Sheet "${name}" has ${data.length} rows, compressing to ${limit.maxRowsPerSheet}`);
-      
-      const maxRows = limit.maxRowsPerSheet;
-      
-      // Strategy: First 20%, last 20%, evenly sampled middle 60%
-      const firstChunk = Math.floor(maxRows * 0.2);
-      const lastChunk = Math.floor(maxRows * 0.2);
-      const middleChunk = maxRows - firstChunk - lastChunk;
+    // Detect identifier column (usually first non-numeric column)
+    const identifierCol = columns.find(col => !numericColumns.includes(col)) || columns[0];
 
-      const firstRows = data.slice(0, firstChunk);
-      const lastRows = data.slice(-lastChunk);
-      
-      const middleStartIdx = firstChunk;
-      const middleEndIdx = data.length - lastChunk;
-      const middleRowsTotal = middleEndIdx - middleStartIdx;
-      const sampleRate = Math.max(1, Math.floor(middleRowsTotal / middleChunk));
-      
-      const sampledMiddle = [];
-      for (let i = middleStartIdx; i < middleEndIdx && sampledMiddle.length < middleChunk; i += sampleRate) {
-        sampledMiddle.push(data[i]);
-      }
+    console.log(`Sheet "${name}": Identifier="${identifierCol}", Numeric cols=[${numericColumns.join(', ')}]`);
 
-      sampledData = [...firstRows, ...sampledMiddle, ...lastRows];
-      compressionApplied = true;
+    // Calculate statistics for each numeric column
+    const columnStats = {};
+    
+    numericColumns.forEach(col => {
+      const values = data.map(row => {
+        const val = row[col];
+        const num = parseFloat(String(val).replace(/[^0-9.-]/g, ''));
+        return isNaN(num) ? 0 : num;
+      });
+
+      const sorted = [...values].sort((a, b) => b - a);
+      const sum = values.reduce((a, b) => a + b, 0);
+      const avg = sum / values.length;
+
+      columnStats[col] = {
+        total: sum,
+        average: avg,
+        min: Math.min(...values),
+        max: Math.max(...values),
+        count: values.length
+      };
+    });
+
+    // Get top 10 and bottom 10 items
+    const top10 = [];
+    const bottom10 = [];
+
+    if (numericColumns.length > 0) {
+      const primaryNumericCol = numericColumns[0]; // Usually revenue or main metric
       
-      console.log(`✓ Compressed to ${sampledData.length} rows (first ${firstChunk}, middle ${sampledMiddle.length}, last ${lastChunk})`);
+      const sorted = [...data].sort((a, b) => {
+        const aVal = parseFloat(String(a[primaryNumericCol]).replace(/[^0-9.-]/g, '')) || 0;
+        const bVal = parseFloat(String(b[primaryNumericCol]).replace(/[^0-9.-]/g, '')) || 0;
+        return bVal - aVal;
+      });
+
+      top10.push(...sorted.slice(0, 10));
+      bottom10.push(...sorted.slice(-10).reverse());
     }
 
     return {
       sheetName: name,
+      rowCount: data.length,
       columns: columns,
-      totalRows: data.length,
-      includedRows: sampledData.length,
-      compressionApplied: compressionApplied,
-      compressionRatio: compressionApplied ? ((sampledData.length / data.length) * 100).toFixed(1) + '%' : '100%',
-      data: sampledData
+      identifierColumn: identifierCol,
+      numericColumns: numericColumns,
+      statistics: columnStats,
+      topPerformers: top10,
+      bottomPerformers: bottom10
     };
   });
 
-  return {
-    sheets: compressedSheets,
-    sizeCategory: sizeCategory,
-    recommendedModel: limit.modelSuggestion,
-    totalOriginalRows: totalRows,
-    totalIncludedRows: compressedSheets.reduce((sum, s) => sum + s.includedRows, 0)
-  };
+  return summaries;
 }
 
 /**
- * 🔥 HYBRID: Auto-select best model based on data size with retry logic
+ * 🔥 ULTRA COMPRESSION: For large files, send only summaries + samples
  */
-async function callOpenAIWithRetry({ compressedData, rawText, fileType, question, fileName = "uploaded_file" }) {
-  console.log(`📤 Preparing AI analysis...`);
+function prepareDataForAI(sheets) {
+  const totalRows = sheets.reduce((sum, s) => sum + s.data.length, 0);
+  console.log(`📊 Total rows: ${totalRows}`);
+
+  // ULTRA-AGGRESSIVE LIMITS for free tier
+  const limits = {
+    tiny: { maxRows: 100, useSummary: false },      // < 500 total
+    small: { maxRows: 200, useSummary: false },     // < 1000 total
+    medium: { maxRows: 150, useSummary: true },     // < 3000 total
+    large: { maxRows: 100, useSummary: true },      // < 10000 total
+    xlarge: { maxRows: 50, useSummary: true }       // > 10000 total
+  };
+
+  let category = 'tiny';
+  if (totalRows > 500) category = 'small';
+  if (totalRows > 1000) category = 'medium';
+  if (totalRows > 3000) category = 'large';
+  if (totalRows > 10000) category = 'xlarge';
+
+  const config = limits[category];
+  console.log(`📏 Category: ${category}, Max rows: ${config.maxRows}, Use summary: ${config.useSummary}`);
+
+  if (config.useSummary) {
+    // For large files, use summary statistics
+    console.log("🔄 Using SUMMARY mode (statistics + top/bottom samples)");
+    return {
+      mode: 'summary',
+      category: category,
+      summaries: calculateSummaryStatistics(sheets),
+      totalRows: totalRows
+    };
+  } else {
+    // For small files, send sampled raw data
+    console.log("🔄 Using SAMPLE mode (compressed raw data)");
+    const compressed = sheets.map(sheet => {
+      const maxRows = Math.floor(config.maxRows / sheets.length);
+      let sampledData = sheet.data;
+
+      if (sheet.data.length > maxRows) {
+        const top = sheet.data.slice(0, Math.floor(maxRows / 2));
+        const bottom = sheet.data.slice(-Math.floor(maxRows / 2));
+        sampledData = [...top, ...bottom];
+      }
+
+      return {
+        sheetName: sheet.name,
+        columns: sheet.columns,
+        totalRows: sheet.data.length,
+        sampledRows: sampledData.length,
+        data: sampledData
+      };
+    });
+
+    return {
+      mode: 'sample',
+      category: category,
+      sheets: compressed,
+      totalRows: totalRows
+    };
+  }
+}
+
+/**
+ * 🔥 CALL OpenAI with ultra-optimized data
+ */
+async function callOpenAI({ preparedData, rawText, fileType, question, fileName }) {
+  console.log(`📤 Calling OpenAI (mode: ${preparedData?.mode || 'text'})...`);
 
   let dataContent = "";
-  let modelToUse = "gpt-4o-mini"; // Default to mini
-  let useStructuredData = false;
+  const modelToUse = "gpt-4o-mini"; // Always use mini for rate limits
 
-  // Prepare data based on file type
-  if (compressedData && compressedData.sheets && compressedData.sheets.length > 0) {
-    useStructuredData = true;
-    const { sheets, sizeCategory, recommendedModel, totalOriginalRows, totalIncludedRows } = compressedData;
-    
-    modelToUse = recommendedModel;
-    
-    console.log(`📊 Data Summary:`);
-    console.log(`  - Total original rows: ${totalOriginalRows}`);
-    console.log(`  - Total included rows: ${totalIncludedRows}`);
-    console.log(`  - Compression: ${((totalIncludedRows/totalOriginalRows)*100).toFixed(1)}%`);
-    console.log(`  - Recommended model: ${modelToUse}`);
+  if (preparedData?.mode === 'summary') {
+    // Summary mode: Statistics + top/bottom samples
+    const { summaries, totalRows } = preparedData;
 
-    dataContent = `**FILE TYPE**: ${fileType.toUpperCase()}
-**FILE NAME**: ${fileName}
-**TOTAL SHEETS**: ${sheets.length}
-**DATA SIZE**: ${sizeCategory.toUpperCase()} (${totalOriginalRows} total rows, ${totalIncludedRows} analyzed)
+    dataContent = `**FILE**: ${fileName} (${fileType.toUpperCase()})
+**TOTAL ROWS**: ${totalRows}
+**ANALYSIS MODE**: Summary Statistics + Top/Bottom Samples
+
+`;
+
+    summaries.forEach((summary, idx) => {
+      dataContent += `\n## SHEET ${idx + 1}: "${summary.sheetName}"\n`;
+      dataContent += `**Total Records**: ${summary.rowCount}\n`;
+      dataContent += `**Identifier Column**: ${summary.identifierColumn}\n\n`;
+
+      // Add statistics
+      dataContent += `### Summary Statistics:\n\`\`\`json\n${JSON.stringify(summary.statistics, null, 2)}\n\`\`\`\n\n`;
+
+      // Add top performers
+      if (summary.topPerformers.length > 0) {
+        dataContent += `### Top 10 Performers:\n\`\`\`json\n${JSON.stringify(summary.topPerformers, null, 2)}\n\`\`\`\n\n`;
+      }
+
+      // Add bottom performers
+      if (summary.bottomPerformers.length > 0) {
+        dataContent += `### Bottom 10 Performers:\n\`\`\`json\n${JSON.stringify(summary.bottomPerformers, null, 2)}\n\`\`\`\n\n`;
+      }
+    });
+
+  } else if (preparedData?.mode === 'sample') {
+    // Sample mode: Compressed raw data
+    const { sheets, totalRows } = preparedData;
+
+    dataContent = `**FILE**: ${fileName} (${fileType.toUpperCase()})
+**TOTAL ROWS**: ${totalRows}
+**ANALYSIS MODE**: Sampled Data
 
 `;
 
     sheets.forEach((sheet, idx) => {
       dataContent += `\n## SHEET ${idx + 1}: "${sheet.sheetName}"\n`;
-      dataContent += `**Columns**: ${sheet.columns.join(', ')}\n`;
-      dataContent += `**Total Rows**: ${sheet.totalRows}`;
-      
-      if (sheet.compressionApplied) {
-        dataContent += ` (showing ${sheet.includedRows} sampled rows - ${sheet.compressionRatio} of data)\n`;
-        dataContent += `**Sampling Method**: Intelligent sampling - first 20%, middle 60% (evenly sampled), last 20%\n`;
-      } else {
-        dataContent += ` (all data included)\n`;
-      }
-      
-      dataContent += `\n**DATA**:\n`;
+      dataContent += `**Total**: ${sheet.totalRows} rows (showing ${sheet.sampledRows})\n`;
+      dataContent += `**Columns**: ${sheet.columns.join(', ')}\n\n`;
       dataContent += `\`\`\`json\n${JSON.stringify(sheet.data, null, 2)}\n\`\`\`\n`;
     });
-    
-  } else if (rawText) {
-    // Text-based files - use mini for large, 4o for small
-    const textLength = rawText.length;
-    modelToUse = textLength > 50000 ? "gpt-4o-mini" : "gpt-4o";
-    
-    console.log(`📝 Text file: ${textLength} characters, using ${modelToUse}`);
-    
-    dataContent = `**FILE TYPE**: ${fileType.toUpperCase()}
-**FILE NAME**: ${fileName}
 
-**CONTENT**:
-${rawText}`;
+  } else if (rawText) {
+    // Text mode
+    const maxChars = 20000;
+    const truncated = rawText.length > maxChars ? rawText.substring(0, maxChars) + '\n\n[...truncated...]' : rawText;
+    
+    dataContent = `**FILE**: ${fileName} (${fileType.toUpperCase()})\n\n${truncated}`;
   } else {
-    return {
-      reply: null,
-      error: "No data to analyze"
-    };
+    return { reply: null, error: "No data to analyze" };
   }
 
-  console.log(`🤖 Using model: ${modelToUse}`);
   console.log(`📏 Data size: ${(dataContent.length / 1024).toFixed(2)} KB`);
 
-  // Build enhanced system prompt
-  const systemPrompt = `You are an expert financial analyst with deep expertise in accounting, P&L analysis, and financial reporting.
+  const systemPrompt = `You are an expert financial analyst specializing in P&L analysis and accounting.
 
-**YOUR CORE MISSION**: Provide accurate, precise analysis based ONLY on the data provided. Never make up numbers.
-
-**CRITICAL ACCURACY RULES**:
-1. **VERIFY EVERY NUMBER**: Before citing any figure, verify it exists in the data
-2. **EXACT VALUES ONLY**: Never round or approximate unless explicitly asked
-3. **CITE SOURCES**: Reference specific rows, columns, or line items
-4. **SHOW CALCULATIONS**: When computing totals/averages, show the formula
-5. **NO ASSUMPTIONS**: If data is unclear or missing, state this explicitly
-6. **PRESERVE CONTEXT**: When comparing stores/locations, keep each separate
-7. **DOUBLE-CHECK RANKINGS**: When ranking items, verify the sort order twice
-
-**COMMON MISTAKES TO AVOID**:
-❌ Mixing up store names or locations
-❌ Swapping revenue and expense figures
-❌ Including wrong categories in rankings (e.g., expenses in "top locations by sales")
-❌ Making up intermediate values
-❌ Approximating when exact data exists
+**CRITICAL RULES**:
+1. VERIFY all numbers against the provided data
+2. Use EXACT values, never approximate
+3. Cite specific rows/entries when referencing data
+4. Show calculations for all computed values
+5. When ranking locations:
+   - "Top performers" = Highest REVENUE/SALES only
+   - "Bottom performers" = Lowest REVENUE/SALES only
+   - NEVER include expense categories in location rankings
 
 **OUTPUT FORMAT**:
-- Use markdown with clear headers (##)
-- Create tables for comparisons
+- Use markdown with clear headers
+- Create comparison tables
 - Bold key findings
-- Include executive summary first
-- Show detailed breakdowns after summary
+- Start with executive summary
+- Show detailed analysis after
 
-**QUESTION INTERPRETATION**:
-- "Top 5 performing locations" = Rank by REVENUE/SALES only, not expenses
-- "Bottom performers" = Lowest revenue/sales, exclude expense categories
-- "Profitability" = Revenue minus expenses, show calculation
-- "Trends" = Compare periods if data has dates/months
-
-${useStructuredData && compressedData.totalIncludedRows < compressedData.totalOriginalRows ? `\n**IMPORTANT**: This dataset has been intelligently sampled. You are seeing ${compressedData.totalIncludedRows} out of ${compressedData.totalOriginalRows} total rows. The sampling includes first 20%, last 20%, and evenly distributed middle 60% to ensure representative analysis. When providing insights, acknowledge that this is based on a representative sample.` : ''}
-
-When analyzing multi-sheet Excel files, treat each sheet's data separately unless asked to combine.`;
+${preparedData?.mode === 'summary' ? '\n**NOTE**: You are analyzing summary statistics and top/bottom samples from a large dataset. Provide insights based on these summaries and extrapolate trends appropriately.' : ''}`;
 
   const userMessage = `${dataContent}
 
 ---
 
-**USER QUESTION**: ${question || "Provide a comprehensive financial analysis of this data, including key metrics, trends, and insights."}
+**USER QUESTION**: ${question || "Provide comprehensive financial analysis including key metrics, top/bottom performers, and insights."}
 
-**INSTRUCTIONS**: 
-- Answer the question precisely using ONLY the data above
-- If the question asks for "top/bottom performing locations", rank by REVENUE/SALES (not expenses)
-- Double-check all numbers before including them
-- If something is unclear or data is missing, say so explicitly
-${useStructuredData && compressedData.totalIncludedRows < compressedData.totalOriginalRows ? '- Note: You are analyzing a representative sample of the complete dataset\n- Extrapolate insights appropriately when discussing overall trends' : ''}`;
+**INSTRUCTIONS**:
+- Answer using ONLY the data above
+- For "top performing locations": rank by REVENUE/SALES, exclude expenses
+- Double-check all numbers
+- If analyzing summaries, extrapolate insights appropriately`;
 
   const messages = [
     { role: "system", content: systemPrompt },
     { role: "user", content: userMessage }
   ];
 
-  // Retry configuration
-  const maxRetries = 3;
-  const baseDelay = 2000; // 2 seconds
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  // Retry with longer delays for rate limits
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      console.log(`🔄 API call attempt ${attempt}/${maxRetries}...`);
-      
+      console.log(`🔄 Attempt ${attempt}/3...`);
+
+      // Add delay before each request to avoid rate limits
+      if (attempt > 1) {
+        const delay = 5000 * attempt; // 5s, 10s, 15s
+        console.log(`⏳ Waiting ${delay/1000}s before retry...`);
+        await sleep(delay);
+      }
+
       const response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -613,294 +569,104 @@ ${useStructuredData && compressedData.totalIncludedRows < compressedData.totalOr
           model: modelToUse,
           messages,
           temperature: 0,
-          max_tokens: 16000,
-          top_p: 1.0,
-          frequency_penalty: 0,
-          presence_penalty: 0
+          max_tokens: 8000, // Reduced for faster response
+          top_p: 1.0
         })
       });
 
-      // Handle rate limit (429) with retry
       if (response.status === 429) {
-        if (attempt < maxRetries) {
-          const delay = baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
-          console.log(`⚠️ Rate limit hit (429). Retrying in ${delay/1000} seconds...`);
-          await sleep(delay);
-          continue; // Retry
-        } else {
-          console.error("❌ Rate limit exceeded after all retries");
-          return {
-            reply: null,
-            error: "Rate limit exceeded. Please wait a moment and try again, or upgrade your OpenAI API plan for higher limits.",
-            raw: await response.text()
-          };
-        }
-      }
-
-      // Handle other errors
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("OpenAI API error:", response.status, errorText);
-        
-        // Don't retry on authentication or bad request errors
-        if (response.status === 401 || response.status === 400) {
-          return {
-            reply: null,
-            error: `OpenAI API error: ${response.status}`,
-            raw: errorText
-          };
-        }
-        
-        // Retry on other errors
-        if (attempt < maxRetries) {
-          const delay = baseDelay * Math.pow(2, attempt - 1);
-          console.log(`⚠️ Error ${response.status}. Retrying in ${delay/1000} seconds...`);
-          await sleep(delay);
+        if (attempt < 3) {
+          console.log(`⚠️ Rate limit (429). Retrying...`);
           continue;
         } else {
           return {
             reply: null,
-            error: `OpenAI API error: ${response.status}`,
-            raw: errorText
+            error: "RATE_LIMIT_EXCEEDED",
+            errorMessage: "Your OpenAI account has hit rate limits. Please wait 1 minute and try again, or upgrade your OpenAI plan."
           };
         }
       }
 
-      // Success! Parse response
+      if (!response.ok) {
+        const errorText = await response.text();
+        return { reply: null, error: `API Error ${response.status}`, raw: errorText };
+      }
+
       const data = await response.json();
 
       if (data.error) {
-        console.error("OpenAI API Error:", data.error);
-        return {
-          reply: null,
-          error: data.error.message,
-          raw: data
-        };
-      }
-
-      const finishReason = data?.choices?.[0]?.finish_reason;
-      const usage = data?.usage;
-
-      console.log(`✅ Success with ${modelToUse}!`);
-      console.log(`  - Finish reason: ${finishReason}`);
-      console.log(`  - Tokens: ${usage?.total_tokens} (prompt: ${usage?.prompt_tokens}, completion: ${usage?.completion_tokens})`);
-
-      if (finishReason === 'length') {
-        console.warn("⚠️ Response truncated due to length");
+        return { reply: null, error: data.error.message };
       }
 
       let reply = data?.choices?.[0]?.message?.content || null;
 
       if (reply) {
-        // Clean up markdown
         reply = reply
           .replace(/^```(?:markdown|json)\s*\n/gm, '')
           .replace(/\n```\s*$/gm, '')
-          .replace(/```(?:markdown|json)\s*\n/g, '')
-          .replace(/\n```/g, '')
           .trim();
       }
 
+      console.log(`✅ Success! Tokens: ${data?.usage?.total_tokens}`);
+
       return {
         reply,
-        raw: data,
-        finishReason,
-        tokenUsage: usage,
+        tokenUsage: data?.usage,
         modelUsed: modelToUse,
-        attemptNumber: attempt
+        mode: preparedData?.mode || 'text'
       };
 
     } catch (err) {
-      console.error(`API call attempt ${attempt} failed:`, err);
-      
-      if (attempt < maxRetries) {
-        const delay = baseDelay * Math.pow(2, attempt - 1);
-        console.log(`⚠️ Retrying in ${delay/1000} seconds...`);
-        await sleep(delay);
+      if (attempt < 3) {
+        console.log(`⚠️ Error: ${err.message}. Retrying...`);
         continue;
-      } else {
-        return {
-          reply: null,
-          error: err.message,
-          raw: null
-        };
       }
+      return { reply: null, error: err.message };
     }
   }
 
-  // This should never be reached, but just in case
-  return {
-    reply: null,
-    error: "Failed after all retry attempts",
-    raw: null
-  };
+  return { reply: null, error: "Failed after retries" };
 }
 
 /**
- * Convert markdown to Word document
+ * Convert markdown to Word
  */
 async function markdownToWord(markdownText) {
   const sections = [];
   const lines = markdownText.split('\n');
-  let tableData = [];
-  let inTable = false;
   
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    
-    if (!line) {
-      if (sections.length > 0) {
-        sections.push(new Paragraph({ text: '' }));
-      }
+  for (const line of lines) {
+    if (!line.trim()) {
+      sections.push(new Paragraph({ text: '' }));
       continue;
     }
     
     if (line.startsWith('#')) {
       const level = (line.match(/^#+/) || [''])[0].length;
-      const text = line.replace(/^#+\s*/, '').replace(/\*\*/g, '').replace(/\*/g, '');
+      const text = line.replace(/^#+\s*/, '').replace(/\*\*/g, '');
       
-      sections.push(
-        new Paragraph({
-          text: text,
-          heading: level === 2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
-          spacing: { before: 240, after: 120 },
-          thematicBreak: false
-        })
-      );
-      continue;
-    }
-    
-    if (line.includes('|')) {
-      const cells = line.split('|').map(c => c.trim()).filter(c => c !== '');
-      
-      if (cells.every(c => /^[-:]+$/.test(c))) {
-        inTable = true;
-        continue;
-      }
-      
-      const cleanCells = cells.map(c => c.replace(/\*\*/g, '').replace(/\*/g, '').replace(/`/g, ''));
-      tableData.push(cleanCells);
-      continue;
-    } else if (inTable && tableData.length > 0) {
-      const tableRows = tableData.map((rowData, rowIdx) => {
-        const isHeader = rowIdx === 0;
-        
-        return new TableRow({
-          children: rowData.map(cellText => 
-            new TableCell({
-              children: [
-                new Paragraph({
-                  children: [
-                    new TextRun({
-                      text: cellText,
-                      bold: isHeader,
-                      color: isHeader ? 'FFFFFF' : '000000',
-                      size: 22
-                    })
-                  ],
-                  alignment: AlignmentType.LEFT
-                })
-              ],
-              shading: {
-                fill: isHeader ? '4472C4' : 'FFFFFF'
-              },
-              margins: {
-                top: 100,
-                bottom: 100,
-                left: 100,
-                right: 100
-              }
-            })
-          )
-        });
-      });
-      
-      const table = new Table({
-        rows: tableRows,
-        width: {
-          size: 100,
-          type: WidthType.PERCENTAGE
-        },
-        borders: {
-          top: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          bottom: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          left: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          right: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' },
-          insideVertical: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' }
-        }
-      });
-      
-      sections.push(table);
-      sections.push(new Paragraph({ text: '' }));
-      tableData = [];
-      inTable = false;
-    }
-    
-    if (line.startsWith('-') || line.startsWith('*')) {
-      let text = line.replace(/^[-*]\s+/, '');
-      
-      const textRuns = [];
-      const parts = text.split(/(\*\*[^*]+\*\*)/g);
-      
-      parts.forEach(part => {
-        if (part.startsWith('**') && part.endsWith('**')) {
-          textRuns.push(new TextRun({
-            text: part.replace(/\*\*/g, ''),
-            bold: true
-          }));
-        } else if (part) {
-          textRuns.push(new TextRun({ text: part }));
-        }
-      });
-      
-      sections.push(
-        new Paragraph({
-          children: textRuns,
-          bullet: { level: 0 },
-          spacing: { before: 60, after: 60 }
-        })
-      );
-      continue;
-    }
-    
-    const textRuns = [];
-    const parts = line.split(/(\*\*[^*]+\*\*)/g);
-    
-    parts.forEach(part => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        textRuns.push(new TextRun({
-          text: part.replace(/\*\*/g, ''),
-          bold: true
-        }));
-      } else if (part) {
-        textRuns.push(new TextRun({ text: part }));
-      }
-    });
-    
-    if (textRuns.length > 0) {
-      sections.push(
-        new Paragraph({
-          children: textRuns,
-          spacing: { before: 60, after: 60 }
-        })
-      );
+      sections.push(new Paragraph({
+        text: text,
+        heading: level === 2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
+        spacing: { before: 240, after: 120 }
+      }));
+    } else {
+      sections.push(new Paragraph({
+        text: line.replace(/\*\*/g, ''),
+        spacing: { before: 60, after: 60 }
+      }));
     }
   }
   
   const doc = new Document({
-    sections: [{
-      properties: {},
-      children: sections
-    }]
+    sections: [{ properties: {}, children: sections }]
   });
   
-  const buffer = await Packer.toBuffer(doc);
-  return buffer.toString('base64');
+  return (await Packer.toBuffer(doc)).toString('base64');
 }
 
 /**
- * MAIN handler
+ * MAIN HANDLER
  */
 export default async function handler(req, res) {
   cors(res);
@@ -909,196 +675,126 @@ export default async function handler(req, res) {
 
   try {
     if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY environment variable" });
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
     const body = await parseJsonBody(req);
     const { fileUrl, question = "" } = body || {};
 
     if (!fileUrl) {
-      return res.status(400).json({ error: "fileUrl is required" });
+      return res.status(400).json({ error: "fileUrl required" });
     }
 
-    console.log("📥 Downloading file from:", fileUrl);
-    
+    console.log("📥 Downloading file...");
     const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
     const fileType = detectFileType(fileUrl, contentType, buffer);
     
-    console.log(`📄 File type: ${fileType}, Size: ${(bytesReceived / 1024).toFixed(2)} KB`);
+    console.log(`📄 Type: ${fileType}, Size: ${(bytesReceived / 1024).toFixed(2)} KB`);
 
     let extractedData = { type: fileType };
 
-    // Extract based on file type
     switch (fileType) {
-      case "pdf":
-        extractedData = await extractPdf(buffer);
-        break;
-
-      case "docx":
-        extractedData = await extractDocx(buffer);
-        break;
-
-      case "pptx":
-        extractedData = await extractPptx(buffer);
-        break;
-
-      case "xlsx":
-        extractedData = extractXlsx(buffer);
-        break;
-
+      case "pdf": extractedData = await extractPdf(buffer); break;
+      case "docx": extractedData = await extractDocx(buffer); break;
+      case "pptx": extractedData = await extractPptx(buffer); break;
+      case "xlsx": extractedData = extractXlsx(buffer); break;
       case "csv":
         const csvResult = extractCsv(buffer);
-        const csvText = csvResult.rawText;
-        const lines = csvText.split('\n').filter(l => l.trim());
+        const lines = csvResult.rawText.split('\n').filter(l => l.trim());
         if (lines.length > 1) {
           const headers = lines[0].split(',').map(h => h.trim());
           const rows = lines.slice(1).map(line => {
-            const values = line.split(',').map(v => v.trim());
+            const values = line.split(',');
             const row = {};
-            headers.forEach((h, i) => {
-              row[h] = values[i] || '';
-            });
+            headers.forEach((h, i) => { row[h] = values[i] || ''; });
             return row;
           });
           extractedData = {
             type: "csv",
-            sheets: [{
-              name: "CSV Data",
-              data: rows,
-              rowCount: rows.length,
-              columns: headers
-            }]
+            sheets: [{ name: "CSV Data", data: rows, rowCount: rows.length, columns: headers }]
           };
-        } else {
-          extractedData = csvResult;
         }
         break;
-
-      case "png":
-      case "jpg":
-      case "jpeg":
-      case "gif":
-      case "bmp":
-      case "webp":
+      default:
         extractedData = await extractImage(buffer, fileType);
         if (extractedData.requiresManualProcessing) {
-          return res.status(200).json({
-            ok: true,
-            type: fileType,
-            reply: extractedData.rawText,
-            requiresManualProcessing: true,
-            isImage: true
-          });
+          return res.json({ ok: true, reply: extractedData.rawText, requiresManualProcessing: true });
         }
-        break;
-
-      default:
-        extractedData = extractCsv(buffer);
     }
 
-    // Handle extraction errors
     if (extractedData.error) {
-      return res.status(200).json({
-        ok: false,
-        type: fileType,
-        reply: `Failed to extract content: ${extractedData.error}`,
-        error: extractedData.error
-      });
+      return res.json({ ok: false, reply: `Extraction failed: ${extractedData.error}` });
     }
 
-    // Check if we have data
-    const hasSheets = extractedData.sheets && extractedData.sheets.length > 0;
-    const hasRawText = extractedData.rawText && extractedData.rawText.trim().length > 0;
+    const hasSheets = extractedData.sheets?.length > 0;
+    const hasRawText = extractedData.rawText?.trim().length > 0;
 
     if (!hasSheets && !hasRawText) {
-      return res.status(200).json({
-        ok: false,
-        type: fileType,
-        reply: "No content could be extracted from this file.",
-        error: "Empty content"
-      });
+      return res.json({ ok: false, reply: "No content found in file" });
     }
 
-    console.log(`✅ Extraction successful!`);
+    console.log(`✅ Extracted ${hasSheets ? extractedData.sheets.length + ' sheets' : 'text'}`);
+
+    const fileName = fileUrl.split('/').pop().split('?')[0] || 'file';
+
+    let preparedData = null;
     if (hasSheets) {
-      console.log(`📊 Sheets: ${extractedData.sheets.length}`);
-      extractedData.sheets.forEach(s => {
-        console.log(`  - "${s.name}": ${s.rowCount} rows, ${s.columns?.length || 0} columns`);
-      });
-    }
-    if (hasRawText) {
-      console.log(`📝 Text content: ${extractedData.rawText.length} characters`);
+      preparedData = prepareDataForAI(extractedData.sheets);
     }
 
-    // Get file name
-    const fileName = fileUrl.split('/').pop().split('?')[0] || 'uploaded_file';
-
-    // Compress data if needed
-    let compressedData = null;
-    if (hasSheets) {
-      compressedData = compressDataForAI(extractedData.sheets);
-    }
-
-    // Call OpenAI with retry logic
-    console.log("🤖 Sending to OpenAI for analysis...");
-    
-    const aiResult = await callOpenAIWithRetry({
-      compressedData: compressedData,
+    console.log("🤖 Analyzing...");
+    const aiResult = await callOpenAI({
+      preparedData,
       rawText: extractedData.rawText,
-      fileType: fileType,
-      question: question,
-      fileName: fileName
+      fileType,
+      question,
+      fileName
     });
 
     if (!aiResult.reply) {
-      return res.status(200).json({
+      // Handle rate limit error specially
+      if (aiResult.error === "RATE_LIMIT_EXCEEDED") {
+        return res.json({
+          ok: false,
+          reply: "⚠️ **Rate Limit Exceeded**\n\nYour OpenAI account has reached its request limit.\n\n**Solutions**:\n1. **Wait 60 seconds** and try again\n2. **Upgrade your OpenAI plan** at platform.openai.com/account/billing\n3. **Split large files** into smaller chunks\n\nCurrent limit: 3-5 requests per minute (free tier)\nAfter upgrade: 60+ requests per minute",
+          error: aiResult.error,
+          rateLimitHit: true
+        });
+      }
+      
+      return res.json({
         ok: false,
-        type: fileType,
-        reply: aiResult.error || "No response from AI",
-        error: aiResult.error
+        reply: aiResult.error || "No response from AI"
       });
     }
 
     console.log("✅ Analysis complete!");
 
-    // Generate Word document
     let wordBase64 = null;
     try {
-      console.log("📝 Generating Word document...");
       wordBase64 = await markdownToWord(aiResult.reply);
-      console.log("✅ Word document ready");
-    } catch (wordError) {
-      console.error("❌ Word generation failed:", wordError.message);
+    } catch (e) {
+      console.error("Word gen failed:", e.message);
     }
 
-    return res.status(200).json({
+    return res.json({
       ok: true,
-      type: fileType,
       reply: aiResult.reply,
       wordDownload: wordBase64,
-      downloadUrl: wordBase64 
-        ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` 
-        : null,
+      downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
       metadata: {
-        fileType: fileType,
-        fileName: fileName,
+        fileType,
+        fileName,
         fileSize: bytesReceived,
-        sheetCount: extractedData.sheets?.length || 0,
-        totalRows: compressedData?.totalOriginalRows || 0,
-        analyzedRows: compressedData?.totalIncludedRows || 0,
-        compressionApplied: compressedData ? compressedData.totalIncludedRows < compressedData.totalOriginalRows : false,
-        finishReason: aiResult.finishReason,
-        tokenUsage: aiResult.tokenUsage,
+        mode: aiResult.mode,
         modelUsed: aiResult.modelUsed,
-        hasWordDoc: !!wordBase64
+        tokenUsage: aiResult.tokenUsage,
+        totalRows: preparedData?.totalRows || 0
       }
     });
 
   } catch (err) {
-    console.error("❌ Handler error:", err);
-    return res.status(500).json({ 
-      error: String(err?.message || err),
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
+    console.error("❌ Error:", err);
+    return res.status(500).json({ error: err.message });
   }
 }
