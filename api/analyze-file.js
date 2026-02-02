@@ -14,7 +14,7 @@ function cors(res) {
 }
 
 /**
- * Sleep utility for retry logic
+ * Sleep utility
  */
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -27,16 +27,6 @@ async function parseJsonBody(req) {
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
       if (!body) return resolve({});
-      const contentType = req.headers?.["content-type"] || req.headers?.["Content-Type"] || "";
-      
-      if (contentType.includes("application/json")) {
-        try {
-          return resolve(JSON.parse(body));
-        } catch (err) {
-          return resolve({ userMessage: body });
-        }
-      }
-      
       try {
         return resolve(JSON.parse(body));
       } catch {
@@ -48,7 +38,7 @@ async function parseJsonBody(req) {
 }
 
 /**
- * Download file from URL
+ * Download file
  */
 async function downloadFileToBuffer(url, maxBytes = 50 * 1024 * 1024, timeoutMs = 30000) {
   const controller = new AbortController();
@@ -64,385 +54,330 @@ async function downloadFileToBuffer(url, maxBytes = 50 * 1024 * 1024, timeoutMs 
   clearTimeout(timer);
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    throw new Error(`HTTP ${response.status}`);
   }
 
-  const contentType = response.headers.get("content-type") || "";
   const chunks = [];
   let totalBytes = 0;
 
-  try {
-    for await (const chunk of response.body) {
-      totalBytes += chunk.length;
-      if (totalBytes > maxBytes) {
-        const allowedBytes = maxBytes - (totalBytes - chunk.length);
-        if (allowedBytes > 0) chunks.push(chunk.slice(0, allowedBytes));
-        break;
-      }
-      chunks.push(chunk);
-    }
-  } catch (err) {
-    throw new Error(`Stream error: ${err.message}`);
+  for await (const chunk of response.body) {
+    totalBytes += chunk.length;
+    if (totalBytes > maxBytes) break;
+    chunks.push(chunk);
   }
 
-  console.log(`✓ Downloaded ${(totalBytes / 1024).toFixed(2)} KB`);
   return { 
     buffer: Buffer.concat(chunks), 
-    contentType, 
+    contentType: response.headers.get("content-type") || "",
     bytesReceived: totalBytes 
   };
 }
 
 /**
- * Detect file type from buffer and URL
+ * Detect file type
  */
 function detectFileType(fileUrl, contentType, buffer) {
   const url = (fileUrl || "").toLowerCase();
   const type = (contentType || "").toLowerCase();
 
-  // Check magic bytes
   if (buffer && buffer.length >= 4) {
     if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
-      if (url.includes('.docx') || type.includes('wordprocessing')) return "docx";
-      if (url.includes('.pptx') || type.includes('presentation')) return "pptx";
+      if (url.includes('.docx')) return "docx";
+      if (url.includes('.pptx')) return "pptx";
       return "xlsx";
     }
-    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) return "pdf";
-    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) return "png";
-    if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) return "jpg";
-    if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) return "gif";
+    if (buffer[0] === 0x25 && buffer[1] === 0x50) return "pdf";
   }
 
-  // Check file extension and content-type
   if (url.endsWith(".pdf") || type.includes("pdf")) return "pdf";
-  if (url.endsWith(".docx") || type.includes("wordprocessing")) return "docx";
-  if (url.endsWith(".pptx") || type.includes("presentation")) return "pptx";
-  if (url.endsWith(".xlsx") || url.endsWith(".xls") || type.includes("spreadsheet") || type.includes("excel")) return "xlsx";
+  if (url.endsWith(".docx")) return "docx";
+  if (url.endsWith(".pptx")) return "pptx";
+  if (url.endsWith(".xlsx") || url.endsWith(".xls") || type.includes("spreadsheet")) return "xlsx";
   if (url.endsWith(".csv") || type.includes("csv")) return "csv";
-  if (url.endsWith(".png") || type.includes("png")) return "png";
-  if (url.endsWith(".jpg") || url.endsWith(".jpeg") || type.includes("jpeg")) return "jpg";
-  if (url.endsWith(".gif") || type.includes("gif")) return "gif";
 
-  return "unknown";
+  return "xlsx";
 }
 
 /**
- * Extract text from PDF
+ * Extract PDF
  */
 async function extractPdf(buffer) {
   try {
     const data = await pdf(buffer);
     const text = data?.text?.trim() || "";
-
     if (!text || text.length < 50) {
-      return { 
-        success: false,
-        error: "PDF appears to be scanned or image-based. Please use a PDF with selectable text."
-      };
+      return { success: false, error: "PDF is scanned or empty" };
     }
-
     return { success: true, text };
   } catch (err) {
-    return { 
-      success: false,
-      error: `PDF extraction failed: ${err.message}`
-    };
+    return { success: false, error: err.message };
   }
 }
 
 /**
- * Extract text from DOCX
+ * Extract DOCX
  */
 async function extractDocx(buffer) {
   try {
     const zip = await JSZip.loadAsync(buffer);
-    const documentXml = zip.files['word/document.xml'];
+    const xml = await zip.files['word/document.xml']?.async('text');
+    if (!xml) return { success: false, error: "Invalid DOCX" };
     
-    if (!documentXml) {
-      return { success: false, error: "Invalid DOCX structure" };
-    }
+    const matches = xml.match(/<w:t[^>]*>([^<]+)<\/w:t>/g) || [];
+    const text = matches
+      .map(m => m.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'))
+      .filter(t => t.trim())
+      .join(' ');
     
-    const xmlContent = await documentXml.async('text');
-    const textMatches = xmlContent.match(/<w:t[^>]*>([^<]+)<\/w:t>/g) || [];
-    
-    const textParts = textMatches.map(match => {
-      const content = match.replace(/<[^>]+>/g, '');
-      return content
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&')
-        .replace(/&quot;/g, '"')
-        .replace(/&apos;/g, "'");
-    }).filter(text => text.trim().length > 0);
-    
-    if (textParts.length === 0) {
-      return { success: false, error: "No text found in DOCX" };
-    }
-    
-    return { success: true, text: textParts.join(' ') };
+    if (!text) return { success: false, error: "No text in DOCX" };
+    return { success: true, text };
   } catch (err) {
-    return { 
-      success: false,
-      error: `DOCX extraction failed: ${err.message}`
-    };
+    return { success: false, error: err.message };
   }
 }
 
 /**
- * Extract text from PPTX
+ * Extract PPTX
  */
 async function extractPptx(buffer) {
   try {
     const content = buffer.toString('latin1');
-    const textMatches = content.match(/<a:t[^>]*>([^<]+)<\/a:t>/g) || [];
+    const matches = content.match(/<a:t[^>]*>([^<]+)<\/a:t>/g) || [];
+    const text = matches
+      .map(m => m.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'))
+      .filter(t => t.trim())
+      .join('\n');
     
-    const textParts = textMatches.map(match => {
-      const text = match.replace(/<[^>]+>/g, '');
-      return text
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&')
-        .replace(/&quot;/g, '"')
-        .replace(/&apos;/g, "'");
-    }).filter(text => text.trim().length > 0);
-    
-    if (textParts.length === 0) {
-      return { success: false, error: "No text found in PPTX" };
-    }
-    
-    return { success: true, text: textParts.join('\n') };
+    if (!text) return { success: false, error: "No text in PPTX" };
+    return { success: true, text };
   } catch (err) {
-    return { 
-      success: false,
-      error: `PPTX extraction failed: ${err.message}`
-    };
+    return { success: false, error: err.message };
   }
 }
 
 /**
- * Extract structured data from XLSX/CSV
- * Returns all sheets with all rows - NO TRUNCATION
+ * 🔥 CRITICAL FIX: Extract spreadsheet data in MARKDOWN TABLE format
+ * This is the key - AI reads tables MUCH better than JSON!
  */
 function extractSpreadsheet(buffer, fileType) {
   try {
-    console.log(`📊 Extracting ${fileType.toUpperCase()} file...`);
+    console.log(`📊 Extracting ${fileType}...`);
     
     const workbook = XLSX.read(buffer, {
       type: "buffer",
-      cellDates: false,
-      cellNF: false,
-      cellText: false,
       raw: true,
       defval: ''
     });
 
-    if (workbook.SheetNames.length === 0) {
-      return { success: false, error: "No sheets found in file" };
+    if (!workbook.SheetNames.length) {
+      return { success: false, error: "No sheets found" };
     }
 
     const sheets = [];
+    let totalRows = 0;
 
     workbook.SheetNames.forEach((sheetName, idx) => {
-      console.log(`  Processing sheet ${idx + 1}/${workbook.SheetNames.length}: "${sheetName}"`);
+      console.log(`  Sheet ${idx + 1}: "${sheetName}"`);
       
       const worksheet = workbook.Sheets[sheetName];
-      
-      // Convert to JSON - preserve ALL rows
       const rows = XLSX.utils.sheet_to_json(worksheet, { 
         defval: '',
         blankrows: false,
-        raw: false  // Convert to strings for consistency
+        raw: false  // Important: convert everything to strings
       });
 
-      if (rows.length > 0) {
-        const columns = Object.keys(rows[0]);
-        
-        console.log(`    ✓ Extracted ${rows.length} rows with ${columns.length} columns`);
-        
-        sheets.push({
-          name: sheetName,
-          columns: columns,
-          rows: rows,
-          rowCount: rows.length
-        });
-      } else {
-        console.log(`    ⚠ Sheet "${sheetName}" is empty, skipping`);
+      if (rows.length === 0) {
+        console.log(`    ⚠️ Empty sheet, skipping`);
+        return;
       }
+
+      const columns = Object.keys(rows[0]);
+      console.log(`    ✓ ${rows.length} rows, ${columns.length} columns`);
+      
+      sheets.push({
+        name: sheetName,
+        columns: columns,
+        rows: rows
+      });
+      
+      totalRows += rows.length;
     });
 
-    if (sheets.length === 0) {
-      return { success: false, error: "All sheets are empty" };
-    }
-
-    const totalRows = sheets.reduce((sum, s) => sum + s.rowCount, 0);
     console.log(`✓ Total: ${sheets.length} sheets, ${totalRows} rows`);
-
-    return { 
-      success: true, 
-      sheets,
-      totalRows
-    };
+    return { success: true, sheets, totalRows };
 
   } catch (err) {
-    return { 
-      success: false,
-      error: `Spreadsheet extraction failed: ${err.message}`
-    };
+    return { success: false, error: err.message };
   }
 }
 
 /**
- * Format spreadsheet data for AI - OPTIMIZED for token efficiency
- * Uses compact JSON format instead of verbose text
+ * 🔥 CRITICAL: Convert data to MARKDOWN TABLES
+ * AI reads markdown tables perfectly - no confusion possible!
  */
-function formatDataForAI(sheets) {
-  console.log('📝 Formatting data for AI...');
+function formatAsMarkdownTables(sheets) {
+  console.log('📝 Formatting as markdown tables...');
   
-  const formatted = {
-    fileInfo: {
-      totalSheets: sheets.length,
-      totalRows: sheets.reduce((sum, s) => sum + s.rowCount, 0),
-      sheets: sheets.map(s => ({
-        name: s.name,
-        columns: s.columns,
-        rowCount: s.rowCount
-      }))
-    },
-    data: {}
-  };
+  let markdown = `# COMPLETE DATA FILE\n\n`;
+  markdown += `**Total Sheets**: ${sheets.length}\n`;
+  markdown += `**Total Rows**: ${sheets.reduce((sum, s) => sum + s.rows.length, 0)}\n\n`;
+  markdown += `---\n\n`;
 
-  sheets.forEach((sheet, idx) => {
-    const sheetKey = `sheet_${idx + 1}_${sheet.name.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    formatted.data[sheetKey] = sheet.rows;
+  sheets.forEach((sheet, sheetIdx) => {
+    markdown += `## SHEET ${sheetIdx + 1}: ${sheet.name}\n\n`;
+    markdown += `**Rows**: ${sheet.rows.length}\n`;
+    markdown += `**Columns**: ${sheet.columns.join(', ')}\n\n`;
+
+    // Create markdown table header
+    markdown += '| ' + sheet.columns.join(' | ') + ' |\n';
+    markdown += '|' + sheet.columns.map(() => '---').join('|') + '|\n';
+
+    // Add all rows
+    sheet.rows.forEach(row => {
+      const values = sheet.columns.map(col => {
+        const val = row[col] || '';
+        // Escape pipes and clean value
+        return String(val).replace(/\|/g, '\\|').trim();
+      });
+      markdown += '| ' + values.join(' | ') + ' |\n';
+    });
+
+    markdown += '\n---\n\n';
   });
 
-  // Convert to compact JSON string
-  const jsonString = JSON.stringify(formatted, null, 0); // No indentation for compactness
+  const sizeKB = (markdown.length / 1024).toFixed(2);
+  const estimatedTokens = Math.ceil(markdown.length / 4);
   
-  console.log(`✓ Formatted data size: ${(jsonString.length / 1024).toFixed(2)} KB`);
-  console.log(`✓ Estimated tokens: ~${Math.ceil(jsonString.length / 4)}`);
+  console.log(`✓ Formatted ${sizeKB} KB (~${estimatedTokens.toLocaleString()} tokens)`);
   
-  return jsonString;
+  return markdown;
 }
 
 /**
- * Call GPT-4o-mini with ALL data using optimized batching
- * Handles large inputs by intelligent chunking if needed
+ * 🔥 ENHANCED: Call GPT-4o-mini with markdown table format
  */
-async function analyzeWithGPT4oMini({ dataString, textContent, fileType, question, fileName }) {
+async function analyzeWithGPT4oMini({ markdownData, textContent, fileType, question, fileName }) {
   console.log('🤖 Calling GPT-4o-mini...');
 
-  // GPT-4o-mini has 128K context window
-  // Rough estimate: 1 token ≈ 4 characters
-  // Leave room for system prompt + response: use max 100K tokens for input (400K chars)
-  const MAX_INPUT_CHARS = 400000;
+  // GPT-4o-mini context: 128K tokens
+  // Reserve 16K for response, 2K for prompts = 110K available
+  // 1 token ≈ 4 chars = 440K chars max
+  const MAX_CHARS = 440000;
+
+  let content = "";
   
-  let inputContent = "";
-  let needsChunking = false;
-
-  if (dataString) {
-    inputContent = `**FILE TYPE**: ${fileType.toUpperCase()}
-**FILE NAME**: ${fileName}
-**DATA FORMAT**: JSON
-
-\`\`\`json
-${dataString}
-\`\`\``;
+  if (markdownData) {
+    // Check size
+    if (markdownData.length > MAX_CHARS) {
+      console.log(`⚠️ Data too large (${(markdownData.length/1024).toFixed(0)}KB), truncating...`);
+      content = markdownData.substring(0, MAX_CHARS) + '\n\n[... data truncated due to size ...]';
+    } else {
+      content = markdownData;
+    }
   } else if (textContent) {
-    inputContent = `**FILE TYPE**: ${fileType.toUpperCase()}
-**FILE NAME**: ${fileName}
-
-${textContent}`;
+    content = textContent.length > MAX_CHARS 
+      ? textContent.substring(0, MAX_CHARS) + '\n\n[... truncated ...]'
+      : textContent;
   } else {
-    return { success: false, error: "No content to analyze" };
+    return { success: false, error: "No content" };
   }
 
-  // Check if we need chunking
-  if (inputContent.length > MAX_INPUT_CHARS) {
-    needsChunking = true;
-    console.log(`⚠️ Content size (${(inputContent.length / 1024).toFixed(2)} KB) exceeds limit, using chunked processing...`);
-  }
+  const systemPrompt = `You are a senior financial analyst with expertise in P&L analysis and accounting.
 
-  const systemPrompt = `You are an expert financial analyst specializing in P&L analysis, accounting, and business intelligence.
+**YOUR MISSION**: Analyze financial data with EXTREME precision. Every number must be exact.
 
-**CORE RESPONSIBILITIES**:
-1. Analyze financial data with extreme precision
-2. Provide actionable insights and recommendations
-3. Identify trends, patterns, and anomalies
-4. Answer user questions accurately using the provided data
+**CRITICAL RULES FOR ACCURACY**:
 
-**CRITICAL ACCURACY RULES**:
-1. **VERIFY EVERY NUMBER**: All figures must come directly from the provided data
-2. **EXACT VALUES**: Never round or approximate unless explicitly requested
-3. **SOURCE CITATION**: Reference specific rows, sheets, or sections when citing data
-4. **SHOW CALCULATIONS**: Display formulas for any computed values
-5. **NO FABRICATION**: If data is missing or unclear, explicitly state this
-6. **CONTEXT PRESERVATION**: Keep stores/locations/entities separate - never mix them up
-7. **DOUBLE-CHECK RANKINGS**: Verify sort order and categories before presenting rankings
+1. **READ TABLES CAREFULLY**: 
+   - Data is provided in markdown table format
+   - Each row is a separate record
+   - Column headers define what each value represents
+   - NEVER confuse rows - each row is independent
 
-**COMMON PITFALLS TO AVOID**:
-❌ Mixing store names or switching figures between entities
-❌ Confusing revenue and expense columns
-❌ Including expense categories in "top performing locations by sales" rankings
-❌ Making assumptions about missing data
-❌ Rounding intermediate calculations
+2. **VERIFY EVERY NUMBER**:
+   - Before stating ANY figure, look it up in the table
+   - Copy the exact value, don't round or estimate
+   - Double-check you're reading from the correct column
 
-**QUESTION INTERPRETATION GUIDE**:
-- "Top performing locations" = Rank by REVENUE/SALES only (exclude expense categories)
-- "Bottom performers" = Lowest REVENUE/SALES (exclude expense categories)
-- "Most profitable" = Highest (Revenue - Expenses), show calculation
-- "Breakdown by category" = Group and sum by specified category
-- "Trends" = Compare across time periods if date columns exist
+3. **RANKINGS - CRITICAL**:
+   - "Top performing locations by revenue" = Sort by REVENUE column ONLY
+   - "Top performing locations by sales" = Sort by SALES column ONLY  
+   - NEVER include expense categories in location rankings
+   - NEVER mix up store names - copy them exactly from the table
 
-**OUTPUT REQUIREMENTS**:
-- Use markdown formatting with clear headers (##, ###)
-- Create tables for comparisons and rankings
-- Bold key findings and metrics
-- Start with executive summary
-- Follow with detailed analysis
-- End with actionable recommendations
+4. **CALCULATIONS**:
+   - Show your work: "Revenue (150,000) - Expenses (45,000) = Profit (105,000)"
+   - Use values DIRECTLY from the table
+   - Don't approximate intermediate steps
 
-**DATA STRUCTURE**:
-- Spreadsheet data is provided as JSON with sheet names and row objects
-- Each row is an object with column names as keys
-- Access data using: data.sheet_name[row_index].column_name
-- All sheets and all rows are included - nothing is truncated`;
+5. **COMMON MISTAKES TO AVOID**:
+   ❌ Switching figures between stores (e.g., giving Store A's revenue to Store B)
+   ❌ Rounding numbers when exact values are available
+   ❌ Including "Marketing" or "Rent" in "top locations" list
+   ❌ Making up numbers that aren't in the table
+   ❌ Confusing revenue and expense columns
 
-  const userPrompt = `${inputContent}
+6. **WHEN RANKING STORES**:
+   Step 1: Identify the correct column (Revenue/Sales)
+   Step 2: Find all rows where the entity is a store/location (not expense category)
+   Step 3: Sort by that column value (highest to lowest for "top")
+   Step 4: List the exact store names with exact values
+   Step 5: Double-check each entry against the table
+
+**OUTPUT FORMAT**:
+- Use markdown headers (##, ###)
+- Create comparison tables when useful
+- **Bold** key findings
+- Start with Executive Summary
+- Show detailed analysis with exact numbers
+- Cite row numbers when referencing data (e.g., "Row 5: Mumbai Central")
+
+**EXAMPLE OF CORRECT ANALYSIS**:
+
+✅ GOOD:
+"Top 5 Locations by Revenue:
+1. Mumbai Central - ₹2,50,000 (Row 3)
+2. Pune Mall - ₹2,20,000 (Row 7)
+..."
+
+❌ BAD:
+"Top 5 Locations:
+1. Marketing - ₹2,50,000  [WRONG: Marketing is an expense category, not a location]
+2. Mumbai - ₹220,000 [WRONG: Rounded the number]
+..."
+
+Remember: The data is in TABLE format. Read it like a spreadsheet - row by row, column by column.`;
+
+  const userMessage = `${content}
 
 ---
 
-**USER QUESTION**: 
-${question || "Please provide a comprehensive financial analysis of this data. Include key metrics, performance rankings, insights, and recommendations."}
+**USER QUESTION**: ${question || "Provide a comprehensive financial analysis with key metrics, performance rankings, and insights."}
 
 **ANALYSIS INSTRUCTIONS**:
-1. Read and understand ALL the data provided above
-2. Answer the question using ONLY the data shown
-3. When ranking locations/stores:
-   - Use revenue/sales columns for performance rankings
-   - Explicitly exclude expense categories from location rankings
-   - Show exact figures from the data
-4. Verify all numbers against the source data
-5. If the question asks for specific metrics, calculate them precisely
-6. Cite specific rows or data points when making claims
 
-**IMPORTANT**: 
-- This is the COMPLETE dataset - all rows and columns are included
-- Take your time to analyze thoroughly
-- Accuracy is more important than speed`;
+1. **Read the table(s) above carefully**
+2. **For rankings**: 
+   - Identify which column to sort by (usually Revenue or Sales)
+   - Find rows that are stores/locations (exclude expense categories)
+   - Sort by that column
+   - List exact names and exact values
+3. **For calculations**:
+   - Use exact values from the table
+   - Show the calculation
+4. **Double-check**: Before finalizing, verify each number against the table
+
+Take your time. Accuracy is more important than speed.`;
 
   const messages = [
     { role: "system", content: systemPrompt },
-    { role: "user", content: userPrompt }
+    { role: "user", content: userMessage }
   ];
 
-  // Retry logic with exponential backoff
-  const maxRetries = 3;
-  const baseDelay = 2000;
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  // Retry logic
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      console.log(`  Attempt ${attempt}/${maxRetries}...`);
+      console.log(`  Attempt ${attempt}/3...`);
 
       const response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -453,137 +388,90 @@ ${question || "Please provide a comprehensive financial analysis of this data. I
         body: JSON.stringify({
           model: "gpt-4o-mini",
           messages: messages,
-          temperature: 0,  // Deterministic for consistency
-          max_tokens: 16000,  // Allow detailed responses
-          top_p: 1.0,
-          frequency_penalty: 0,
-          presence_penalty: 0
+          temperature: 0,
+          max_tokens: 16000,
+          top_p: 1.0
         })
       });
 
-      // Handle rate limiting
       if (response.status === 429) {
-        if (attempt < maxRetries) {
-          const delay = baseDelay * Math.pow(2, attempt - 1);
-          console.log(`  ⚠️ Rate limit (429). Waiting ${delay / 1000}s before retry...`);
-          await sleep(delay);
-          continue;
-        } else {
-          const errorBody = await response.text();
-          return {
-            success: false,
-            error: "RATE_LIMIT",
-            message: "Rate limit exceeded. Please wait a moment and try again.",
-            details: errorBody
-          };
-        }
-      }
-
-      // Handle other HTTP errors
-      if (!response.ok) {
-        const errorBody = await response.text();
-        console.error(`  ❌ HTTP ${response.status}:`, errorBody.substring(0, 200));
-        
-        // Don't retry on auth errors
-        if (response.status === 401 || response.status === 403) {
-          return {
-            success: false,
-            error: "AUTHENTICATION",
-            message: "Invalid API key. Please check your OpenAI API key.",
-            details: errorBody
-          };
-        }
-
-        // Retry on server errors
-        if (attempt < maxRetries && response.status >= 500) {
-          const delay = baseDelay * Math.pow(2, attempt - 1);
-          console.log(`  ⚠️ Server error. Waiting ${delay / 1000}s before retry...`);
+        if (attempt < 3) {
+          const delay = 3000 * attempt;
+          console.log(`  ⏳ Rate limit, waiting ${delay/1000}s...`);
           await sleep(delay);
           continue;
         }
-
         return {
           success: false,
-          error: `HTTP_${response.status}`,
-          message: `API request failed with status ${response.status}`,
-          details: errorBody
+          error: "RATE_LIMIT",
+          message: "Rate limit exceeded. Please wait and try again."
         };
       }
 
-      // Parse successful response
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`  ❌ HTTP ${response.status}`);
+        
+        if (response.status === 401) {
+          return { success: false, error: "AUTH", message: "Invalid API key" };
+        }
+        
+        if (attempt < 3 && response.status >= 500) {
+          await sleep(3000 * attempt);
+          continue;
+        }
+        
+        return { success: false, error: `HTTP_${response.status}`, message: errorText };
+      }
+
       const data = await response.json();
 
       if (data.error) {
-        console.error('  ❌ API Error:', data.error);
-        return {
-          success: false,
-          error: "API_ERROR",
-          message: data.error.message || "Unknown API error",
-          details: data.error
-        };
+        return { success: false, error: "API_ERROR", message: data.error.message };
       }
 
-      const choice = data.choices?.[0];
-      const finishReason = choice?.finish_reason;
-      const content = choice?.message?.content;
+      const content = data.choices?.[0]?.message?.content;
+      const finishReason = data.choices?.[0]?.finish_reason;
+      const usage = data.usage;
 
-      console.log(`  ✓ Response received (${finishReason})`);
-      console.log(`  ✓ Tokens: ${data.usage?.total_tokens || 'unknown'} (prompt: ${data.usage?.prompt_tokens}, completion: ${data.usage?.completion_tokens})`);
-
-      if (finishReason === 'length') {
-        console.warn('  ⚠️ Response was truncated due to length limit');
-      }
+      console.log(`  ✓ Success (${finishReason})`);
+      console.log(`  ✓ Tokens: ${usage?.total_tokens || 0} (prompt: ${usage?.prompt_tokens}, completion: ${usage?.completion_tokens})`);
 
       if (!content) {
-        return {
-          success: false,
-          error: "EMPTY_RESPONSE",
-          message: "AI returned empty response"
-        };
+        return { success: false, error: "EMPTY", message: "Empty response" };
       }
 
-      // Clean up the response
-      let cleanedContent = content
-        .replace(/^```(?:markdown|json|text)?\s*\n?/gm, '')
+      // Clean response
+      const cleaned = content
+        .replace(/^```(?:markdown|json)?\s*\n?/gm, '')
         .replace(/\n?```\s*$/gm, '')
         .trim();
 
       return {
         success: true,
-        content: cleanedContent,
-        usage: data.usage,
+        content: cleaned,
+        usage: usage,
         finishReason: finishReason,
         model: "gpt-4o-mini"
       };
 
     } catch (err) {
-      console.error(`  ❌ Attempt ${attempt} failed:`, err.message);
+      console.error(`  ❌ Attempt ${attempt} error:`, err.message);
       
-      if (attempt < maxRetries) {
-        const delay = baseDelay * Math.pow(2, attempt - 1);
-        console.log(`  ⚠️ Retrying in ${delay / 1000}s...`);
-        await sleep(delay);
+      if (attempt < 3) {
+        await sleep(3000 * attempt);
         continue;
       }
-
-      return {
-        success: false,
-        error: "NETWORK_ERROR",
-        message: `Network error: ${err.message}`,
-        details: err.stack
-      };
+      
+      return { success: false, error: "NETWORK", message: err.message };
     }
   }
 
-  return {
-    success: false,
-    error: "MAX_RETRIES",
-    message: "Failed after maximum retry attempts"
-  };
+  return { success: false, error: "MAX_RETRIES" };
 }
 
 /**
- * Convert markdown to Word document
+ * Convert markdown to Word
  */
 async function markdownToWord(markdown) {
   try {
@@ -592,14 +480,12 @@ async function markdownToWord(markdown) {
     let tableRows = [];
     let inTable = false;
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
+    for (const line of lines) {
+      const trimmed = line.trim();
 
-      if (!line) {
+      if (!trimmed) {
         if (tableRows.length > 0) {
-          // Flush table
-          const table = createTableFromRows(tableRows);
-          sections.push(table);
+          sections.push(createTable(tableRows));
           sections.push(new Paragraph({ text: '' }));
           tableRows = [];
           inTable = false;
@@ -610,10 +496,9 @@ async function markdownToWord(markdown) {
       }
 
       // Headers
-      if (line.startsWith('#')) {
-        const level = (line.match(/^#+/) || [''])[0].length;
-        const text = line.replace(/^#+\s*/, '').replace(/\*\*/g, '');
-
+      if (trimmed.startsWith('#')) {
+        const level = (trimmed.match(/^#+/) || [''])[0].length;
+        const text = trimmed.replace(/^#+\s*/, '').replace(/\*\*/g, '');
         sections.push(new Paragraph({
           text: text,
           heading: level === 1 ? HeadingLevel.HEADING_1 : level === 2 ? HeadingLevel.HEADING_2 : HeadingLevel.HEADING_3,
@@ -623,106 +508,81 @@ async function markdownToWord(markdown) {
       }
 
       // Tables
-      if (line.includes('|')) {
-        const cells = line.split('|').map(c => c.trim()).filter(c => c);
-
-        // Skip separator rows
+      if (trimmed.includes('|')) {
+        const cells = trimmed.split('|').map(c => c.trim()).filter(c => c);
         if (cells.every(c => /^[-:]+$/.test(c))) {
           inTable = true;
           continue;
         }
-
         tableRows.push(cells.map(c => c.replace(/\*\*/g, '')));
         continue;
       } else if (inTable && tableRows.length > 0) {
-        // End of table
-        const table = createTableFromRows(tableRows);
-        sections.push(table);
+        sections.push(createTable(tableRows));
         sections.push(new Paragraph({ text: '' }));
         tableRows = [];
         inTable = false;
       }
 
-      // Bullet points
-      if (line.startsWith('-') || line.startsWith('*')) {
-        const text = line.replace(/^[-*]\s+/, '');
-        const runs = parseInlineFormatting(text);
-
+      // Bullets
+      if (trimmed.startsWith('-') || trimmed.startsWith('*')) {
+        const text = trimmed.replace(/^[-*]\s+/, '');
         sections.push(new Paragraph({
-          children: runs,
+          children: parseFormatting(text),
           bullet: { level: 0 },
           spacing: { before: 60, after: 60 }
         }));
         continue;
       }
 
-      // Regular paragraphs
-      const runs = parseInlineFormatting(line);
+      // Regular text
       sections.push(new Paragraph({
-        children: runs,
+        children: parseFormatting(trimmed),
         spacing: { before: 60, after: 60 }
       }));
     }
 
-    // Flush remaining table
     if (tableRows.length > 0) {
-      sections.push(createTableFromRows(tableRows));
+      sections.push(createTable(tableRows));
     }
 
     const doc = new Document({
       sections: [{ properties: {}, children: sections }]
     });
 
-    const buffer = await Packer.toBuffer(doc);
-    return buffer.toString('base64');
-
+    return (await Packer.toBuffer(doc)).toString('base64');
   } catch (err) {
-    console.error('Word generation error:', err);
+    console.error('Word gen error:', err.message);
     throw err;
   }
 }
 
-function parseInlineFormatting(text) {
-  const runs = [];
+function parseFormatting(text) {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
-
-  parts.forEach(part => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      runs.push(new TextRun({
-        text: part.replace(/\*\*/g, ''),
-        bold: true
-      }));
-    } else if (part) {
-      runs.push(new TextRun({ text: part }));
+  return parts.map(p => {
+    if (p.startsWith('**') && p.endsWith('**')) {
+      return new TextRun({ text: p.replace(/\*\*/g, ''), bold: true });
     }
-  });
-
-  return runs.length > 0 ? runs : [new TextRun({ text: '' })];
+    return new TextRun({ text: p });
+  }).filter(r => r.text);
 }
 
-function createTableFromRows(rows) {
-  const tableRows = rows.map((rowCells, idx) => {
-    const isHeader = idx === 0;
-
-    return new TableRow({
-      children: rowCells.map(cellText => new TableCell({
+function createTable(rows) {
+  return new Table({
+    rows: rows.map((cells, idx) => new TableRow({
+      children: cells.map(text => new TableCell({
         children: [new Paragraph({
           children: [new TextRun({
-            text: cellText,
-            bold: isHeader,
-            color: isHeader ? 'FFFFFF' : '000000',
+            text: text,
+            bold: idx === 0,
+            color: idx === 0 ? 'FFFFFF' : '000000',
             size: 22
           })],
           alignment: AlignmentType.LEFT
         })],
-        shading: { fill: isHeader ? '4472C4' : 'FFFFFF' },
+        shading: { fill: idx === 0 ? '4472C4' : 'FFFFFF' },
         margins: { top: 100, bottom: 100, left: 100, right: 100 }
       }))
-    });
-  });
-
-  return new Table({
-    rows: tableRows,
+    })),
     width: { size: 100, type: WidthType.PERCENTAGE },
     borders: {
       top: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
@@ -736,123 +596,78 @@ function createTableFromRows(rows) {
 }
 
 /**
- * Main request handler
+ * Main handler
  */
 export default async function handler(req, res) {
   cors(res);
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const startTime = Date.now();
 
   try {
-    // Validate environment
     if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ 
-        error: "Server configuration error: OPENAI_API_KEY not set" 
-      });
+      return res.status(500).json({ error: "OPENAI_API_KEY not configured" });
     }
 
-    // Parse request
     const body = await parseJsonBody(req);
     const { fileUrl, question = "" } = body;
 
     if (!fileUrl) {
-      return res.status(400).json({ 
-        error: "Missing required parameter: fileUrl" 
-      });
+      return res.status(400).json({ error: "fileUrl required" });
     }
 
+    console.log('\n' + '='.repeat(80));
+    console.log('📊 NEW ANALYSIS REQUEST');
     console.log('='.repeat(80));
-    console.log('🚀 NEW REQUEST');
-    console.log('='.repeat(80));
-    console.log('File URL:', fileUrl);
+    console.log('URL:', fileUrl);
     console.log('Question:', question || '(comprehensive analysis)');
 
-    // Step 1: Download file
-    console.log('\n📥 STEP 1: Downloading file...');
+    // Download
+    console.log('\n📥 Downloading...');
     const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
     const fileType = detectFileType(fileUrl, contentType, buffer);
     const fileName = fileUrl.split('/').pop().split('?')[0] || 'file';
+    
+    console.log(`✓ File: ${fileName} (${fileType}, ${(bytesReceived/1024).toFixed(2)} KB)`);
 
-    console.log(`✓ File: ${fileName}`);
-    console.log(`✓ Type: ${fileType}`);
-    console.log(`✓ Size: ${(bytesReceived / 1024).toFixed(2)} KB`);
-
-    // Step 2: Extract content
-    console.log('\n📄 STEP 2: Extracting content...');
+    // Extract
+    console.log('\n📄 Extracting...');
     
     let extractResult;
-    let dataString = null;
+    let markdownData = null;
     let textContent = null;
 
-    switch (fileType) {
-      case 'xlsx':
-      case 'xls':
-      case 'csv':
-        extractResult = extractSpreadsheet(buffer, fileType);
-        if (extractResult.success) {
-          dataString = formatDataForAI(extractResult.sheets);
-        }
-        break;
-
-      case 'pdf':
-        extractResult = await extractPdf(buffer);
-        if (extractResult.success) {
-          textContent = extractResult.text;
-        }
-        break;
-
-      case 'docx':
-        extractResult = await extractDocx(buffer);
-        if (extractResult.success) {
-          textContent = extractResult.text;
-        }
-        break;
-
-      case 'pptx':
-        extractResult = await extractPptx(buffer);
-        if (extractResult.success) {
-          textContent = extractResult.text;
-        }
-        break;
-
-      case 'png':
-      case 'jpg':
-      case 'gif':
-        return res.json({
-          ok: false,
-          message: "Image files cannot be analyzed directly. Please convert to PDF with OCR or extract text manually."
-        });
-
-      default:
-        return res.json({
-          ok: false,
-          message: `Unsupported file type: ${fileType}`
-        });
+    if (fileType === 'xlsx' || fileType === 'csv') {
+      extractResult = extractSpreadsheet(buffer, fileType);
+      if (extractResult.success) {
+        markdownData = formatAsMarkdownTables(extractResult.sheets);
+      }
+    } else if (fileType === 'pdf') {
+      extractResult = await extractPdf(buffer);
+      if (extractResult.success) textContent = extractResult.text;
+    } else if (fileType === 'docx') {
+      extractResult = await extractDocx(buffer);
+      if (extractResult.success) textContent = extractResult.text;
+    } else if (fileType === 'pptx') {
+      extractResult = await extractPptx(buffer);
+      if (extractResult.success) textContent = extractResult.text;
+    } else {
+      return res.json({ ok: false, message: `Unsupported file type: ${fileType}` });
     }
 
     if (!extractResult.success) {
       console.error('❌ Extraction failed:', extractResult.error);
-      return res.json({
-        ok: false,
-        message: `Failed to extract content: ${extractResult.error}`
-      });
+      return res.json({ ok: false, message: `Extraction failed: ${extractResult.error}` });
     }
 
-    console.log('✓ Content extracted successfully');
+    console.log('✓ Content extracted');
 
-    // Step 3: Analyze with AI
-    console.log('\n🤖 STEP 3: Analyzing with GPT-4o-mini...');
-    
+    // Analyze
+    console.log('\n🤖 Analyzing...');
     const analysisResult = await analyzeWithGPT4oMini({
-      dataString,
+      markdownData,
       textContent,
       fileType,
       question,
@@ -861,44 +676,28 @@ export default async function handler(req, res) {
 
     if (!analysisResult.success) {
       console.error('❌ Analysis failed:', analysisResult.error);
-      
-      let userMessage = "Analysis failed. ";
-      if (analysisResult.error === "RATE_LIMIT") {
-        userMessage = "Rate limit exceeded. Please wait a moment and try again.";
-      } else if (analysisResult.error === "AUTHENTICATION") {
-        userMessage = "API authentication failed. Please check your OpenAI API key.";
-      } else {
-        userMessage += analysisResult.message || "Unknown error occurred.";
-      }
-
       return res.json({
         ok: false,
-        message: userMessage,
-        error: analysisResult.error,
-        details: analysisResult.details
+        message: analysisResult.message || "Analysis failed",
+        error: analysisResult.error
       });
     }
 
-    console.log('✓ Analysis completed');
-    console.log(`✓ Model: ${analysisResult.model}`);
-    console.log(`✓ Tokens used: ${analysisResult.usage?.total_tokens || 'unknown'}`);
+    console.log('✓ Analysis complete');
 
-    // Step 4: Generate Word document
-    console.log('\n📝 STEP 4: Generating Word document...');
-    
+    // Generate Word
+    console.log('\n📝 Generating Word...');
     let wordBase64 = null;
     try {
       wordBase64 = await markdownToWord(analysisResult.content);
-      console.log('✓ Word document generated');
+      console.log('✓ Word generated');
     } catch (err) {
-      console.error('⚠️ Word generation failed:', err.message);
-      // Continue without Word doc - not critical
+      console.log('⚠️ Word generation skipped:', err.message);
     }
 
-    // Success response
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-    console.log(`\n✅ REQUEST COMPLETED in ${duration}s`);
-    console.log('='.repeat(80));
+    console.log(`\n✅ COMPLETED in ${duration}s`);
+    console.log('='.repeat(80) + '\n');
 
     return res.json({
       ok: true,
@@ -912,24 +711,14 @@ export default async function handler(req, res) {
         fileType,
         fileSize: bytesReceived,
         totalRows: extractResult.totalRows || null,
-        sheetsCount: extractResult.sheets?.length || null,
-        model: analysisResult.model,
+        model: "gpt-4o-mini",
         tokensUsed: analysisResult.usage?.total_tokens,
-        finishReason: analysisResult.finishReason,
-        processingTime: parseFloat(duration),
-        hasWordDocument: !!wordBase64
+        processingTime: parseFloat(duration)
       }
     });
 
   } catch (err) {
-    console.error('\n❌ UNEXPECTED ERROR:', err);
-    console.error(err.stack);
-
-    return res.status(500).json({
-      ok: false,
-      message: "Internal server error",
-      error: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
+    console.error('\n❌ ERROR:', err);
+    return res.status(500).json({ ok: false, error: err.message });
   }
 }
