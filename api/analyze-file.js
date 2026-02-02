@@ -128,7 +128,7 @@ async function extractDocx(buffer) {
 }
 
 /**
- * Extract spreadsheet
+ * Extract spreadsheet - ALL ROWS
  */
 function extractSpreadsheet(buffer) {
   try {
@@ -161,7 +161,7 @@ function extractSpreadsheet(buffer) {
       }
     });
 
-    console.log(`✓ Extracted ${sheets.length} sheets, ${totalRows} total rows`);
+    console.log(`✓ Total: ${sheets.length} sheets, ${totalRows} rows`);
     return { success: true, sheets, totalRows };
 
   } catch (err) {
@@ -170,282 +170,157 @@ function extractSpreadsheet(buffer) {
 }
 
 /**
- * 🔥 NEW: PRE-PROCESS DATA - Extract clean structured data FIRST
- * This ensures AI has perfect data to work with
+ * 🔥 MOST EFFICIENT: Convert to CSV format (fewest tokens, best AI comprehension)
+ * CSV is the most token-efficient and AI reads it perfectly line-by-line
  */
-function preprocessSpreadsheetData(sheets) {
-  console.log('🔧 Pre-processing data for accuracy...');
+function formatAsCSV(sheets) {
+  console.log('📝 Formatting as CSV...');
   
-  const processed = sheets.map(sheet => {
-    const { name, columns, rows } = sheet;
+  let csv = "";
+  
+  sheets.forEach((sheet, idx) => {
+    // Sheet header
+    csv += `\n=== SHEET ${idx + 1}: ${sheet.name} ===\n`;
+    csv += `Rows: ${sheet.rows.length}\n\n`;
     
-    // Detect numeric columns
-    const numericCols = columns.filter(col => {
-      const samples = rows.slice(0, 10).map(r => r[col]);
-      const numericCount = samples.filter(val => {
-        const cleaned = String(val).replace(/[^0-9.-]/g, '');
-        return cleaned && !isNaN(parseFloat(cleaned));
-      }).length;
-      return numericCount >= 6;
-    });
-
-    // Detect identifier column (first non-numeric usually)
-    const identifierCol = columns.find(col => !numericCols.includes(col)) || columns[0];
-
-    console.log(`  "${name}": ID="${identifierCol}", Numeric=[${numericCols.join(', ')}]`);
-
-    // Create clean records with parsed numbers
-    const cleanRecords = rows.map((row, idx) => {
-      const record = {
-        _rowNumber: idx + 2, // +2 because: +1 for 0-index, +1 for header row
-        _identifier: row[identifierCol] || `Row ${idx + 2}`
-      };
-
-      // Add all original columns with cleaned values
-      columns.forEach(col => {
-        const value = row[col];
-        
-        if (numericCols.includes(col)) {
-          // Parse numeric values
-          const cleaned = String(value).replace(/[^0-9.-]/g, '');
-          record[col] = cleaned && !isNaN(parseFloat(cleaned)) ? parseFloat(cleaned) : 0;
-        } else {
-          // Keep text values as-is
-          record[col] = String(value || '').trim();
+    // CSV header row
+    csv += sheet.columns.join(',') + '\n';
+    
+    // Data rows
+    sheet.rows.forEach((row, rowIdx) => {
+      const values = sheet.columns.map(col => {
+        let val = row[col] || '';
+        // Escape commas and quotes in values
+        val = String(val).replace(/"/g, '""');
+        if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+          val = `"${val}"`;
         }
+        return val;
       });
-
-      return record;
+      csv += values.join(',') + '\n';
     });
-
-    return {
-      sheetName: name,
-      identifierColumn: identifierCol,
-      numericColumns: numericCols,
-      totalRows: rows.length,
-      records: cleanRecords
-    };
+    
+    csv += '\n';
   });
 
-  return processed;
+  const sizeKB = (csv.length / 1024).toFixed(2);
+  const estimatedTokens = Math.ceil(csv.length / 4);
+  
+  console.log(`✓ CSV: ${sizeKB} KB (~${estimatedTokens.toLocaleString()} tokens)`);
+  
+  return csv;
 }
 
 /**
- * 🔥 TWO-PASS SYSTEM: Pass 1 - Structure the data
+ * 🔥 OPTIMIZED: Call GPT-4o-mini with CSV format + ultra-clear prompts
  */
-async function structureDataWithAI({ processedSheets, fileType, fileName }) {
-  console.log('🤖 PASS 1: Structuring data...');
+async function analyzeWithAI({ csvData, textContent, fileType, question, fileName }) {
+  console.log('🤖 Analyzing with GPT-4o-mini...');
 
-  // Create concise data summary for AI to organize
-  let dataDescription = `# DATA STRUCTURING REQUEST\n\n`;
-  dataDescription += `**File**: ${fileName}\n`;
-  dataDescription += `**Type**: ${fileType}\n`;
-  dataDescription += `**Sheets**: ${processedSheets.length}\n\n`;
+  // Max input: ~400K characters (100K tokens)
+  const MAX_CHARS = 400000;
 
-  processedSheets.forEach((sheet, idx) => {
-    dataDescription += `## Sheet ${idx + 1}: ${sheet.sheetName}\n\n`;
-    dataDescription += `**Identifier Column**: ${sheet.identifierColumn}\n`;
-    dataDescription += `**Numeric Columns**: ${sheet.numericColumns.join(', ')}\n`;
-    dataDescription += `**Total Records**: ${sheet.totalRows}\n\n`;
-
-    // Include ALL records with clean formatting
-    dataDescription += `### Complete Data:\n\n`;
-    dataDescription += '```json\n';
-    dataDescription += JSON.stringify(sheet.records, null, 2);
-    dataDescription += '\n```\n\n';
-  });
-
-  const systemPrompt = `You are a data structuring assistant. Your job is to read raw data and create a PERFECTLY ACCURATE structured summary.
-
-**YOUR TASK**:
-Extract and organize ALL data into a clean JSON structure. This will be used for analysis, so ACCURACY IS CRITICAL.
-
-**RULES**:
-1. Include EVERY record - do not skip any
-2. Preserve EXACT values - do not round or approximate
-3. Keep original identifiers (store names, locations, etc.) exactly as written
-4. For numeric values, use the exact numbers provided
-5. Create clear categories based on the data structure
-
-**OUTPUT FORMAT**:
-Return ONLY valid JSON (no markdown, no explanation) with this structure:
-
-\`\`\`json
-{
-  "summary": {
-    "totalRecords": <number>,
-    "sheets": <number>,
-    "categories": [<list of identified categories>]
-  },
-  "sheets": [
-    {
-      "name": "<sheet name>",
-      "identifierColumn": "<column name>",
-      "numericColumns": ["<col1>", "<col2>"],
-      "records": [
-        {
-          "rowNumber": <number>,
-          "identifier": "<exact name>",
-          "<column1>": <exact value>,
-          "<column2>": <exact value>
-        }
-      ]
+  let content = "";
+  
+  if (csvData) {
+    if (csvData.length > MAX_CHARS) {
+      console.log(`⚠️ Data is ${(csvData.length/1024).toFixed(0)}KB, truncating to ${(MAX_CHARS/1024).toFixed(0)}KB...`);
+      content = csvData.substring(0, MAX_CHARS) + '\n\n[... remaining data truncated ...]';
+    } else {
+      content = csvData;
     }
-  ]
-}
-\`\`\`
-
-**CRITICAL**: Every value must match the source data exactly. This structured data will be used for store-wise analysis.`;
-
-  const userMessage = `${dataDescription}
-
-Please structure this data into the JSON format specified. Include ALL ${processedSheets.reduce((sum, s) => sum + s.totalRows, 0)} records with EXACT values.`;
-
-  const messages = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userMessage }
-  ];
-
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      console.log(`  Attempt ${attempt}/3...`);
-
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: messages,
-          temperature: 0,
-          max_tokens: 16000
-        })
-      });
-
-      if (response.status === 429) {
-        if (attempt < 3) {
-          await sleep(3000 * attempt);
-          continue;
-        }
-        return { success: false, error: "RATE_LIMIT" };
-      }
-
-      if (!response.ok) {
-        if (attempt < 3 && response.status >= 500) {
-          await sleep(3000 * attempt);
-          continue;
-        }
-        return { success: false, error: `HTTP ${response.status}` };
-      }
-
-      const data = await response.json();
-      if (data.error) {
-        return { success: false, error: data.error.message };
-      }
-
-      let content = data.choices?.[0]?.message?.content;
-      if (!content) {
-        return { success: false, error: "Empty response" };
-      }
-
-      // Clean and parse JSON
-      content = content
-        .replace(/^```json\s*/gm, '')
-        .replace(/```\s*$/gm, '')
-        .trim();
-
-      let structuredData;
-      try {
-        structuredData = JSON.parse(content);
-      } catch (parseErr) {
-        console.error('  ❌ JSON parse error:', parseErr.message);
-        return { success: false, error: "Invalid JSON response" };
-      }
-
-      console.log(`  ✓ Structured ${structuredData.summary?.totalRecords || 0} records`);
-      return { success: true, structuredData, usage: data.usage };
-
-    } catch (err) {
-      if (attempt < 3) {
-        await sleep(3000 * attempt);
-        continue;
-      }
-      return { success: false, error: err.message };
-    }
+  } else if (textContent) {
+    content = textContent.length > MAX_CHARS 
+      ? textContent.substring(0, MAX_CHARS) + '\n\n[... truncated ...]'
+      : textContent;
+  } else {
+    return { success: false, error: "No content" };
   }
 
-  return { success: false, error: "Max retries" };
-}
+  const systemPrompt = `You are a senior financial analyst. You will receive financial data in CSV format.
 
-/**
- * 🔥 TWO-PASS SYSTEM: Pass 2 - Answer the question using structured data
- */
-async function answerQuestionWithAI({ structuredData, question, fileName }) {
-  console.log('🤖 PASS 2: Analyzing and answering...');
+**CRITICAL ACCURACY PROTOCOL**:
 
-  const systemPrompt = `You are an expert financial analyst. You have access to perfectly structured financial data.
+1. **READ CSV LINE BY LINE**:
+   - First line after sheet header = column names
+   - Every subsequent line = one record
+   - Each value is in a specific column position
+   - Line number = Row number in original file
 
-**YOUR TASK**: Answer the user's question using the structured data provided. All data is already clean and accurate.
+2. **WHEN FINDING SPECIFIC STORES**:
+   Step 1: Scan through CSV line by line
+   Step 2: Find the line with the store name
+   Step 3: Read values from that EXACT line (same row)
+   Step 4: Copy values exactly as shown
+   Step 5: Cite line number for verification
 
-**CRITICAL RULES**:
-1. **USE EXACT VALUES**: The data contains exact numbers - use them as-is
-2. **CITE ROW NUMBERS**: Always reference row numbers when mentioning specific records
-3. **VERIFY CATEGORIES**: When ranking "stores" or "locations", ensure you're not including expense categories
-4. **SHOW CALCULATIONS**: For any computed values, show the math
-5. **BE SPECIFIC**: Use exact identifiers from the data
+3. **NEVER DO THIS**:
+   ❌ Mix values from different lines
+   ❌ Round numbers
+   ❌ Switch store names
+   ❌ Include expense categories in store rankings
+   ❌ Approximate or estimate
 
-**DATA STRUCTURE**:
-The data is provided as clean JSON with:
-- \`summary\`: Overall statistics
-- \`sheets[].records[]\`: Array of records with exact values
-- Each record has: rowNumber, identifier, and numeric columns
+4. **ALWAYS DO THIS**:
+   ✅ Read values from the correct line
+   ✅ Use exact numbers as shown
+   ✅ Keep store names exactly as written
+   ✅ Show row numbers: "Mumbai (Line 25): ₹150,000"
+   ✅ Double-check by re-reading the line
+
+5. **FOR RANKINGS**:
+   - "Top stores by revenue" = Sort by Revenue column, highest first
+   - Only include actual stores/locations, NOT expense categories
+   - List exact values from the CSV
+
+**CSV FORMAT EXAMPLE**:
+\`\`\`
+Store,Revenue,Expenses
+Mumbai Central,250000,75000
+Pune Mall,220000,66000
+\`\`\`
+
+Line 2: Mumbai Central has Revenue=250000, Expenses=75000
+Line 3: Pune Mall has Revenue=220000, Expenses=66000
 
 **OUTPUT FORMAT**:
-- Use markdown with ## headers
-- Create tables for comparisons
+- Use markdown headers (##)
 - **Bold** key findings
+- Create tables for comparisons
+- Always cite line numbers
 - Start with Executive Summary
-- Show detailed analysis with exact figures
-- Always cite row numbers: "Store X (Row 45): ₹150,000"
 
-**EXAMPLE**:
-User asks: "Top 5 stores by revenue"
+Remember: CSV is row-based. Each line is independent. Never mix values between lines.`;
 
-Your response:
-## Top 5 Performing Stores by Revenue
+  const userMessage = `# DATA FILE
 
-1. **Mumbai Central** (Row 12) - ₹2,50,000
-2. **Pune Mall** (Row 34) - ₹2,20,000
-...
+**Filename**: ${fileName}
+**Format**: CSV
 
-**IMPORTANT**: Never round numbers, never approximate, never switch values between records.`;
-
-  const userMessage = `# STRUCTURED DATA
-
-\`\`\`json
-${JSON.stringify(structuredData, null, 2)}
+\`\`\`csv
+${content}
 \`\`\`
 
 ---
 
-**USER QUESTION**: ${question || "Provide comprehensive financial analysis including key metrics, top/bottom performers, and insights."}
+**QUESTION**: ${question || "Provide comprehensive financial analysis including totals, top/bottom performers, and key insights."}
 
 **INSTRUCTIONS**:
-1. Read the structured data above carefully
-2. Answer the question using EXACT values from the data
-3. For rankings, sort by the appropriate numeric column
-4. Cite row numbers for verification
-5. Show any calculations clearly
+1. Read the CSV data carefully, line by line
+2. For store-specific questions, find the exact line and read values from that line only
+3. For totals, sum the entire column
+4. For rankings, sort by the specified column
+5. Use exact values, no rounding
+6. Cite line numbers for verification
 
-Remember: All values are already accurate and clean. Use them exactly as provided.`;
+**IMPORTANT**: Each CSV line is one record. Values on the same line belong together. Never take a value from one line and pair it with a name from another line.`;
 
   const messages = [
     { role: "system", content: systemPrompt },
     { role: "user", content: userMessage }
   ];
 
+  // Retry with backoff
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       console.log(`  Attempt ${attempt}/3...`);
@@ -466,7 +341,7 @@ Remember: All values are already accurate and clean. Use them exactly as provide
 
       if (response.status === 429) {
         if (attempt < 3) {
-          await sleep(3000 * attempt);
+          await sleep(2000 * attempt);
           continue;
         }
         return { success: false, error: "RATE_LIMIT" };
@@ -474,7 +349,7 @@ Remember: All values are already accurate and clean. Use them exactly as provide
 
       if (!response.ok) {
         if (attempt < 3 && response.status >= 500) {
-          await sleep(3000 * attempt);
+          await sleep(2000 * attempt);
           continue;
         }
         return { success: false, error: `HTTP ${response.status}` };
@@ -495,12 +370,18 @@ Remember: All values are already accurate and clean. Use them exactly as provide
         .replace(/\n?```\s*$/gm, '')
         .trim();
 
-      console.log(`  ✓ Analysis complete (${data.usage?.total_tokens || 0} tokens)`);
-      return { success: true, content: cleaned, usage: data.usage };
+      console.log(`  ✓ Complete (${data.usage?.total_tokens || 0} tokens)`);
+      
+      return {
+        success: true,
+        content: cleaned,
+        usage: data.usage,
+        model: "gpt-4o-mini"
+      };
 
     } catch (err) {
       if (attempt < 3) {
-        await sleep(3000 * attempt);
+        await sleep(2000 * attempt);
         continue;
       }
       return { success: false, error: err.message };
@@ -558,7 +439,7 @@ async function markdownToWord(markdown) {
 
     return (await Packer.toBuffer(doc)).toString('base64');
   } catch (err) {
-    console.error('Word error:', err.message);
+    console.error('Word gen error:', err.message);
     throw err;
   }
 }
@@ -586,29 +467,36 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "fileUrl required" });
     }
 
-    console.log('\n' + '='.repeat(80));
-    console.log('📊 TWO-PASS ANALYSIS');
-    console.log('='.repeat(80));
-    console.log('File:', fileUrl);
-    console.log('Question:', question || '(comprehensive analysis)');
+    console.log('\n' + '='.repeat(60));
+    console.log('📊 ANALYSIS REQUEST');
+    console.log('='.repeat(60));
+    console.log('File:', fileUrl.split('/').pop());
+    console.log('Question:', question || '(comprehensive)');
 
     // Download
     console.log('\n📥 Downloading...');
     const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
     const fileType = detectFileType(fileUrl, contentType, buffer);
     const fileName = fileUrl.split('/').pop().split('?')[0] || 'file';
-    console.log(`✓ ${fileName} (${fileType}, ${(bytesReceived/1024).toFixed(2)} KB)`);
+    console.log(`✓ ${(bytesReceived/1024).toFixed(2)} KB`);
 
     // Extract
     console.log('\n📄 Extracting...');
     let extractResult;
+    let csvData = null;
+    let textContent = null;
 
     if (fileType === 'xlsx' || fileType === 'csv') {
       extractResult = extractSpreadsheet(buffer);
+      if (extractResult.success) {
+        csvData = formatAsCSV(extractResult.sheets);
+      }
     } else if (fileType === 'pdf') {
       extractResult = await extractPdf(buffer);
+      if (extractResult.success) textContent = extractResult.text;
     } else if (fileType === 'docx') {
       extractResult = await extractDocx(buffer);
+      if (extractResult.success) textContent = extractResult.text;
     } else {
       return res.json({ ok: false, message: `Unsupported: ${fileType}` });
     }
@@ -617,81 +505,58 @@ export default async function handler(req, res) {
       return res.json({ ok: false, message: extractResult.error });
     }
 
-    // For spreadsheets: TWO-PASS SYSTEM
-    if (fileType === 'xlsx' || fileType === 'csv') {
-      // Pre-process
-      const processedSheets = preprocessSpreadsheetData(extractResult.sheets);
+    console.log('✓ Extracted');
 
-      // Pass 1: Structure data
-      const structureResult = await structureDataWithAI({
-        processedSheets,
-        fileType,
-        fileName
-      });
+    // Analyze
+    console.log('\n🤖 Analyzing...');
+    const analysisResult = await analyzeWithAI({
+      csvData,
+      textContent,
+      fileType,
+      question,
+      fileName
+    });
 
-      if (!structureResult.success) {
-        return res.json({
-          ok: false,
-          message: `Pass 1 failed: ${structureResult.error}`
-        });
-      }
-
-      // Pass 2: Answer question
-      const answerResult = await answerQuestionWithAI({
-        structuredData: structureResult.structuredData,
-        question,
-        fileName
-      });
-
-      if (!answerResult.success) {
-        return res.json({
-          ok: false,
-          message: `Pass 2 failed: ${answerResult.error}`
-        });
-      }
-
-      console.log('✓ Two-pass analysis complete');
-
-      // Generate Word
-      console.log('\n📝 Generating Word...');
-      let wordBase64 = null;
-      try {
-        wordBase64 = await markdownToWord(answerResult.content);
-        console.log('✓ Word ready');
-      } catch (err) {
-        console.log('⚠️ Word skipped');
-      }
-
-      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-      console.log(`\n✅ COMPLETED in ${duration}s`);
-      console.log('='.repeat(80) + '\n');
-
-      return res.json({
-        ok: true,
-        reply: answerResult.content,
-        wordDownload: wordBase64,
-        downloadUrl: wordBase64 
-          ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}`
-          : null,
-        metadata: {
-          fileName,
-          fileType,
-          fileSize: bytesReceived,
-          totalRows: extractResult.totalRows,
-          model: "gpt-4o-mini-two-pass",
-          tokensUsed: (structureResult.usage?.total_tokens || 0) + (answerResult.usage?.total_tokens || 0),
-          processingTime: parseFloat(duration),
-          passes: 2
-        }
-      });
-
-    } else {
-      // For text files: Single pass (not implemented in detail here)
+    if (!analysisResult.success) {
       return res.json({
         ok: false,
-        message: "Text file analysis not fully implemented in this version"
+        message: analysisResult.error || "Analysis failed"
       });
     }
+
+    console.log('✓ Analysis done');
+
+    // Generate Word
+    console.log('\n📝 Word...');
+    let wordBase64 = null;
+    try {
+      wordBase64 = await markdownToWord(analysisResult.content);
+      console.log('✓ Ready');
+    } catch (err) {
+      console.log('⚠️ Skipped');
+    }
+
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`\n✅ Done in ${duration}s`);
+    console.log('='.repeat(60) + '\n');
+
+    return res.json({
+      ok: true,
+      reply: analysisResult.content,
+      wordDownload: wordBase64,
+      downloadUrl: wordBase64 
+        ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}`
+        : null,
+      metadata: {
+        fileName,
+        fileType,
+        fileSize: bytesReceived,
+        totalRows: extractResult.totalRows,
+        model: "gpt-4o-mini",
+        tokensUsed: analysisResult.usage?.total_tokens,
+        processingTime: parseFloat(duration)
+      }
+    });
 
   } catch (err) {
     console.error('\n❌ ERROR:', err);
