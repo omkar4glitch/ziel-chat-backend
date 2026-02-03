@@ -170,61 +170,59 @@ function extractSpreadsheet(buffer) {
 }
 
 /**
- * 🔥 MOST EFFICIENT: Convert to CSV format (fewest tokens, best AI comprehension)
- * CSV is the most token-efficient and AI reads it perfectly line-by-line
+ * Convert to CSV format with row numbers
  */
 function formatAsCSV(sheets) {
   console.log('📝 Formatting as CSV...');
   
   let csv = "";
+  let globalRowNum = 1; // Start from 1 for header
   
   sheets.forEach((sheet, idx) => {
     // Sheet header
-    csv += `\n=== SHEET ${idx + 1}: ${sheet.name} ===\n`;
-    csv += `Rows: ${sheet.rows.length}\n\n`;
+    csv += `\n=== SHEET ${idx + 1}: ${sheet.name} ===\n\n`;
     
-    // CSV header row
-    csv += sheet.columns.join(',') + '\n';
+    // CSV header row with ROW_NUM column
+    csv += 'ROW_NUM,' + sheet.columns.join(',') + '\n';
+    globalRowNum++;
     
-    // Data rows
-    sheet.rows.forEach((row, rowIdx) => {
+    // Data rows with row numbers
+    sheet.rows.forEach((row) => {
       const values = sheet.columns.map(col => {
         let val = row[col] || '';
-        // Escape commas and quotes in values
+        // Escape commas and quotes
         val = String(val).replace(/"/g, '""');
         if (val.includes(',') || val.includes('"') || val.includes('\n')) {
           val = `"${val}"`;
         }
         return val;
       });
-      csv += values.join(',') + '\n';
+      csv += globalRowNum + ',' + values.join(',') + '\n';
+      globalRowNum++;
     });
     
     csv += '\n';
   });
 
   const sizeKB = (csv.length / 1024).toFixed(2);
-  const estimatedTokens = Math.ceil(csv.length / 4);
-  
-  console.log(`✓ CSV: ${sizeKB} KB (~${estimatedTokens.toLocaleString()} tokens)`);
+  console.log(`✓ CSV: ${sizeKB} KB`);
   
   return csv;
 }
 
 /**
- * 🔥 OPTIMIZED: Call GPT-4o-mini with CSV format + ultra-clear prompts
+ * 🔥 FINAL: Call GPT-4o-mini with perfect instructions
  */
 async function analyzeWithAI({ csvData, textContent, fileType, question, fileName }) {
-  console.log('🤖 Analyzing with GPT-4o-mini...');
+  console.log('🤖 Analyzing...');
 
-  // Max input: ~400K characters (100K tokens)
   const MAX_CHARS = 400000;
 
   let content = "";
   
   if (csvData) {
     if (csvData.length > MAX_CHARS) {
-      console.log(`⚠️ Data is ${(csvData.length/1024).toFixed(0)}KB, truncating to ${(MAX_CHARS/1024).toFixed(0)}KB...`);
+      console.log(`⚠️ Truncating to ${(MAX_CHARS/1024).toFixed(0)}KB...`);
       content = csvData.substring(0, MAX_CHARS) + '\n\n[... remaining data truncated ...]';
     } else {
       content = csvData;
@@ -237,65 +235,67 @@ async function analyzeWithAI({ csvData, textContent, fileType, question, fileNam
     return { success: false, error: "No content" };
   }
 
-  const systemPrompt = `You are a senior financial analyst. You will receive financial data in CSV format.
+  const systemPrompt = `You are a senior financial analyst. You will receive data in CSV format with a ROW_NUM column for reference.
 
-**CRITICAL ACCURACY PROTOCOL**:
+**CRITICAL RULES FOR ACCURACY**:
 
-1. **READ CSV LINE BY LINE**:
-   - First line after sheet header = column names
-   - Every subsequent line = one record
-   - Each value is in a specific column position
-   - Line number = Row number in original file
+1. **READING CSV DATA**:
+   - First column (ROW_NUM) is just for reference - don't include it in your analysis
+   - Each row has exact values for each column
+   - Read values from the SAME row - never mix columns from different rows
 
-2. **WHEN FINDING SPECIFIC STORES**:
-   Step 1: Scan through CSV line by line
-   Step 2: Find the line with the store name
-   Step 3: Read values from that EXACT line (same row)
-   Step 4: Copy values exactly as shown
-   Step 5: Cite line number for verification
+2. **WHEN CREATING TABLES IN YOUR RESPONSE**:
+   - Copy values EXACTLY from the correct column
+   - If source has "EBITDA 2024" and "EBITDA 2025" columns:
+     * Put 2024 values ONLY in your 2024 column
+     * Put 2025 values ONLY in your 2025 column
+   - NEVER copy the same value to multiple year columns
+   - NEVER include ROW_NUM in your output tables
 
-3. **NEVER DO THIS**:
-   ❌ Mix values from different lines
-   ❌ Round numbers
-   ❌ Switch store names
-   ❌ Include expense categories in store rankings
-   ❌ Approximate or estimate
+3. **CRITICAL TABLE FORMATTING RULE**:
+   When creating comparison tables:
+   ❌ WRONG: Copying 2025 value into both 2024 and 2025 columns
+   ✅ RIGHT: 2024 column gets 2024 value, 2025 column gets 2025 value
 
-4. **ALWAYS DO THIS**:
-   ✅ Read values from the correct line
-   ✅ Use exact numbers as shown
-   ✅ Keep store names exactly as written
-   ✅ Show row numbers: "Mumbai (Line 25): ₹150,000"
-   ✅ Double-check by re-reading the line
+   Example from CSV:
+   ROW_NUM,Location,EBITDA_2024,EBITDA_2025
+   5,Mumbai,219150,243033
+
+   Your output table should be:
+   | Location | EBITDA 2024 | EBITDA 2025 | Change |
+   |----------|-------------|-------------|--------|
+   | Mumbai   | $219,150    | $243,033    | $23,883 |
+
+   NOT:
+   | Location | EBITDA 2024 | EBITDA 2025 | Change |
+   |----------|-------------|-------------|--------|
+   | Mumbai   | $243,033    | $243,033    | $0 |  ← WRONG!
+
+4. **VERIFICATION CHECKLIST BEFORE RESPONDING**:
+   - [ ] Did I use the correct column for each year?
+   - [ ] Are the values different between years (unless actually same)?
+   - [ ] Did I exclude ROW_NUM from output tables?
+   - [ ] Did I calculate changes correctly?
 
 5. **FOR RANKINGS**:
-   - "Top stores by revenue" = Sort by Revenue column, highest first
-   - Only include actual stores/locations, NOT expense categories
-   - List exact values from the CSV
-
-**CSV FORMAT EXAMPLE**:
-\`\`\`
-Store,Revenue,Expenses
-Mumbai Central,250000,75000
-Pune Mall,220000,66000
-\`\`\`
-
-Line 2: Mumbai Central has Revenue=250000, Expenses=75000
-Line 3: Pune Mall has Revenue=220000, Expenses=66000
+   - Sort by the specified metric column
+   - Use exact values from that column
+   - Include only actual locations/stores, not expense categories
 
 **OUTPUT FORMAT**:
 - Use markdown headers (##)
 - **Bold** key findings
-- Create tables for comparisons
-- Always cite line numbers
+- Create clear comparison tables
+- Do NOT include row numbers in output tables
 - Start with Executive Summary
+- Show detailed analysis with exact figures
 
-Remember: CSV is row-based. Each line is independent. Never mix values between lines.`;
+Remember: Different year columns have different values. Copy each value to its correct year column.`;
 
-  const userMessage = `# DATA FILE
+  const userMessage = `# FINANCIAL DATA
 
-**Filename**: ${fileName}
-**Format**: CSV
+**File**: ${fileName}
+**Format**: CSV (ROW_NUM is for reference only)
 
 \`\`\`csv
 ${content}
@@ -303,24 +303,41 @@ ${content}
 
 ---
 
-**QUESTION**: ${question || "Provide comprehensive financial analysis including totals, top/bottom performers, and key insights."}
+**QUESTION**: ${question || "Provide comprehensive financial analysis including key metrics, trends, and location-wise performance."}
 
-**INSTRUCTIONS**:
-1. Read the CSV data carefully, line by line
-2. For store-specific questions, find the exact line and read values from that line only
-3. For totals, sum the entire column
-4. For rankings, sort by the specified column
-5. Use exact values, no rounding
-6. Cite line numbers for verification
+**CRITICAL INSTRUCTIONS FOR YOUR RESPONSE**:
 
-**IMPORTANT**: Each CSV line is one record. Values on the same line belong together. Never take a value from one line and pair it with a name from another line.`;
+1. When creating tables with multiple year columns (e.g., 2024, 2025):
+   - Look at the CSV column headers carefully
+   - Put 2024 values in 2024 column
+   - Put 2025 values in 2025 column
+   - DO NOT copy the same value to both columns
+
+2. Do NOT include ROW_NUM in your output tables
+
+3. Calculate changes correctly: Change = (2025 value) - (2024 value)
+
+4. Use exact values from the CSV - no rounding unless requested
+
+5. Double-check your tables before finalizing - ensure each year column has the correct year's data
+
+**EXAMPLE OF CORRECT TABLE**:
+If CSV shows: Mumbai,100,120
+Your table should show:
+| Location | 2024 | 2025 | Change |
+|----------|------|------|--------|
+| Mumbai   | 100  | 120  | 20     |
+
+NOT:
+| Location | 2024 | 2025 | Change |
+|----------|------|------|--------|
+| Mumbai   | 120  | 120  | 0      | ← WRONG`;
 
   const messages = [
     { role: "system", content: systemPrompt },
     { role: "user", content: userMessage }
   ];
 
-  // Retry with backoff
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       console.log(`  Attempt ${attempt}/3...`);
@@ -344,7 +361,7 @@ ${content}
           await sleep(2000 * attempt);
           continue;
         }
-        return { success: false, error: "RATE_LIMIT" };
+        return { success: false, error: "Rate limit - please wait and retry" };
       }
 
       if (!response.ok) {
@@ -370,7 +387,7 @@ ${content}
         .replace(/\n?```\s*$/gm, '')
         .trim();
 
-      console.log(`  ✓ Complete (${data.usage?.total_tokens || 0} tokens)`);
+      console.log(`  ✓ Done (${data.usage?.total_tokens || 0} tokens)`);
       
       return {
         success: true,
@@ -388,7 +405,7 @@ ${content}
     }
   }
 
-  return { success: false, error: "Max retries" };
+  return { success: false, error: "Max retries exceeded" };
 }
 
 /**
@@ -439,7 +456,7 @@ async function markdownToWord(markdown) {
 
     return (await Packer.toBuffer(doc)).toString('base64');
   } catch (err) {
-    console.error('Word gen error:', err.message);
+    console.error('Word error:', err.message);
     throw err;
   }
 }
@@ -468,10 +485,9 @@ export default async function handler(req, res) {
     }
 
     console.log('\n' + '='.repeat(60));
-    console.log('📊 ANALYSIS REQUEST');
+    console.log('📊 FINANCIAL ANALYSIS');
     console.log('='.repeat(60));
     console.log('File:', fileUrl.split('/').pop());
-    console.log('Question:', question || '(comprehensive)');
 
     // Download
     console.log('\n📥 Downloading...');
@@ -498,7 +514,7 @@ export default async function handler(req, res) {
       extractResult = await extractDocx(buffer);
       if (extractResult.success) textContent = extractResult.text;
     } else {
-      return res.json({ ok: false, message: `Unsupported: ${fileType}` });
+      return res.json({ ok: false, message: `Unsupported file type: ${fileType}` });
     }
 
     if (!extractResult.success) {
@@ -524,10 +540,10 @@ export default async function handler(req, res) {
       });
     }
 
-    console.log('✓ Analysis done');
+    console.log('✓ Complete');
 
     // Generate Word
-    console.log('\n📝 Word...');
+    console.log('\n📝 Generating Word...');
     let wordBase64 = null;
     try {
       wordBase64 = await markdownToWord(analysisResult.content);
@@ -537,7 +553,7 @@ export default async function handler(req, res) {
     }
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`\n✅ Done in ${duration}s`);
+    console.log(`\n✅ Completed in ${duration}s`);
     console.log('='.repeat(60) + '\n');
 
     return res.json({
