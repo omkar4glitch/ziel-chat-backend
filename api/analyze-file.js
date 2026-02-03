@@ -235,7 +235,7 @@ async function analyzeWithAI({ csvData, textContent, fileType, question, fileNam
     return { success: false, error: "No content" };
   }
 
-  const systemPrompt = `You are a senior financial analyst. You will receive data in CSV format with a ROW_NUM column for reference.
+  const systemPrompt = `You are a senior financial analyst. You will receive data read and go through it properly with all figures and head and analyze it in detail and provide detailed analysis and comments.
 
 **CRITICAL RULES FOR ACCURACY**:
 
@@ -253,7 +253,7 @@ async function analyzeWithAI({ csvData, textContent, fileType, question, fileNam
    - NEVER include ROW_NUM in your output tables
 
 3. **CRITICAL TABLE FORMATTING RULE**:
-   When creating comparison tables:
+   When creating comparison tables (if asked):
    ❌ WRONG: Copying 2025 value into both 2024 and 2025 columns
    ✅ RIGHT: 2024 column gets 2024 value, 2025 column gets 2025 value
 
@@ -290,7 +290,7 @@ async function analyzeWithAI({ csvData, textContent, fileType, question, fileNam
 - Start with Executive Summary
 - Show detailed analysis with exact figures
 
-Remember: Different year columns have different values. Copy each value to its correct year column.`;
+Remember: while giving ouput please check the figures accuracy from the given data and then give output.`;
 
   const userMessage = `# FINANCIAL DATA
 
