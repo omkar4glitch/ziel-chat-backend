@@ -1,7 +1,7 @@
 import fetch from "node-fetch";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
-import { Document, Paragraph, TextRun, HeadingLevel, Packer } from "docx";
+import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
 import JSZip from "jszip";
 
 /**
@@ -128,7 +128,7 @@ async function extractDocx(buffer) {
 }
 
 /**
- * Extract spreadsheet - ALL ROWS, ALL SHEETS
+ * Extract spreadsheet - ALL ROWS
  */
 function extractSpreadsheet(buffer) {
   try {
@@ -170,188 +170,132 @@ function extractSpreadsheet(buffer) {
 }
 
 /**
- * 🔥 CRITICAL: Format as NUMBERED CSV 
- * Each row gets a unique ID so AI can reference exact positions
+ * 🔥 MOST EFFICIENT: Convert to CSV format (fewest tokens, best AI comprehension)
+ * CSV is the most token-efficient and AI reads it perfectly line-by-line
  */
-function formatAsNumberedCSV(sheets) {
-  console.log('📝 Creating numbered CSV...');
+function formatAsCSV(sheets) {
+  console.log('📝 Formatting as CSV...');
   
-  let csv = `FILE STRUCTURE SUMMARY:\n`;
-  csv += `Total Sheets: ${sheets.length}\n`;
-  csv += `Total Rows: ${sheets.reduce((sum, s) => sum + s.rows.length, 0)}\n\n`;
+  let csv = "";
   
-  let rowId = 1;
-  
-  sheets.forEach((sheet, sheetIdx) => {
-    csv += `${'='.repeat(80)}\n`;
-    csv += `SHEET ${sheetIdx + 1}: ${sheet.name}\n`;
-    csv += `Columns: ${sheet.columns.join(' | ')}\n`;
-    csv += `Rows: ${sheet.rows.length}\n`;
-    csv += `${'='.repeat(80)}\n\n`;
+  sheets.forEach((sheet, idx) => {
+    // Sheet header
+    csv += `\n=== SHEET ${idx + 1}: ${sheet.name} ===\n`;
+    csv += `Rows: ${sheet.rows.length}\n\n`;
     
-    // Header with ID
-    csv += 'ID,' + sheet.columns.join(',') + '\n';
+    // CSV header row
+    csv += sheet.columns.join(',') + '\n';
     
-    // Data rows with unique IDs
-    sheet.rows.forEach((row) => {
+    // Data rows
+    sheet.rows.forEach((row, rowIdx) => {
       const values = sheet.columns.map(col => {
         let val = row[col] || '';
+        // Escape commas and quotes in values
         val = String(val).replace(/"/g, '""');
         if (val.includes(',') || val.includes('"') || val.includes('\n')) {
           val = `"${val}"`;
         }
         return val;
       });
-      csv += `${rowId},` + values.join(',') + '\n';
-      rowId++;
+      csv += values.join(',') + '\n';
     });
     
     csv += '\n';
   });
 
-  console.log(`✓ Created CSV with ${rowId - 1} numbered rows`);
+  const sizeKB = (csv.length / 1024).toFixed(2);
+  const estimatedTokens = Math.ceil(csv.length / 4);
+  
+  console.log(`✓ CSV: ${sizeKB} KB (~${estimatedTokens.toLocaleString()} tokens)`);
+  
   return csv;
 }
 
 /**
- * 🔥 ULTIMATE: Call GPT-4o with complete instructions for any P&L format
+ * 🔥 OPTIMIZED: Call GPT-4o-mini with CSV format + ultra-clear prompts
  */
-async function analyzeWithGPT4o({ csvData, textContent, fileType, question, fileName }) {
-  console.log('🤖 Calling GPT-4o...');
+async function analyzeWithAI({ csvData, textContent, fileType, question, fileName }) {
+  console.log('🤖 Analyzing with GPT-4o-mini...');
 
+  // Max input: ~400K characters (100K tokens)
   const MAX_CHARS = 400000;
 
   let content = "";
   
   if (csvData) {
     if (csvData.length > MAX_CHARS) {
-      console.log(`⚠️ Large file (${(csvData.length/1024).toFixed(0)}KB), truncating...`);
-      content = csvData.substring(0, MAX_CHARS) + '\n\n[... data truncated due to size ...]';
+      console.log(`⚠️ Data is ${(csvData.length/1024).toFixed(0)}KB, truncating to ${(MAX_CHARS/1024).toFixed(0)}KB...`);
+      content = csvData.substring(0, MAX_CHARS) + '\n\n[... remaining data truncated ...]';
     } else {
       content = csvData;
     }
   } else if (textContent) {
     content = textContent.length > MAX_CHARS 
-      ? textContent.substring(0, MAX_CHARS)
+      ? textContent.substring(0, MAX_CHARS) + '\n\n[... truncated ...]'
       : textContent;
   } else {
     return { success: false, error: "No content" };
   }
 
-  const systemPrompt = `You are a senior financial analyst and P&L expert. You will receive financial data in CSV format with unique row IDs.
-
-**YOUR MISSION**: Provide comprehensive, accurate P&L analysis for ANY data structure.
-
-**DATA FORMAT**:
-- CSV with ID column (for reference - don't include in output)
-- Multiple sheets possible (location-wise, period-wise, or mixed)
-- Each row has unique ID for accuracy verification
+  const systemPrompt = `You are a senior financial analyst. You will receive financial data in CSV format.
 
 **CRITICAL ACCURACY PROTOCOL**:
 
-1. **UNDERSTAND THE DATA STRUCTURE FIRST**:
-   - Look at column headers to understand what type of data this is
-   - Is it location-wise? (columns like: Location, Store, Branch)
-   - Is it period-wise? (columns like: Q1, Q2, Jan, Feb, 2024, 2025)
-   - Is it line-item based? (rows like: Revenue, COGS, Expenses, EBITDA)
-   - Identify ALL financial metrics present
+1. **READ CSV LINE BY LINE**:
+   - First line after sheet header = column names
+   - Every subsequent line = one record
+   - Each value is in a specific column position
+   - Line number = Row number in original file
 
-2. **READ EACH ROW INDEPENDENTLY**:
-   - Each CSV row is ONE complete record
-   - ALL values on the same row belong together
-   - Row ID 5 contains: ID=5, plus all its column values
-   - NEVER take a value from Row 5 and pair it with a name from Row 7
+2. **WHEN FINDING SPECIFIC STORES**:
+   Step 1: Scan through CSV line by line
+   Step 2: Find the line with the store name
+   Step 3: Read values from that EXACT line (same row)
+   Step 4: Copy values exactly as shown
+   Step 5: Cite line number for verification
 
-3. **WHEN CREATING OUTPUT TABLES**:
-   
-   **ABSOLUTE RULE**: Copy values from the EXACT same row
-   
-   Example CSV:
-   ID,Location,Revenue_2024,Revenue_2025,EBITDA_2024,EBITDA_2025
-   1,Store A,100000,120000,30000,36000
-   2,Store B,80000,90000,24000,27000
-   
-   ✅ CORRECT Output:
-   | Location | Revenue 2024 | Revenue 2025 | EBITDA 2024 | EBITDA 2025 |
-   |----------|--------------|--------------|-------------|-------------|
-   | Store A  | 100,000      | 120,000      | 30,000      | 36,000      |
-   | Store B  | 80,000       | 90,000       | 24,000      | 27,000      |
-   
-   ❌ WRONG Output (mixing rows):
-   | Location | Revenue 2024 | Revenue 2025 |
-   |----------|--------------|--------------|
-   | Store A  | 80,000       | 120,000      | ← Revenue from Row 2!
-   
-   ❌ WRONG Output (duplicating values):
-   | Location | Revenue 2024 | Revenue 2025 |
-   |----------|--------------|--------------|
-   | Store A  | 120,000      | 120,000      | ← Both from 2025 column!
+3. **NEVER DO THIS**:
+   ❌ Mix values from different lines
+   ❌ Round numbers
+   ❌ Switch store names
+   ❌ Include expense categories in store rankings
+   ❌ Approximate or estimate
 
-4. **FOR COMPLETE P&L ANALYSIS**:
-   - Include ALL line items present in the data
-   - Revenue lines (Sales, Revenue, Income)
-   - Cost lines (COGS, Cost of Sales)
-   - Expense lines (Operating Expenses, SG&A, Marketing, etc.)
-   - Profit metrics (Gross Profit, EBITDA, Net Income)
-   - Calculate margins and ratios where applicable
-   - Identify trends across periods or locations
+4. **ALWAYS DO THIS**:
+   ✅ Read values from the correct line
+   ✅ Use exact numbers as shown
+   ✅ Keep store names exactly as written
+   ✅ Show row numbers: "Mumbai (Line 25): ₹150,000"
+   ✅ Double-check by re-reading the line
 
-5. **VERIFICATION BEFORE RESPONDING**:
-   - [ ] Did I identify the data structure correctly?
-   - [ ] Am I reading values from the same row?
-   - [ ] Did I include ALL P&L line items?
-   - [ ] Are my calculations correct?
-   - [ ] Did I exclude the ID column from output?
+5. **FOR RANKINGS**:
+   - "Top stores by revenue" = Sort by Revenue column, highest first
+   - Only include actual stores/locations, NOT expense categories
+   - List exact values from the CSV
 
-**OUTPUT REQUIREMENTS**:
+**CSV FORMAT EXAMPLE**:
+\`\`\`
+Store,Revenue,Expenses
+Mumbai Central,250000,75000
+Pune Mall,220000,66000
+\`\`\`
 
-1. **Executive Summary** (2-3 paragraphs)
-   - Overall financial health
-   - Key trends identified
-   - Critical findings
+Line 2: Mumbai Central has Revenue=250000, Expenses=75000
+Line 3: Pune Mall has Revenue=220000, Expenses=66000
 
-2. **Complete P&L Analysis**
-   - All revenue line items
-   - All cost line items
-   - All expense categories
-   - All profit metrics
-   - Period-over-period or location-wise comparison
-
-3. **Detailed Findings**
-   - Top performers (locations/periods)
-   - Bottom performers
-   - Significant variances
-   - Unusual patterns
-
-4. **Metrics & Ratios**
-   - Profit margins
-   - Growth rates
-   - Efficiency ratios
-   - Any relevant KPIs
-
-5. **Recommendations**
-   - Based on the analysis
-   - Actionable insights
-   - Areas of concern
-
-**FORMAT**:
-- Use markdown headers (##, ###)
+**OUTPUT FORMAT**:
+- Use markdown headers (##)
 - **Bold** key findings
-- Create clear comparison tables
-- Do NOT include ID column in output
-- Use exact values - no rounding unless percentage
-- Cite actual numbers for credibility
+- Create tables for comparisons
+- Always cite line numbers
+- Start with Executive Summary
 
-**REMEMBER**: 
-- Each row is independent
-- Values on same row belong together
-- Different columns have different values
-- Read carefully, respond accurately`;
+Remember: CSV is row-based. Each line is independent. Never mix values between lines.`;
 
-  const userMessage = `# FINANCIAL DATA FOR ANALYSIS
+  const userMessage = `# DATA FILE
 
-**File**: ${fileName}
-**Type**: ${fileType.toUpperCase()}
+**Filename**: ${fileName}
+**Format**: CSV
 
 \`\`\`csv
 ${content}
@@ -359,42 +303,24 @@ ${content}
 
 ---
 
-**CLIENT REQUEST**: ${question || "Please provide a comprehensive P&L analysis covering all financial metrics, trends, and performance insights."}
+**QUESTION**: ${question || "Provide comprehensive financial analysis including totals, top/bottom performers, and key insights."}
 
-**YOUR TASK**:
+**INSTRUCTIONS**:
+1. Read the CSV data carefully, line by line
+2. For store-specific questions, find the exact line and read values from that line only
+3. For totals, sum the entire column
+4. For rankings, sort by the specified column
+5. Use exact values, no rounding
+6. Cite line numbers for verification
 
-1. **Identify the data structure**:
-   - What columns are present?
-   - Is this location-wise, period-wise, or something else?
-   - What P&L line items are included?
-
-2. **Analyze COMPLETELY**:
-   - ALL revenue items
-   - ALL cost items  
-   - ALL expense categories
-   - ALL profit metrics
-   - Compare across locations/periods as applicable
-
-3. **Create accurate tables**:
-   - Each row's values must come from THAT row only
-   - Different year/period columns must show different values (unless actually same)
-   - Exclude ID column from output
-
-4. **Provide insights**:
-   - What's the overall financial picture?
-   - Which locations/periods are strongest/weakest?
-   - What trends are evident?
-   - What should management focus on?
-
-**CRITICAL**: Double-check every number before including it. Verify you're reading from the correct row and column.
-
-Begin your analysis now.`;
+**IMPORTANT**: Each CSV line is one record. Values on the same line belong together. Never take a value from one line and pair it with a name from another line.`;
 
   const messages = [
     { role: "system", content: systemPrompt },
     { role: "user", content: userMessage }
   ];
 
+  // Retry with backoff
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       console.log(`  Attempt ${attempt}/3...`);
@@ -406,7 +332,7 @@ Begin your analysis now.`;
           "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
         },
         body: JSON.stringify({
-          model: "gpt-4o",  // Using GPT-4o for maximum accuracy
+          model: "gpt-4o-mini",
           messages: messages,
           temperature: 0,
           max_tokens: 16000
@@ -415,21 +341,18 @@ Begin your analysis now.`;
 
       if (response.status === 429) {
         if (attempt < 3) {
-          const delay = 3000 * attempt;
-          console.log(`  ⏳ Rate limit, waiting ${delay/1000}s...`);
-          await sleep(delay);
+          await sleep(2000 * attempt);
           continue;
         }
-        return { success: false, error: "Rate limit exceeded" };
+        return { success: false, error: "RATE_LIMIT" };
       }
 
       if (!response.ok) {
         if (attempt < 3 && response.status >= 500) {
-          await sleep(3000 * attempt);
+          await sleep(2000 * attempt);
           continue;
         }
-        const errorText = await response.text();
-        return { success: false, error: `HTTP ${response.status}: ${errorText.substring(0, 200)}` };
+        return { success: false, error: `HTTP ${response.status}` };
       }
 
       const data = await response.json();
@@ -447,29 +370,25 @@ Begin your analysis now.`;
         .replace(/\n?```\s*$/gm, '')
         .trim();
 
-      const usage = data.usage;
-      console.log(`  ✓ Success`);
-      console.log(`  ✓ Tokens: ${usage?.total_tokens || 0} (prompt: ${usage?.prompt_tokens}, completion: ${usage?.completion_tokens})`);
+      console.log(`  ✓ Complete (${data.usage?.total_tokens || 0} tokens)`);
       
       return {
         success: true,
         content: cleaned,
-        usage: usage,
-        model: "gpt-4o",
-        finishReason: data.choices?.[0]?.finish_reason
+        usage: data.usage,
+        model: "gpt-4o-mini"
       };
 
     } catch (err) {
-      console.error(`  ❌ Attempt ${attempt} error:`, err.message);
       if (attempt < 3) {
-        await sleep(3000 * attempt);
+        await sleep(2000 * attempt);
         continue;
       }
       return { success: false, error: err.message };
     }
   }
 
-  return { success: false, error: "Max retries exceeded" };
+  return { success: false, error: "Max retries" };
 }
 
 /**
@@ -520,7 +439,7 @@ async function markdownToWord(markdown) {
 
     return (await Packer.toBuffer(doc)).toString('base64');
   } catch (err) {
-    console.error('Word generation error:', err.message);
+    console.error('Word gen error:', err.message);
     throw err;
   }
 }
@@ -538,7 +457,7 @@ export default async function handler(req, res) {
 
   try {
     if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: "OPENAI_API_KEY not configured" });
+      return res.status(500).json({ error: "OPENAI_API_KEY not set" });
     }
 
     const body = await parseJsonBody(req);
@@ -548,21 +467,21 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "fileUrl required" });
     }
 
-    console.log('\n' + '='.repeat(70));
-    console.log('📊 COMPREHENSIVE P&L ANALYSIS');
-    console.log('='.repeat(70));
+    console.log('\n' + '='.repeat(60));
+    console.log('📊 ANALYSIS REQUEST');
+    console.log('='.repeat(60));
     console.log('File:', fileUrl.split('/').pop());
-    console.log('Question:', question || '(full P&L review)');
+    console.log('Question:', question || '(comprehensive)');
 
     // Download
     console.log('\n📥 Downloading...');
     const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
     const fileType = detectFileType(fileUrl, contentType, buffer);
     const fileName = fileUrl.split('/').pop().split('?')[0] || 'file';
-    console.log(`✓ Downloaded ${(bytesReceived/1024).toFixed(2)} KB`);
+    console.log(`✓ ${(bytesReceived/1024).toFixed(2)} KB`);
 
     // Extract
-    console.log('\n📄 Extracting content...');
+    console.log('\n📄 Extracting...');
     let extractResult;
     let csvData = null;
     let textContent = null;
@@ -570,7 +489,7 @@ export default async function handler(req, res) {
     if (fileType === 'xlsx' || fileType === 'csv') {
       extractResult = extractSpreadsheet(buffer);
       if (extractResult.success) {
-        csvData = formatAsNumberedCSV(extractResult.sheets);
+        csvData = formatAsCSV(extractResult.sheets);
       }
     } else if (fileType === 'pdf') {
       extractResult = await extractPdf(buffer);
@@ -579,19 +498,18 @@ export default async function handler(req, res) {
       extractResult = await extractDocx(buffer);
       if (extractResult.success) textContent = extractResult.text;
     } else {
-      return res.json({ ok: false, message: `Unsupported file type: ${fileType}` });
+      return res.json({ ok: false, message: `Unsupported: ${fileType}` });
     }
 
     if (!extractResult.success) {
-      console.error('❌ Extraction failed:', extractResult.error);
-      return res.json({ ok: false, message: `Extraction failed: ${extractResult.error}` });
+      return res.json({ ok: false, message: extractResult.error });
     }
 
-    console.log('✓ Content extracted successfully');
+    console.log('✓ Extracted');
 
     // Analyze
-    console.log('\n🤖 Analyzing with GPT-4o...');
-    const analysisResult = await analyzeWithGPT4o({
+    console.log('\n🤖 Analyzing...');
+    const analysisResult = await analyzeWithAI({
       csvData,
       textContent,
       fileType,
@@ -600,28 +518,27 @@ export default async function handler(req, res) {
     });
 
     if (!analysisResult.success) {
-      console.error('❌ Analysis failed:', analysisResult.error);
       return res.json({
         ok: false,
-        message: `Analysis failed: ${analysisResult.error}`
+        message: analysisResult.error || "Analysis failed"
       });
     }
 
-    console.log('✓ Analysis completed successfully');
+    console.log('✓ Analysis done');
 
-    // Generate Word document
-    console.log('\n📝 Generating Word document...');
+    // Generate Word
+    console.log('\n📝 Word...');
     let wordBase64 = null;
     try {
       wordBase64 = await markdownToWord(analysisResult.content);
-      console.log('✓ Word document generated');
+      console.log('✓ Ready');
     } catch (err) {
-      console.log('⚠️ Word generation skipped:', err.message);
+      console.log('⚠️ Skipped');
     }
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`\n✅ COMPLETED in ${duration}s`);
-    console.log('='.repeat(70) + '\n');
+    console.log(`\n✅ Done in ${duration}s`);
+    console.log('='.repeat(60) + '\n');
 
     return res.json({
       ok: true,
@@ -635,20 +552,14 @@ export default async function handler(req, res) {
         fileType,
         fileSize: bytesReceived,
         totalRows: extractResult.totalRows,
-        model: analysisResult.model,
+        model: "gpt-4o-mini",
         tokensUsed: analysisResult.usage?.total_tokens,
-        finishReason: analysisResult.finishReason,
         processingTime: parseFloat(duration)
       }
     });
 
   } catch (err) {
-    console.error('\n❌ UNEXPECTED ERROR:', err);
-    console.error(err.stack);
-    return res.status(500).json({ 
-      ok: false, 
-      error: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
+    console.error('\n❌ ERROR:', err);
+    return res.status(500).json({ ok: false, error: err.message });
   }
 }
