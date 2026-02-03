@@ -13,9 +13,6 @@ function cors(res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-/**
- * Sleep utility
- */
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
@@ -40,37 +37,34 @@ async function parseJsonBody(req) {
 /**
  * Download file
  */
-async function downloadFileToBuffer(url, maxBytes = 50 * 1024 * 1024, timeoutMs = 30000) {
+async function downloadFileToBuffer(url, maxBytes = 50 * 1024 * 1024) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), 30000);
 
-  let response;
   try {
-    response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const chunks = [];
+    let total = 0;
+
+    for await (const chunk of response.body) {
+      total += chunk.length;
+      if (total > maxBytes) break;
+      chunks.push(chunk);
+    }
+
+    return { 
+      buffer: Buffer.concat(chunks), 
+      contentType: response.headers.get("content-type") || "",
+      bytesReceived: total 
+    };
   } catch (err) {
     clearTimeout(timer);
-    throw new Error(`Download failed: ${err.message}`);
+    throw err;
   }
-  clearTimeout(timer);
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-
-  const chunks = [];
-  let totalBytes = 0;
-
-  for await (const chunk of response.body) {
-    totalBytes += chunk.length;
-    if (totalBytes > maxBytes) break;
-    chunks.push(chunk);
-  }
-
-  return { 
-    buffer: Buffer.concat(chunks), 
-    contentType: response.headers.get("content-type") || "",
-    bytesReceived: totalBytes 
-  };
 }
 
 /**
@@ -80,7 +74,7 @@ function detectFileType(fileUrl, contentType, buffer) {
   const url = (fileUrl || "").toLowerCase();
   const type = (contentType || "").toLowerCase();
 
-  if (buffer && buffer.length >= 4) {
+  if (buffer?.length >= 4) {
     if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
       if (url.includes('.docx')) return "docx";
       if (url.includes('.pptx')) return "pptx";
@@ -89,12 +83,10 @@ function detectFileType(fileUrl, contentType, buffer) {
     if (buffer[0] === 0x25 && buffer[1] === 0x50) return "pdf";
   }
 
-  if (url.endsWith(".pdf") || type.includes("pdf")) return "pdf";
+  if (url.endsWith(".xlsx") || type.includes("spreadsheet")) return "xlsx";
+  if (url.endsWith(".csv")) return "csv";
+  if (url.endsWith(".pdf")) return "pdf";
   if (url.endsWith(".docx")) return "docx";
-  if (url.endsWith(".pptx")) return "pptx";
-  if (url.endsWith(".xlsx") || url.endsWith(".xls") || type.includes("spreadsheet")) return "xlsx";
-  if (url.endsWith(".csv") || type.includes("csv")) return "csv";
-
   return "xlsx";
 }
 
@@ -106,7 +98,7 @@ async function extractPdf(buffer) {
     const data = await pdf(buffer);
     const text = data?.text?.trim() || "";
     if (!text || text.length < 50) {
-      return { success: false, error: "PDF is scanned or empty" };
+      return { success: false, error: "PDF is empty or scanned" };
     }
     return { success: true, text };
   } catch (err) {
@@ -126,10 +118,9 @@ async function extractDocx(buffer) {
     const matches = xml.match(/<w:t[^>]*>([^<]+)<\/w:t>/g) || [];
     const text = matches
       .map(m => m.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'))
-      .filter(t => t.trim())
-      .join(' ');
+      .join(' ').trim();
     
-    if (!text) return { success: false, error: "No text in DOCX" };
+    if (!text) return { success: false, error: "No text found" };
     return { success: true, text };
   } catch (err) {
     return { success: false, error: err.message };
@@ -137,38 +128,13 @@ async function extractDocx(buffer) {
 }
 
 /**
- * Extract PPTX
+ * Extract spreadsheet - ALL ROWS
  */
-async function extractPptx(buffer) {
+function extractSpreadsheet(buffer) {
   try {
-    const content = buffer.toString('latin1');
-    const matches = content.match(/<a:t[^>]*>([^<]+)<\/a:t>/g) || [];
-    const text = matches
-      .map(m => m.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'))
-      .filter(t => t.trim())
-      .join('\n');
+    console.log('📊 Extracting spreadsheet...');
     
-    if (!text) return { success: false, error: "No text in PPTX" };
-    return { success: true, text };
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
-}
-
-/**
- * 🔥 CRITICAL FIX: Extract spreadsheet data in MARKDOWN TABLE format
- * This is the key - AI reads tables MUCH better than JSON!
- */
-function extractSpreadsheet(buffer, fileType) {
-  try {
-    console.log(`📊 Extracting ${fileType}...`);
-    
-    const workbook = XLSX.read(buffer, {
-      type: "buffer",
-      raw: true,
-      defval: ''
-    });
-
+    const workbook = XLSX.read(buffer, { type: "buffer", raw: true, defval: '' });
     if (!workbook.SheetNames.length) {
       return { success: false, error: "No sheets found" };
     }
@@ -177,30 +143,22 @@ function extractSpreadsheet(buffer, fileType) {
     let totalRows = 0;
 
     workbook.SheetNames.forEach((sheetName, idx) => {
-      console.log(`  Sheet ${idx + 1}: "${sheetName}"`);
-      
       const worksheet = workbook.Sheets[sheetName];
       const rows = XLSX.utils.sheet_to_json(worksheet, { 
         defval: '',
         blankrows: false,
-        raw: false  // Important: convert everything to strings
+        raw: false
       });
 
-      if (rows.length === 0) {
-        console.log(`    ⚠️ Empty sheet, skipping`);
-        return;
+      if (rows.length > 0) {
+        console.log(`  Sheet ${idx + 1}: "${sheetName}" - ${rows.length} rows`);
+        sheets.push({
+          name: sheetName,
+          columns: Object.keys(rows[0]),
+          rows: rows
+        });
+        totalRows += rows.length;
       }
-
-      const columns = Object.keys(rows[0]);
-      console.log(`    ✓ ${rows.length} rows, ${columns.length} columns`);
-      
-      sheets.push({
-        name: sheetName,
-        columns: columns,
-        rows: rows
-      });
-      
-      totalRows += rows.length;
     });
 
     console.log(`✓ Total: ${sheets.length} sheets, ${totalRows} rows`);
@@ -212,67 +170,64 @@ function extractSpreadsheet(buffer, fileType) {
 }
 
 /**
- * 🔥 CRITICAL: Convert data to MARKDOWN TABLES
- * AI reads markdown tables perfectly - no confusion possible!
+ * 🔥 MOST EFFICIENT: Convert to CSV format (fewest tokens, best AI comprehension)
+ * CSV is the most token-efficient and AI reads it perfectly line-by-line
  */
-function formatAsMarkdownTables(sheets) {
-  console.log('📝 Formatting as markdown tables...');
+function formatAsCSV(sheets) {
+  console.log('📝 Formatting as CSV...');
   
-  let markdown = `# COMPLETE DATA FILE\n\n`;
-  markdown += `**Total Sheets**: ${sheets.length}\n`;
-  markdown += `**Total Rows**: ${sheets.reduce((sum, s) => sum + s.rows.length, 0)}\n\n`;
-  markdown += `---\n\n`;
-
-  sheets.forEach((sheet, sheetIdx) => {
-    markdown += `## SHEET ${sheetIdx + 1}: ${sheet.name}\n\n`;
-    markdown += `**Rows**: ${sheet.rows.length}\n`;
-    markdown += `**Columns**: ${sheet.columns.join(', ')}\n\n`;
-
-    // Create markdown table header
-    markdown += '| ' + sheet.columns.join(' | ') + ' |\n';
-    markdown += '|' + sheet.columns.map(() => '---').join('|') + '|\n';
-
-    // Add all rows
-    sheet.rows.forEach(row => {
+  let csv = "";
+  
+  sheets.forEach((sheet, idx) => {
+    // Sheet header
+    csv += `\n=== SHEET ${idx + 1}: ${sheet.name} ===\n`;
+    csv += `Rows: ${sheet.rows.length}\n\n`;
+    
+    // CSV header row
+    csv += sheet.columns.join(',') + '\n';
+    
+    // Data rows
+    sheet.rows.forEach((row, rowIdx) => {
       const values = sheet.columns.map(col => {
-        const val = row[col] || '';
-        // Escape pipes and clean value
-        return String(val).replace(/\|/g, '\\|').trim();
+        let val = row[col] || '';
+        // Escape commas and quotes in values
+        val = String(val).replace(/"/g, '""');
+        if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+          val = `"${val}"`;
+        }
+        return val;
       });
-      markdown += '| ' + values.join(' | ') + ' |\n';
+      csv += values.join(',') + '\n';
     });
-
-    markdown += '\n---\n\n';
+    
+    csv += '\n';
   });
 
-  const sizeKB = (markdown.length / 1024).toFixed(2);
-  const estimatedTokens = Math.ceil(markdown.length / 4);
+  const sizeKB = (csv.length / 1024).toFixed(2);
+  const estimatedTokens = Math.ceil(csv.length / 4);
   
-  console.log(`✓ Formatted ${sizeKB} KB (~${estimatedTokens.toLocaleString()} tokens)`);
+  console.log(`✓ CSV: ${sizeKB} KB (~${estimatedTokens.toLocaleString()} tokens)`);
   
-  return markdown;
+  return csv;
 }
 
 /**
- * 🔥 ENHANCED: Call GPT-4o-mini with markdown table format
+ * 🔥 OPTIMIZED: Call GPT-4o-mini with CSV format + ultra-clear prompts
  */
-async function analyzeWithGPT4oMini({ markdownData, textContent, fileType, question, fileName }) {
-  console.log('🤖 Calling GPT-4o-mini...');
+async function analyzeWithAI({ csvData, textContent, fileType, question, fileName }) {
+  console.log('🤖 Analyzing with GPT-4o-mini...');
 
-  // GPT-4o-mini context: 128K tokens
-  // Reserve 16K for response, 2K for prompts = 110K available
-  // 1 token ≈ 4 chars = 440K chars max
-  const MAX_CHARS = 440000;
+  // Max input: ~400K characters (100K tokens)
+  const MAX_CHARS = 400000;
 
   let content = "";
   
-  if (markdownData) {
-    // Check size
-    if (markdownData.length > MAX_CHARS) {
-      console.log(`⚠️ Data too large (${(markdownData.length/1024).toFixed(0)}KB), truncating...`);
-      content = markdownData.substring(0, MAX_CHARS) + '\n\n[... data truncated due to size ...]';
+  if (csvData) {
+    if (csvData.length > MAX_CHARS) {
+      console.log(`⚠️ Data is ${(csvData.length/1024).toFixed(0)}KB, truncating to ${(MAX_CHARS/1024).toFixed(0)}KB...`);
+      content = csvData.substring(0, MAX_CHARS) + '\n\n[... remaining data truncated ...]';
     } else {
-      content = markdownData;
+      content = csvData;
     }
   } else if (textContent) {
     content = textContent.length > MAX_CHARS 
@@ -282,99 +237,90 @@ async function analyzeWithGPT4oMini({ markdownData, textContent, fileType, quest
     return { success: false, error: "No content" };
   }
 
-  const systemPrompt = `You are a senior financial analyst with expertise in P&L analysis and accounting.
+  const systemPrompt = `You are a senior financial analyst. You will receive financial data in CSV format.
 
-**YOUR MISSION**: Analyze financial data with EXTREME precision. Every number must be exact.
+**CRITICAL ACCURACY PROTOCOL**:
 
-**CRITICAL RULES FOR ACCURACY**:
+1. **READ CSV LINE BY LINE**:
+   - First line after sheet header = column names
+   - Every subsequent line = one record
+   - Each value is in a specific column position
+   - Line number = Row number in original file
 
-1. **READ TABLES CAREFULLY**: 
-   - Data is provided in markdown table format
-   - Each row is a separate record
-   - Column headers define what each value represents
-   - NEVER confuse rows - each row is independent
+2. **WHEN FINDING SPECIFIC STORES**:
+   Step 1: Scan through CSV line by line
+   Step 2: Find the line with the store name
+   Step 3: Read values from that EXACT line (same row)
+   Step 4: Copy values exactly as shown
+   Step 5: Cite line number for verification
 
-2. **VERIFY EVERY NUMBER**:
-   - Before stating ANY figure, look it up in the table
-   - Copy the exact value, don't round or estimate
-   - Double-check you're reading from the correct column
+3. **NEVER DO THIS**:
+   ❌ Mix values from different lines
+   ❌ Round numbers
+   ❌ Switch store names
+   ❌ Include expense categories in store rankings
+   ❌ Approximate or estimate
 
-3. **RANKINGS - CRITICAL**:
-   - "Top performing locations by revenue" = Sort by REVENUE column ONLY
-   - "Top performing locations by sales" = Sort by SALES column ONLY  
-   - NEVER include expense categories in location rankings
-   - NEVER mix up store names - copy them exactly from the table
+4. **ALWAYS DO THIS**:
+   ✅ Read values from the correct line
+   ✅ Use exact numbers as shown
+   ✅ Keep store names exactly as written
+   ✅ Show row numbers: "Mumbai (Line 25): ₹150,000"
+   ✅ Double-check by re-reading the line
 
-4. **CALCULATIONS**:
-   - Show your work: "Revenue (150,000) - Expenses (45,000) = Profit (105,000)"
-   - Use values DIRECTLY from the table
-   - Don't approximate intermediate steps
+5. **FOR RANKINGS**:
+   - "Top stores by revenue" = Sort by Revenue column, highest first
+   - Only include actual stores/locations, NOT expense categories
+   - List exact values from the CSV
 
-5. **COMMON MISTAKES TO AVOID**:
-   ❌ Switching figures between stores (e.g., giving Store A's revenue to Store B)
-   ❌ Rounding numbers when exact values are available
-   ❌ Including "Marketing" or "Rent" in "top locations" list
-   ❌ Making up numbers that aren't in the table
-   ❌ Confusing revenue and expense columns
+**CSV FORMAT EXAMPLE**:
+\`\`\`
+Store,Revenue,Expenses
+Mumbai Central,250000,75000
+Pune Mall,220000,66000
+\`\`\`
 
-6. **WHEN RANKING STORES**:
-   Step 1: Identify the correct column (Revenue/Sales)
-   Step 2: Find all rows where the entity is a store/location (not expense category)
-   Step 3: Sort by that column value (highest to lowest for "top")
-   Step 4: List the exact store names with exact values
-   Step 5: Double-check each entry against the table
+Line 2: Mumbai Central has Revenue=250000, Expenses=75000
+Line 3: Pune Mall has Revenue=220000, Expenses=66000
 
 **OUTPUT FORMAT**:
-- Use markdown headers (##, ###)
-- Create comparison tables when useful
+- Use markdown headers (##)
 - **Bold** key findings
+- Create tables for comparisons
+- Always cite line numbers
 - Start with Executive Summary
-- Show detailed analysis with exact numbers
-- Cite row numbers when referencing data (e.g., "Row 5: Mumbai Central")
 
-**EXAMPLE OF CORRECT ANALYSIS**:
+Remember: CSV is row-based. Each line is independent. Never mix values between lines.`;
 
-✅ GOOD:
-"Top 5 Locations by Revenue:
-1. Mumbai Central - ₹2,50,000 (Row 3)
-2. Pune Mall - ₹2,20,000 (Row 7)
-..."
+  const userMessage = `# DATA FILE
 
-❌ BAD:
-"Top 5 Locations:
-1. Marketing - ₹2,50,000  [WRONG: Marketing is an expense category, not a location]
-2. Mumbai - ₹220,000 [WRONG: Rounded the number]
-..."
+**Filename**: ${fileName}
+**Format**: CSV
 
-Remember: The data is in TABLE format. Read it like a spreadsheet - row by row, column by column.`;
-
-  const userMessage = `${content}
+\`\`\`csv
+${content}
+\`\`\`
 
 ---
 
-**USER QUESTION**: ${question || "Provide a comprehensive financial analysis with key metrics, performance rankings, and insights."}
+**QUESTION**: ${question || "Provide comprehensive financial analysis including totals, top/bottom performers, and key insights."}
 
-**ANALYSIS INSTRUCTIONS**:
+**INSTRUCTIONS**:
+1. Read the CSV data carefully, line by line
+2. For store-specific questions, find the exact line and read values from that line only
+3. For totals, sum the entire column
+4. For rankings, sort by the specified column
+5. Use exact values, no rounding
+6. Cite line numbers for verification
 
-1. **Read the table(s) above carefully**
-2. **For rankings**: 
-   - Identify which column to sort by (usually Revenue or Sales)
-   - Find rows that are stores/locations (exclude expense categories)
-   - Sort by that column
-   - List exact names and exact values
-3. **For calculations**:
-   - Use exact values from the table
-   - Show the calculation
-4. **Double-check**: Before finalizing, verify each number against the table
-
-Take your time. Accuracy is more important than speed.`;
+**IMPORTANT**: Each CSV line is one record. Values on the same line belong together. Never take a value from one line and pair it with a name from another line.`;
 
   const messages = [
     { role: "system", content: systemPrompt },
     { role: "user", content: userMessage }
   ];
 
-  // Retry logic
+  // Retry with backoff
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       console.log(`  Attempt ${attempt}/3...`);
@@ -389,85 +335,60 @@ Take your time. Accuracy is more important than speed.`;
           model: "gpt-4o-mini",
           messages: messages,
           temperature: 0,
-          max_tokens: 16000,
-          top_p: 1.0
+          max_tokens: 16000
         })
       });
 
       if (response.status === 429) {
         if (attempt < 3) {
-          const delay = 3000 * attempt;
-          console.log(`  ⏳ Rate limit, waiting ${delay/1000}s...`);
-          await sleep(delay);
+          await sleep(2000 * attempt);
           continue;
         }
-        return {
-          success: false,
-          error: "RATE_LIMIT",
-          message: "Rate limit exceeded. Please wait and try again."
-        };
+        return { success: false, error: "RATE_LIMIT" };
       }
 
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`  ❌ HTTP ${response.status}`);
-        
-        if (response.status === 401) {
-          return { success: false, error: "AUTH", message: "Invalid API key" };
-        }
-        
         if (attempt < 3 && response.status >= 500) {
-          await sleep(3000 * attempt);
+          await sleep(2000 * attempt);
           continue;
         }
-        
-        return { success: false, error: `HTTP_${response.status}`, message: errorText };
+        return { success: false, error: `HTTP ${response.status}` };
       }
 
       const data = await response.json();
-
       if (data.error) {
-        return { success: false, error: "API_ERROR", message: data.error.message };
+        return { success: false, error: data.error.message };
       }
 
       const content = data.choices?.[0]?.message?.content;
-      const finishReason = data.choices?.[0]?.finish_reason;
-      const usage = data.usage;
-
-      console.log(`  ✓ Success (${finishReason})`);
-      console.log(`  ✓ Tokens: ${usage?.total_tokens || 0} (prompt: ${usage?.prompt_tokens}, completion: ${usage?.completion_tokens})`);
-
       if (!content) {
-        return { success: false, error: "EMPTY", message: "Empty response" };
+        return { success: false, error: "Empty response" };
       }
 
-      // Clean response
       const cleaned = content
-        .replace(/^```(?:markdown|json)?\s*\n?/gm, '')
+        .replace(/^```(?:markdown)?\s*\n?/gm, '')
         .replace(/\n?```\s*$/gm, '')
         .trim();
 
+      console.log(`  ✓ Complete (${data.usage?.total_tokens || 0} tokens)`);
+      
       return {
         success: true,
         content: cleaned,
-        usage: usage,
-        finishReason: finishReason,
+        usage: data.usage,
         model: "gpt-4o-mini"
       };
 
     } catch (err) {
-      console.error(`  ❌ Attempt ${attempt} error:`, err.message);
-      
       if (attempt < 3) {
-        await sleep(3000 * attempt);
+        await sleep(2000 * attempt);
         continue;
       }
-      
-      return { success: false, error: "NETWORK", message: err.message };
+      return { success: false, error: err.message };
     }
   }
 
-  return { success: false, error: "MAX_RETRIES" };
+  return { success: false, error: "Max retries" };
 }
 
 /**
@@ -477,25 +398,14 @@ async function markdownToWord(markdown) {
   try {
     const sections = [];
     const lines = markdown.split('\n');
-    let tableRows = [];
-    let inTable = false;
 
     for (const line of lines) {
       const trimmed = line.trim();
-
       if (!trimmed) {
-        if (tableRows.length > 0) {
-          sections.push(createTable(tableRows));
-          sections.push(new Paragraph({ text: '' }));
-          tableRows = [];
-          inTable = false;
-        } else if (sections.length > 0) {
-          sections.push(new Paragraph({ text: '' }));
-        }
+        if (sections.length > 0) sections.push(new Paragraph({ text: '' }));
         continue;
       }
 
-      // Headers
       if (trimmed.startsWith('#')) {
         const level = (trimmed.match(/^#+/) || [''])[0].length;
         const text = trimmed.replace(/^#+\s*/, '').replace(/\*\*/g, '');
@@ -507,42 +417,20 @@ async function markdownToWord(markdown) {
         continue;
       }
 
-      // Tables
-      if (trimmed.includes('|')) {
-        const cells = trimmed.split('|').map(c => c.trim()).filter(c => c);
-        if (cells.every(c => /^[-:]+$/.test(c))) {
-          inTable = true;
-          continue;
+      const parts = trimmed.split(/(\*\*[^*]+\*\*)/g);
+      const runs = parts.map(p => {
+        if (p.startsWith('**') && p.endsWith('**')) {
+          return new TextRun({ text: p.replace(/\*\*/g, ''), bold: true });
         }
-        tableRows.push(cells.map(c => c.replace(/\*\*/g, '')));
-        continue;
-      } else if (inTable && tableRows.length > 0) {
-        sections.push(createTable(tableRows));
-        sections.push(new Paragraph({ text: '' }));
-        tableRows = [];
-        inTable = false;
-      }
+        return new TextRun({ text: p });
+      }).filter(r => r.text);
 
-      // Bullets
-      if (trimmed.startsWith('-') || trimmed.startsWith('*')) {
-        const text = trimmed.replace(/^[-*]\s+/, '');
+      if (runs.length > 0) {
         sections.push(new Paragraph({
-          children: parseFormatting(text),
-          bullet: { level: 0 },
+          children: runs,
           spacing: { before: 60, after: 60 }
         }));
-        continue;
       }
-
-      // Regular text
-      sections.push(new Paragraph({
-        children: parseFormatting(trimmed),
-        spacing: { before: 60, after: 60 }
-      }));
-    }
-
-    if (tableRows.length > 0) {
-      sections.push(createTable(tableRows));
     }
 
     const doc = new Document({
@@ -554,45 +442,6 @@ async function markdownToWord(markdown) {
     console.error('Word gen error:', err.message);
     throw err;
   }
-}
-
-function parseFormatting(text) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return parts.map(p => {
-    if (p.startsWith('**') && p.endsWith('**')) {
-      return new TextRun({ text: p.replace(/\*\*/g, ''), bold: true });
-    }
-    return new TextRun({ text: p });
-  }).filter(r => r.text);
-}
-
-function createTable(rows) {
-  return new Table({
-    rows: rows.map((cells, idx) => new TableRow({
-      children: cells.map(text => new TableCell({
-        children: [new Paragraph({
-          children: [new TextRun({
-            text: text,
-            bold: idx === 0,
-            color: idx === 0 ? 'FFFFFF' : '000000',
-            size: 22
-          })],
-          alignment: AlignmentType.LEFT
-        })],
-        shading: { fill: idx === 0 ? '4472C4' : 'FFFFFF' },
-        margins: { top: 100, bottom: 100, left: 100, right: 100 }
-      }))
-    })),
-    width: { size: 100, type: WidthType.PERCENTAGE },
-    borders: {
-      top: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-      bottom: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-      left: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-      right: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-      insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' },
-      insideVertical: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' }
-    }
-  });
 }
 
 /**
@@ -608,7 +457,7 @@ export default async function handler(req, res) {
 
   try {
     if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: "OPENAI_API_KEY not configured" });
+      return res.status(500).json({ error: "OPENAI_API_KEY not set" });
     }
 
     const body = await parseJsonBody(req);
@@ -618,31 +467,29 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "fileUrl required" });
     }
 
-    console.log('\n' + '='.repeat(80));
-    console.log('📊 NEW ANALYSIS REQUEST');
-    console.log('='.repeat(80));
-    console.log('URL:', fileUrl);
-    console.log('Question:', question || '(comprehensive analysis)');
+    console.log('\n' + '='.repeat(60));
+    console.log('📊 ANALYSIS REQUEST');
+    console.log('='.repeat(60));
+    console.log('File:', fileUrl.split('/').pop());
+    console.log('Question:', question || '(comprehensive)');
 
     // Download
     console.log('\n📥 Downloading...');
     const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
     const fileType = detectFileType(fileUrl, contentType, buffer);
     const fileName = fileUrl.split('/').pop().split('?')[0] || 'file';
-    
-    console.log(`✓ File: ${fileName} (${fileType}, ${(bytesReceived/1024).toFixed(2)} KB)`);
+    console.log(`✓ ${(bytesReceived/1024).toFixed(2)} KB`);
 
     // Extract
     console.log('\n📄 Extracting...');
-    
     let extractResult;
-    let markdownData = null;
+    let csvData = null;
     let textContent = null;
 
     if (fileType === 'xlsx' || fileType === 'csv') {
-      extractResult = extractSpreadsheet(buffer, fileType);
+      extractResult = extractSpreadsheet(buffer);
       if (extractResult.success) {
-        markdownData = formatAsMarkdownTables(extractResult.sheets);
+        csvData = formatAsCSV(extractResult.sheets);
       }
     } else if (fileType === 'pdf') {
       extractResult = await extractPdf(buffer);
@@ -650,24 +497,20 @@ export default async function handler(req, res) {
     } else if (fileType === 'docx') {
       extractResult = await extractDocx(buffer);
       if (extractResult.success) textContent = extractResult.text;
-    } else if (fileType === 'pptx') {
-      extractResult = await extractPptx(buffer);
-      if (extractResult.success) textContent = extractResult.text;
     } else {
-      return res.json({ ok: false, message: `Unsupported file type: ${fileType}` });
+      return res.json({ ok: false, message: `Unsupported: ${fileType}` });
     }
 
     if (!extractResult.success) {
-      console.error('❌ Extraction failed:', extractResult.error);
-      return res.json({ ok: false, message: `Extraction failed: ${extractResult.error}` });
+      return res.json({ ok: false, message: extractResult.error });
     }
 
-    console.log('✓ Content extracted');
+    console.log('✓ Extracted');
 
     // Analyze
     console.log('\n🤖 Analyzing...');
-    const analysisResult = await analyzeWithGPT4oMini({
-      markdownData,
+    const analysisResult = await analyzeWithAI({
+      csvData,
       textContent,
       fileType,
       question,
@@ -675,29 +518,27 @@ export default async function handler(req, res) {
     });
 
     if (!analysisResult.success) {
-      console.error('❌ Analysis failed:', analysisResult.error);
       return res.json({
         ok: false,
-        message: analysisResult.message || "Analysis failed",
-        error: analysisResult.error
+        message: analysisResult.error || "Analysis failed"
       });
     }
 
-    console.log('✓ Analysis complete');
+    console.log('✓ Analysis done');
 
     // Generate Word
-    console.log('\n📝 Generating Word...');
+    console.log('\n📝 Word...');
     let wordBase64 = null;
     try {
       wordBase64 = await markdownToWord(analysisResult.content);
-      console.log('✓ Word generated');
+      console.log('✓ Ready');
     } catch (err) {
-      console.log('⚠️ Word generation skipped:', err.message);
+      console.log('⚠️ Skipped');
     }
 
-    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-    console.log(`\n✅ COMPLETED in ${duration}s`);
-    console.log('='.repeat(80) + '\n');
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`\n✅ Done in ${duration}s`);
+    console.log('='.repeat(60) + '\n');
 
     return res.json({
       ok: true,
@@ -710,7 +551,7 @@ export default async function handler(req, res) {
         fileName,
         fileType,
         fileSize: bytesReceived,
-        totalRows: extractResult.totalRows || null,
+        totalRows: extractResult.totalRows,
         model: "gpt-4o-mini",
         tokensUsed: analysisResult.usage?.total_tokens,
         processingTime: parseFloat(duration)
