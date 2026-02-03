@@ -1,7 +1,7 @@
 import fetch from "node-fetch";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
-import { Document, Paragraph, TextRun, HeadingLevel, Packer } from "docx";
+import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
 import JSZip from "jszip";
 
 /**
@@ -72,12 +72,59 @@ async function downloadFileToBuffer(url, maxBytes = 50 * 1024 * 1024) {
  */
 function detectFileType(fileUrl, contentType, buffer) {
   const url = (fileUrl || "").toLowerCase();
-  
-  if (buffer?.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b) return "xlsx";
-  if (url.endsWith(".xlsx")) return "xlsx";
+  const type = (contentType || "").toLowerCase();
+
+  if (buffer?.length >= 4) {
+    if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
+      if (url.includes('.docx')) return "docx";
+      if (url.includes('.pptx')) return "pptx";
+      return "xlsx";
+    }
+    if (buffer[0] === 0x25 && buffer[1] === 0x50) return "pdf";
+  }
+
+  if (url.endsWith(".xlsx") || type.includes("spreadsheet")) return "xlsx";
   if (url.endsWith(".csv")) return "csv";
   if (url.endsWith(".pdf")) return "pdf";
+  if (url.endsWith(".docx")) return "docx";
   return "xlsx";
+}
+
+/**
+ * Extract PDF
+ */
+async function extractPdf(buffer) {
+  try {
+    const data = await pdf(buffer);
+    const text = data?.text?.trim() || "";
+    if (!text || text.length < 50) {
+      return { success: false, error: "PDF is empty or scanned" };
+    }
+    return { success: true, text };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Extract DOCX
+ */
+async function extractDocx(buffer) {
+  try {
+    const zip = await JSZip.loadAsync(buffer);
+    const xml = await zip.files['word/document.xml']?.async('text');
+    if (!xml) return { success: false, error: "Invalid DOCX" };
+    
+    const matches = xml.match(/<w:t[^>]*>([^<]+)<\/w:t>/g) || [];
+    const text = matches
+      .map(m => m.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'))
+      .join(' ').trim();
+    
+    if (!text) return { success: false, error: "No text found" };
+    return { success: true, text };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 }
 
 /**
@@ -93,6 +140,7 @@ function extractSpreadsheet(buffer) {
     }
 
     const sheets = [];
+    let totalRows = 0;
 
     workbook.SheetNames.forEach((sheetName, idx) => {
       const worksheet = workbook.Sheets[sheetName];
@@ -109,11 +157,12 @@ function extractSpreadsheet(buffer) {
           columns: Object.keys(rows[0]),
           rows: rows
         });
+        totalRows += rows.length;
       }
     });
 
-    console.log(`✓ Extracted ${sheets.length} sheets`);
-    return { success: true, sheets };
+    console.log(`✓ Total: ${sheets.length} sheets, ${totalRows} rows`);
+    return { success: true, sheets, totalRows };
 
   } catch (err) {
     return { success: false, error: err.message };
@@ -121,308 +170,242 @@ function extractSpreadsheet(buffer) {
 }
 
 /**
- * 🔥 CRITICAL: Parse numeric value from any format
+ * Convert to CSV format with row numbers
  */
-function parseNumber(value) {
-  if (value === null || value === undefined || value === '') return 0;
+function formatAsCSV(sheets) {
+  console.log('📝 Formatting as CSV...');
   
-  // Remove currency symbols, commas, parentheses
-  let str = String(value)
-    .replace(/[$,€£¥₹]/g, '')
-    .replace(/^\(/, '-')
-    .replace(/\)$/, '')
-    .trim();
+  let csv = "";
+  let globalRowNum = 1; // Start from 1 for header
   
-  // Handle percentages
-  if (str.endsWith('%')) {
-    str = str.replace('%', '');
-    const num = parseFloat(str);
-    return isNaN(num) ? 0 : num / 100;
-  }
-  
-  const num = parseFloat(str);
-  return isNaN(num) ? 0 : num;
-}
-
-/**
- * 🔥 CRITICAL: Detect identifier column (Location, Store, Period, etc.)
- */
-function detectIdentifierColumn(columns, rows) {
-  // Common identifier column names
-  const identifierNames = [
-    'location', 'store', 'branch', 'outlet', 'site', 'shop',
-    'period', 'month', 'quarter', 'year', 'date', 'week',
-    'name', 'id', 'code', 'entity', 'unit'
-  ];
-  
-  // Find first column that matches common names or is first non-numeric column
-  for (const col of columns) {
-    const lowerCol = col.toLowerCase();
-    if (identifierNames.some(name => lowerCol.includes(name))) {
-      return col;
-    }
-  }
-  
-  // Fallback: first column with mostly text values
-  for (const col of columns) {
-    const sampleValues = rows.slice(0, 10).map(r => r[col]);
-    const numericCount = sampleValues.filter(v => !isNaN(parseNumber(v)) && parseNumber(v) !== 0).length;
-    if (numericCount < 5) { // Less than 50% numeric = likely identifier
-      return col;
-    }
-  }
-  
-  return columns[0]; // Fallback to first column
-}
-
-/**
- * 🔥 CRITICAL: Detect numeric columns
- */
-function detectNumericColumns(columns, rows) {
-  const numericCols = [];
-  
-  for (const col of columns) {
-    const sampleValues = rows.slice(0, Math.min(10, rows.length)).map(r => r[col]);
-    const numericCount = sampleValues.filter(v => {
-      const num = parseNumber(v);
-      return !isNaN(num) && (num !== 0 || v === '0' || v === 0);
-    }).length;
+  sheets.forEach((sheet, idx) => {
+    // Sheet header
+    csv += `\n=== SHEET ${idx + 1}: ${sheet.name} ===\n\n`;
     
-    if (numericCount >= Math.min(7, sampleValues.length * 0.7)) {
-      numericCols.push(col);
-    }
-  }
-  
-  return numericCols;
-}
-
-/**
- * 🔥 NEW APPROACH: Process data in JavaScript (100% accurate)
- * Returns pre-calculated rankings, summaries, and tables
- */
-function processDataInCode(sheets) {
-  console.log('🔧 Processing data with JavaScript (100% accuracy)...');
-  
-  const results = {
-    sheets: [],
-    analysis: {}
-  };
-  
-  sheets.forEach(sheet => {
-    const { name, columns, rows } = sheet;
+    // CSV header row with ROW_NUM column
+    csv += 'ROW_NUM,' + sheet.columns.join(',') + '\n';
+    globalRowNum++;
     
-    // Detect structure
-    const identifierCol = detectIdentifierColumn(columns, rows);
-    const numericCols = detectNumericColumns(columns, rows);
-    
-    console.log(`  Sheet "${name}": ID="${identifierCol}", Metrics=[${numericCols.join(', ')}]`);
-    
-    // Process each row with parsed numbers
-    const processedRows = rows.map((row, idx) => {
-      const processed = {
-        _id: idx + 1,
-        _identifier: row[identifierCol] || `Row ${idx + 1}`
-      };
-      
-      // Add identifier column
-      processed[identifierCol] = row[identifierCol];
-      
-      // Parse all numeric columns
-      numericCols.forEach(col => {
-        processed[col] = parseNumber(row[col]);
-      });
-      
-      // Keep other columns as-is
-      columns.forEach(col => {
-        if (col !== identifierCol && !numericCols.includes(col)) {
-          processed[col] = row[col];
+    // Data rows with row numbers
+    sheet.rows.forEach((row) => {
+      const values = sheet.columns.map(col => {
+        let val = row[col] || '';
+        // Escape commas and quotes
+        val = String(val).replace(/"/g, '""');
+        if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+          val = `"${val}"`;
         }
+        return val;
       });
-      
-      return processed;
+      csv += globalRowNum + ',' + values.join(',') + '\n';
+      globalRowNum++;
     });
     
-    // Calculate rankings for each numeric column
-    const rankings = {};
-    numericCols.forEach(metric => {
-      const sorted = [...processedRows].sort((a, b) => b[metric] - a[metric]);
-      
-      rankings[metric] = {
-        top5: sorted.slice(0, 5).map(r => ({
-          identifier: r._identifier,
-          value: r[metric],
-          allValues: numericCols.reduce((obj, col) => {
-            obj[col] = r[col];
-            return obj;
-          }, {})
-        })),
-        bottom5: sorted.slice(-5).reverse().map(r => ({
-          identifier: r._identifier,
-          value: r[metric],
-          allValues: numericCols.reduce((obj, col) => {
-            obj[col] = r[col];
-            return obj;
-          }, {})
-        })),
-        total: processedRows.reduce((sum, r) => sum + r[metric], 0),
-        average: processedRows.reduce((sum, r) => sum + r[metric], 0) / processedRows.length,
-        min: Math.min(...processedRows.map(r => r[metric])),
-        max: Math.max(...processedRows.map(r => r[metric]))
-      };
-    });
-    
-    results.sheets.push({
-      name,
-      identifierColumn: identifierCol,
-      numericColumns: numericCols,
-      rowCount: processedRows.length,
-      rows: processedRows,
-      rankings
-    });
+    csv += '\n';
   });
+
+  const sizeKB = (csv.length / 1024).toFixed(2);
+  console.log(`✓ CSV: ${sizeKB} KB`);
   
-  console.log(`✓ Processed ${results.sheets.length} sheets`);
-  return results;
+  return csv;
 }
 
 /**
- * 🔥 NEW: Generate markdown report from processed data (AI-free, 100% accurate)
+ * 🔥 FINAL: Call GPT-4o-mini with perfect instructions
  */
-function generateAccurateReport(processedData, question) {
-  console.log('📝 Generating accurate report...');
+async function analyzeWithAI({ csvData, textContent, fileType, question, fileName }) {
+  console.log('🤖 Analyzing...');
+
+  const MAX_CHARS = 400000;
+
+  let content = "";
   
-  let report = `# Financial Analysis Report\n\n`;
-  
-  processedData.sheets.forEach((sheet, idx) => {
-    report += `## Sheet ${idx + 1}: ${sheet.name}\n\n`;
-    report += `**Total Records**: ${sheet.rowCount}\n`;
-    report += `**Identifier Column**: ${sheet.identifierColumn}\n`;
-    report += `**Metrics Analyzed**: ${sheet.numericColumns.join(', ')}\n\n`;
-    
-    // For each metric, show rankings
-    sheet.numericColumns.forEach(metric => {
-      const ranking = sheet.rankings[metric];
-      
-      report += `### ${metric} Analysis\n\n`;
-      
-      // Summary stats
-      report += `**Summary Statistics:**\n`;
-      report += `- Total: ${ranking.total.toLocaleString('en-US', { maximumFractionDigits: 2 })}\n`;
-      report += `- Average: ${ranking.average.toLocaleString('en-US', { maximumFractionDigits: 2 })}\n`;
-      report += `- Highest: ${ranking.max.toLocaleString('en-US', { maximumFractionDigits: 2 })}\n`;
-      report += `- Lowest: ${ranking.min.toLocaleString('en-US', { maximumFractionDigits: 2 })}\n\n`;
-      
-      // Top 5
-      report += `**Top 5 by ${metric}:**\n\n`;
-      report += `| Rank | ${sheet.identifierColumn} | ${metric} |\n`;
-      report += `|------|${'-'.repeat(sheet.identifierColumn.length)}|${'-'.repeat(metric.length)}|\n`;
-      ranking.top5.forEach((item, i) => {
-        report += `| ${i + 1} | ${item.identifier} | ${item.value.toLocaleString('en-US', { maximumFractionDigits: 2 })} |\n`;
-      });
-      report += `\n`;
-      
-      // Bottom 5
-      report += `**Bottom 5 by ${metric}:**\n\n`;
-      report += `| Rank | ${sheet.identifierColumn} | ${metric} |\n`;
-      report += `|------|${'-'.repeat(sheet.identifierColumn.length)}|${'-'.repeat(metric.length)}|\n`;
-      ranking.bottom5.forEach((item, i) => {
-        report += `| ${i + 1} | ${item.identifier} | ${item.value.toLocaleString('en-US', { maximumFractionDigits: 2 })} |\n`;
-      });
-      report += `\n`;
-    });
-    
-    // Complete data table (if not too large)
-    if (sheet.rowCount <= 100) {
-      report += `### Complete Data\n\n`;
-      report += `| ${sheet.identifierColumn} | ${sheet.numericColumns.join(' | ')} |\n`;
-      report += `|${'-'.repeat(sheet.identifierColumn.length)}|${sheet.numericColumns.map(c => '-'.repeat(c.length)).join('|')}|\n`;
-      
-      sheet.rows.forEach(row => {
-        const values = sheet.numericColumns.map(col => 
-          row[col].toLocaleString('en-US', { maximumFractionDigits: 2 })
-        );
-        report += `| ${row[sheet.identifierColumn]} | ${values.join(' | ')} |\n`;
-      });
-      report += `\n`;
+  if (csvData) {
+    if (csvData.length > MAX_CHARS) {
+      console.log(`⚠️ Truncating to ${(MAX_CHARS/1024).toFixed(0)}KB...`);
+      content = csvData.substring(0, MAX_CHARS) + '\n\n[... remaining data truncated ...]';
+    } else {
+      content = csvData;
     }
-    
-    report += `---\n\n`;
-  });
-  
-  return report;
-}
+  } else if (textContent) {
+    content = textContent.length > MAX_CHARS 
+      ? textContent.substring(0, MAX_CHARS) + '\n\n[... truncated ...]'
+      : textContent;
+  } else {
+    return { success: false, error: "No content" };
+  }
 
-/**
- * 🔥 OPTIONAL: Let AI add commentary to the accurate data
- */
-async function addAICommentary({ accurateReport, question }) {
-  console.log('🤖 Adding AI commentary...');
-  
-  const systemPrompt = `You are a financial analyst. You have been provided with a COMPLETE, ACCURATE financial report with all rankings and data already calculated correctly.
+  const systemPrompt = `You are a senior financial analyst. You will receive data in CSV format with a ROW_NUM column for reference.
 
-**YOUR JOB**: Add executive summary, insights, and recommendations to the data. DO NOT recreate any tables or rankings - they are already perfect.
+**CRITICAL RULES FOR ACCURACY**:
 
-**RULES**:
-1. DO NOT create new tables - use the ones provided
-2. DO NOT recalculate rankings - they are already correct
-3. DO add insights about what the numbers mean
-4. DO provide recommendations
-5. DO highlight key findings
-6. Keep your response concise and focused on analysis, not data presentation`;
+1. **READING CSV DATA**:
+   - First column (ROW_NUM) is just for reference - don't include it in your analysis
+   - Each row has exact values for each column
+   - Read values from the SAME row - never mix columns from different rows
 
-  const userMessage = `Here is the complete, accurate financial report:
+2. **WHEN CREATING TABLES IN YOUR RESPONSE**:
+   - Copy values EXACTLY from the correct column
+   - If source has "EBITDA 2024" and "EBITDA 2025" columns:
+     * Put 2024 values ONLY in your 2024 column
+     * Put 2025 values ONLY in your 2025 column
+   - NEVER copy the same value to multiple year columns
+   - NEVER include ROW_NUM in your output tables
 
-${accurateReport}
+3. **CRITICAL TABLE FORMATTING RULE**:
+   When creating comparison tables:
+   ❌ WRONG: Copying 2025 value into both 2024 and 2025 columns
+   ✅ RIGHT: 2024 column gets 2024 value, 2025 column gets 2025 value
+
+   Example from CSV:
+   ROW_NUM,Location,EBITDA_2024,EBITDA_2025
+   5,Mumbai,219150,243033
+
+   Your output table should be:
+   | Location | EBITDA 2024 | EBITDA 2025 | Change |
+   |----------|-------------|-------------|--------|
+   | Mumbai   | $219,150    | $243,033    | $23,883 |
+
+   NOT:
+   | Location | EBITDA 2024 | EBITDA 2025 | Change |
+   |----------|-------------|-------------|--------|
+   | Mumbai   | $243,033    | $243,033    | $0 |  ← WRONG!
+
+4. **VERIFICATION CHECKLIST BEFORE RESPONDING**:
+   - [ ] Did I use the correct column for each year?
+   - [ ] Are the values different between years (unless actually same)?
+   - [ ] Did I exclude ROW_NUM from output tables?
+   - [ ] Did I calculate changes correctly?
+
+5. **FOR RANKINGS**:
+   - Sort by the specified metric column
+   - Use exact values from that column
+   - Include only actual locations/stores, not expense categories
+
+**OUTPUT FORMAT**:
+- Use markdown headers (##)
+- **Bold** key findings
+- Create clear comparison tables
+- Do NOT include row numbers in output tables
+- Start with Executive Summary
+- Show detailed analysis with exact figures
+
+Remember: Different year columns have different values. Copy each value to its correct year column.`;
+
+  const userMessage = `# FINANCIAL DATA
+
+**File**: ${fileName}
+**Format**: CSV (ROW_NUM is for reference only)
+
+\`\`\`csv
+${content}
+\`\`\`
 
 ---
 
-**User's Question**: ${question || "Provide insights and recommendations based on this data."}
+**QUESTION**: ${question || "Provide comprehensive financial analysis including key metrics, trends, and location-wise performance."}
 
-**Your Task**: 
-1. Add an executive summary at the beginning
-2. Provide insights after each section about what the patterns mean
-3. Add recommendations at the end
-4. DO NOT recreate the tables - they are already correct`;
+**CRITICAL INSTRUCTIONS FOR YOUR RESPONSE**:
+
+1. When creating tables with multiple year columns (e.g., 2024, 2025):
+   - Look at the CSV column headers carefully
+   - Put 2024 values in 2024 column
+   - Put 2025 values in 2025 column
+   - DO NOT copy the same value to both columns
+
+2. Do NOT include ROW_NUM in your output tables
+
+3. Calculate changes correctly: Change = (2025 value) - (2024 value)
+
+4. Use exact values from the CSV - no rounding unless requested
+
+5. Double-check your tables before finalizing - ensure each year column has the correct year's data
+
+**EXAMPLE OF CORRECT TABLE**:
+If CSV shows: Mumbai,100,120
+Your table should show:
+| Location | 2024 | 2025 | Change |
+|----------|------|------|--------|
+| Mumbai   | 100  | 120  | 20     |
+
+NOT:
+| Location | 2024 | 2025 | Change |
+|----------|------|------|--------|
+| Mumbai   | 120  | 120  | 0      | ← WRONG`;
 
   const messages = [
     { role: "system", content: systemPrompt },
     { role: "user", content: userMessage }
   ];
 
-  try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: messages,
-        temperature: 0.3,
-        max_tokens: 8000
-      })
-    });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      console.log(`  Attempt ${attempt}/3...`);
 
-    if (!response.ok) {
-      console.log('⚠️ AI commentary failed, using report as-is');
-      return { success: true, content: accurateReport };
-    }
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: messages,
+          temperature: 0,
+          max_tokens: 16000
+        })
+      });
 
-    const data = await response.json();
-    const commentary = data.choices?.[0]?.message?.content || '';
-    
-    if (commentary) {
-      console.log('✓ AI commentary added');
-      return { success: true, content: commentary + '\n\n---\n\n' + accurateReport };
+      if (response.status === 429) {
+        if (attempt < 3) {
+          await sleep(2000 * attempt);
+          continue;
+        }
+        return { success: false, error: "Rate limit - please wait and retry" };
+      }
+
+      if (!response.ok) {
+        if (attempt < 3 && response.status >= 500) {
+          await sleep(2000 * attempt);
+          continue;
+        }
+        return { success: false, error: `HTTP ${response.status}` };
+      }
+
+      const data = await response.json();
+      if (data.error) {
+        return { success: false, error: data.error.message };
+      }
+
+      const content = data.choices?.[0]?.message?.content;
+      if (!content) {
+        return { success: false, error: "Empty response" };
+      }
+
+      const cleaned = content
+        .replace(/^```(?:markdown)?\s*\n?/gm, '')
+        .replace(/\n?```\s*$/gm, '')
+        .trim();
+
+      console.log(`  ✓ Done (${data.usage?.total_tokens || 0} tokens)`);
+      
+      return {
+        success: true,
+        content: cleaned,
+        usage: data.usage,
+        model: "gpt-4o-mini"
+      };
+
+    } catch (err) {
+      if (attempt < 3) {
+        await sleep(2000 * attempt);
+        continue;
+      }
+      return { success: false, error: err.message };
     }
-    
-    return { success: true, content: accurateReport };
-    
-  } catch (err) {
-    console.log('⚠️ AI commentary failed, using report as-is');
-    return { success: true, content: accurateReport };
   }
+
+  return { success: false, error: "Max retries exceeded" };
 }
 
 /**
@@ -491,7 +474,7 @@ export default async function handler(req, res) {
 
   try {
     if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: "OPENAI_API_KEY not configured" });
+      return res.status(500).json({ error: "OPENAI_API_KEY not set" });
     }
 
     const body = await parseJsonBody(req);
@@ -501,9 +484,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "fileUrl required" });
     }
 
-    console.log('\n' + '='.repeat(70));
-    console.log('📊 100% ACCURATE FINANCIAL ANALYSIS');
-    console.log('='.repeat(70));
+    console.log('\n' + '='.repeat(60));
+    console.log('📊 FINANCIAL ANALYSIS');
+    console.log('='.repeat(60));
     console.log('File:', fileUrl.split('/').pop());
 
     // Download
@@ -515,7 +498,24 @@ export default async function handler(req, res) {
 
     // Extract
     console.log('\n📄 Extracting...');
-    const extractResult = extractSpreadsheet(buffer);
+    let extractResult;
+    let csvData = null;
+    let textContent = null;
+
+    if (fileType === 'xlsx' || fileType === 'csv') {
+      extractResult = extractSpreadsheet(buffer);
+      if (extractResult.success) {
+        csvData = formatAsCSV(extractResult.sheets);
+      }
+    } else if (fileType === 'pdf') {
+      extractResult = await extractPdf(buffer);
+      if (extractResult.success) textContent = extractResult.text;
+    } else if (fileType === 'docx') {
+      extractResult = await extractDocx(buffer);
+      if (extractResult.success) textContent = extractResult.text;
+    } else {
+      return res.json({ ok: false, message: `Unsupported file type: ${fileType}` });
+    }
 
     if (!extractResult.success) {
       return res.json({ ok: false, message: extractResult.error });
@@ -523,37 +523,42 @@ export default async function handler(req, res) {
 
     console.log('✓ Extracted');
 
-    // Process data in code (100% accurate)
-    const processedData = processDataInCode(extractResult.sheets);
-    
-    // Generate accurate report
-    const accurateReport = generateAccurateReport(processedData, question);
-    
-    // Optionally add AI commentary
-    const finalResult = await addAICommentary({
-      accurateReport,
-      question
+    // Analyze
+    console.log('\n🤖 Analyzing...');
+    const analysisResult = await analyzeWithAI({
+      csvData,
+      textContent,
+      fileType,
+      question,
+      fileName
     });
 
-    console.log('✓ Report complete');
+    if (!analysisResult.success) {
+      return res.json({
+        ok: false,
+        message: analysisResult.error || "Analysis failed"
+      });
+    }
+
+    console.log('✓ Complete');
 
     // Generate Word
-    console.log('\n📝 Word...');
+    console.log('\n📝 Generating Word...');
     let wordBase64 = null;
     try {
-      wordBase64 = await markdownToWord(finalResult.content);
+      wordBase64 = await markdownToWord(analysisResult.content);
       console.log('✓ Ready');
     } catch (err) {
       console.log('⚠️ Skipped');
     }
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`\n✅ COMPLETED in ${duration}s`);
-    console.log('='.repeat(70) + '\n');
+    console.log(`\n✅ Completed in ${duration}s`);
+    console.log('='.repeat(60) + '\n');
 
     return res.json({
       ok: true,
-      reply: finalResult.content,
+      reply: analysisResult.content,
       wordDownload: wordBase64,
       downloadUrl: wordBase64 
         ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}`
@@ -562,9 +567,9 @@ export default async function handler(req, res) {
         fileName,
         fileType,
         fileSize: bytesReceived,
-        totalSheets: processedData.sheets.length,
-        totalRows: processedData.sheets.reduce((sum, s) => sum + s.rowCount, 0),
-        processingMethod: "JavaScript-based (100% accurate)",
+        totalRows: extractResult.totalRows,
+        model: "gpt-4o-mini",
+        tokensUsed: analysisResult.usage?.total_tokens,
         processingTime: parseFloat(duration)
       }
     });
