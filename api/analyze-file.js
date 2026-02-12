@@ -1309,7 +1309,7 @@ ${question || "Please provide a comprehensive MIS commentary analyzing this fina
       model: "gpt-4o-mini",
       messages,
       temperature: 0,
-      max_tokens: 3000,
+      max_tokens: 9000,
       top_p: 1.0,
       frequency_penalty: 0.0,
       presence_penalty: 0.0
