@@ -1192,47 +1192,107 @@ ${text}`
 }
 
 /**
- * 🔥 CALL MODEL WITH STRUCTURED JSON
+ * Compact line item payload to avoid oversized model requests
  */
-async function callModelWithJSON({ structuredData, question, documentType }) {
-  const systemPrompt = getEnhancedSystemPrompt(documentType);
+function compactLineItem(lineItem = {}) {
+  const compactValues = Array.isArray(lineItem.values)
+    ? lineItem.values.slice(0, 12).map((value) => ({
+        column: value?.column,
+        columnIndex: value?.columnIndex,
+        numericValue: value?.numericValue
+      }))
+    : [];
 
-  // Prepare data for AI with emphasis on column structure
-  const dataForAI = {
-    documentType: structuredData.documentType,
-    sheetCount: structuredData.sheetCount,
-    sheets: structuredData.sheets.map(sheet => {
-      // Limit data to prevent token overflow
-      const maxItems = 600;
-      
-      return {
+  return {
+    rowNumber: lineItem.rowNumber,
+    description: String(lineItem.description || "").slice(0, 180),
+    values: compactValues
+  };
+}
+
+/**
+ * Build a bounded JSON payload for model analysis to stay below token/rate limits
+ */
+function buildBoundedStructuredPayload(structuredData) {
+  const maxJsonChars = 90000;
+  const maxSheets = 6;
+  const itemSteps = [180, 120, 80, 50, 30, 20, 12, 8];
+
+  for (const maxItemsPerSheet of itemSteps) {
+    const payload = {
+      documentType: structuredData.documentType,
+      sheetCount: structuredData.sheetCount,
+      sheets: (structuredData.sheets || []).slice(0, maxSheets).map((sheet) => ({
         sheetName: sheet.sheetName,
         sheetType: sheet.sheetType,
-        structure: sheet.structure,
         summary: sheet.summary,
-        lineItems: sheet.lineItems ? sheet.lineItems.slice(0, maxItems) : [],
-        totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0,
-        dataTruncated: sheet.lineItems && sheet.lineItems.length > maxItems,
-        
-        // Add explicit column mapping for clarity
-        columnGuide: sheet.structure?.columns?.map(col => ({
+        columnGuide: (sheet.structure?.columns || []).map((col) => ({
           name: col.header,
           position: col.index,
           type: col.purpose,
           isNumeric: col.isNumeric
-        }))
-      };
-    })
+        })),
+        lineItems: Array.isArray(sheet.lineItems)
+          ? sheet.lineItems.slice(0, maxItemsPerSheet).map(compactLineItem)
+          : [],
+        totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0,
+        dataTruncated: sheet.lineItems && sheet.lineItems.length > maxItemsPerSheet
+      }))
+    };
+
+    const serialized = JSON.stringify(payload);
+    if (serialized.length <= maxJsonChars) {
+      return { payload, maxItemsPerSheet, serializedLength: serialized.length };
+    }
+  }
+
+  // Final safety fallback if even the most aggressive step is still too large
+  const fallback = {
+    documentType: structuredData.documentType,
+    sheetCount: structuredData.sheetCount,
+    sheets: (structuredData.sheets || []).slice(0, 3).map((sheet) => ({
+      sheetName: sheet.sheetName,
+      sheetType: sheet.sheetType,
+      summary: sheet.summary,
+      columnGuide: (sheet.structure?.columns || []).slice(0, 20).map((col) => ({
+        name: col.header,
+        position: col.index,
+        type: col.purpose,
+        isNumeric: col.isNumeric
+      })),
+      lineItems: Array.isArray(sheet.lineItems)
+        ? sheet.lineItems.slice(0, 6).map(compactLineItem)
+        : [],
+      totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0,
+      dataTruncated: true
+    }))
   };
+
+  return {
+    payload: fallback,
+    maxItemsPerSheet: 6,
+    serializedLength: JSON.stringify(fallback).length
+  };
+}
+
+/**
+ * 🔥 CALL MODEL WITH STRUCTURED JSON
+ */
+async function callModelWithJSON({ structuredData, question, documentType }) {
+  const systemPrompt = getEnhancedSystemPrompt(documentType);
+  const { payload: dataForAI, maxItemsPerSheet, serializedLength } = buildBoundedStructuredPayload(structuredData);
+  console.log(`📦 Structured payload size: ${serializedLength} chars (max ${maxItemsPerSheet} items/sheet)`);
 
   const messages = [
     { role: "system", content: systemPrompt },
-    { 
-      role: "user", 
+    {
+      role: "user",
       content: `Here is the structured financial data in JSON format. Pay special attention to the column structure and ensure all figures are correctly attributed to their respective columns.
 
+Data may be truncated for large files to stay within model token limits; clearly mention this limitation in your response when relevant.
+
 \`\`\`json
-${JSON.stringify(dataForAI, null, 2)}
+${JSON.stringify(dataForAI)}
 \`\`\`
 
 ${question || "Please provide a comprehensive MIS commentary analyzing this financial data. Ensure all figures are correctly attributed to their respective columns/stores/periods. Use the column names explicitly when stating any figures."}`
