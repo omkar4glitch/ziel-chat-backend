@@ -124,13 +124,17 @@ function detectFileType(fileUrl, contentType, buffer) {
     lowerType.includes("excel")
   ) return "xlsx";
   if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv")) return "csv";
+  if (lowerUrl.endsWith(".txt") || lowerType.includes("text/plain")) return "txt";
+  if (lowerUrl.endsWith(".json") || lowerType.includes("application/json")) return "json";
+  if (lowerUrl.endsWith(".xml") || lowerType.includes("application/xml") || lowerType.includes("text/xml")) return "xml";
+  if (lowerUrl.endsWith(".html") || lowerUrl.endsWith(".htm") || lowerType.includes("text/html")) return "html";
   if (lowerUrl.endsWith(".png") || lowerType.includes("image/png")) return "png";
   if (lowerUrl.endsWith(".jpg") || lowerUrl.endsWith(".jpeg") || lowerType.includes("image/jpeg")) return "jpg";
   if (lowerUrl.endsWith(".gif") || lowerType.includes("image/gif")) return "gif";
   if (lowerUrl.endsWith(".bmp") || lowerType.includes("image/bmp")) return "bmp";
   if (lowerUrl.endsWith(".webp") || lowerType.includes("image/webp")) return "webp";
 
-  return "csv";
+  return "txt";
 }
 
 /**
@@ -149,6 +153,15 @@ function bufferToText(buffer) {
 function extractCsv(buffer) {
   const text = bufferToText(buffer);
   return { type: "csv", textContent: text };
+}
+
+
+/**
+ * Extract plain text-like files (txt/json/xml/html)
+ */
+function extractTextLike(buffer, type = "txt") {
+  const text = bufferToText(buffer).trim();
+  return { type, textContent: text };
 }
 
 /**
@@ -1064,6 +1077,87 @@ Analyze the data thoroughly ensuring:
 Use markdown tables extensively. Always show column names in tables.`;
 }
 
+
+function truncateText(text, maxChars = 60000) {
+  if (!text) return "";
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}
+
+[TRUNCATED ${text.length - maxChars} CHARS]`;
+}
+
+/**
+ * Call model for unstructured text documents (PDF/DOCX/PPTX/TXT/etc)
+ */
+async function callModelWithText({ extracted, question }) {
+  const text = truncateText(extracted.textContent || "");
+
+  const messages = [
+    {
+      role: "system",
+      content:
+`You are a careful accounting copilot.
+Only use facts present in the supplied document text.
+If a requested figure is missing/ambiguous, clearly state that instead of guessing.
+When quoting numbers, include the nearby label/line-item exactly as it appears in the file.
+Do not swap entities/stores/periods.`
+    },
+    {
+      role: "user",
+      content: `User question:
+${question || "Please analyze this document and provide an accurate accounting-focused summary."}
+
+Document type: ${extracted.type}
+
+Extracted file content:
+
+${text}`
+    }
+  ];
+
+  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages,
+      temperature: 0,
+      max_tokens: 2500
+    })
+  });
+
+  let data;
+  try {
+    data = await r.json();
+  } catch (err) {
+    const raw = await r.text().catch(() => "");
+    return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
+  }
+
+  if (data.error) {
+    return { reply: null, raw: data, httpStatus: r.status, error: data.error.message };
+  }
+
+  let reply = data?.choices?.[0]?.message?.content || null;
+  if (reply) {
+    reply = reply
+      .replace(/^```(?:markdown|json)\s*\n/gm, '')
+      .replace(/\n```\s*$/gm, '')
+      .trim();
+  }
+
+  return {
+    reply,
+    raw: data,
+    httpStatus: r.status,
+    finishReason: data?.choices?.[0]?.finish_reason,
+    tokenUsage: data?.usage
+  };
+}
+
 /**
  * 🔥 CALL MODEL WITH STRUCTURED JSON
  */
@@ -1076,7 +1170,7 @@ async function callModelWithJSON({ structuredData, question, documentType }) {
     sheetCount: structuredData.sheetCount,
     sheets: structuredData.sheets.map(sheet => {
       // Limit data to prevent token overflow
-      const maxItems = 200;
+      const maxItems = 600;
       
       return {
         sheetName: sheet.sheetName,
@@ -1121,8 +1215,8 @@ ${question || "Please provide a comprehensive MIS commentary analyzing this fina
     body: JSON.stringify({
       model: "gpt-4o-mini",
       messages,
-      temperature: 0.1,
-      max_tokens: 8000,
+      temperature: 0,
+      max_tokens: 3000,
       top_p: 1.0,
       frequency_penalty: 0.0,
       presence_penalty: 0.0
@@ -1374,12 +1468,14 @@ export default async function handler(req, res) {
       extracted = extractXlsx(buffer);
     } else if (["png", "jpg", "jpeg", "gif", "bmp", "webp"].includes(detectedType)) {
       extracted = await extractImage(buffer, detectedType);
-    } else {
+    } else if (["csv"].includes(detectedType)) {
       extracted = extractCsv(buffer);
       if (extracted.textContent) {
         const rows = parseCSV(extracted.textContent);
         extracted.sheets = [{ name: 'Main Sheet', rows: rows, rowCount: rows.length }];
       }
+    } else {
+      extracted = extractTextLike(buffer, detectedType);
     }
 
     if (extracted.error) {
@@ -1405,28 +1501,38 @@ export default async function handler(req, res) {
       });
     }
 
-    console.log("🔄 Structuring data with column awareness...");
-    const structuredData = structureDataAsJSON(extracted.sheets || []);
-    
-    if (!structuredData.success) {
-      return res.status(200).json({
-        ok: false,
-        type: extracted.type,
-        reply: `Could not structure data: ${structuredData.reason}`,
-        debug: { structureError: structuredData.reason }
+    let structuredData = null;
+    let modelResult;
+
+    if (Array.isArray(extracted.sheets) && extracted.sheets.length > 0) {
+      console.log("🔄 Structuring data with column awareness...");
+      structuredData = structureDataAsJSON(extracted.sheets || []);
+
+      if (!structuredData.success) {
+        return res.status(200).json({
+          ok: false,
+          type: extracted.type,
+          reply: `Could not structure data: ${structuredData.reason}`,
+          debug: { structureError: structuredData.reason }
+        });
+      }
+
+      console.log(`✅ Data structured successfully!`);
+      console.log(`📊 Document Type: ${structuredData.documentType}`);
+      console.log(`📑 Sheets: ${structuredData.sheetCount}`);
+
+      console.log("🤖 Sending column-aware data to OpenAI GPT-4o-mini...");
+      modelResult = await callModelWithJSON({
+        structuredData,
+        question,
+        documentType: structuredData.documentType
       });
+    } else {
+      console.log("📝 Using text-document analysis mode...");
+      modelResult = await callModelWithText({ extracted, question });
     }
 
-    console.log(`✅ Data structured successfully!`);
-    console.log(`📊 Document Type: ${structuredData.documentType}`);
-    console.log(`📑 Sheets: ${structuredData.sheetCount}`);
-
-    console.log("🤖 Sending column-aware data to OpenAI GPT-4o-mini...");
-    const { reply, raw, httpStatus, finishReason, tokenUsage, error } = await callModelWithJSON({
-      structuredData,
-      question,
-      documentType: structuredData.documentType
-    });
+    const { reply, raw, httpStatus, finishReason, tokenUsage, error } = modelResult;
 
     if (!reply) {
       return res.status(200).json({
@@ -1451,19 +1557,19 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       type: extracted.type,
-      documentType: structuredData.documentType,
-      category: structuredData.documentType.toLowerCase(),
+      documentType: structuredData?.documentType || "GENERAL",
+      category: (structuredData?.documentType || "GENERAL").toLowerCase(),
       reply,
       wordDownload: wordBase64,
       downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
-      structuredData: {
+      structuredData: structuredData ? {
         sheetCount: structuredData.sheetCount,
         documentType: structuredData.documentType
-      },
+      } : null,
       debug: {
         status: httpStatus,
-        documentType: structuredData.documentType,
-        sheetCount: structuredData.sheetCount,
+        documentType: structuredData?.documentType || "GENERAL",
+        sheetCount: structuredData?.sheetCount || 0,
         hasWord: !!wordBase64,
         finishReason: finishReason,
         tokenUsage: tokenUsage
