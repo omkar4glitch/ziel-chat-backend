@@ -12,7 +12,7 @@ function cors(res) {
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
-    // 🔥 Analyze table structure first
+
 /**
  * Tolerant body parser
  */
@@ -1210,6 +1210,74 @@ function compactLineItem(lineItem = {}) {
   };
 }
 
+
+function getColumnKey(columnName = "") {
+  return String(columnName).trim().toLowerCase();
+}
+
+function getKpiType(description = "") {
+  const d = String(description).toLowerCase();
+
+  if (/\bebitda\b/.test(d)) return "EBITDA";
+  if (/operating\s+profit|ebit|profit\s+before\s+tax|pbt/.test(d)) return "OPERATING_PROFIT";
+  if (/\btotal\s+revenue\b|\brevenue\b|\bsales\b|\bnet\s+sales\b/.test(d)) return "REVENUE";
+  if (/\bgross\s+profit\b/.test(d)) return "GROSS_PROFIT";
+  if (/\btotal\s+expense\b|\bexpenses\b|\bopex\b/.test(d)) return "TOTAL_EXPENSE";
+  if (/\bnet\s+profit\b|\bpat\b|profit\s+after\s+tax/.test(d)) return "NET_PROFIT";
+
+  return null;
+}
+
+function buildStorePerformanceSnapshot(sheet) {
+  const storeMetrics = {};
+  const kpiRows = [];
+  const lineItems = Array.isArray(sheet?.lineItems) ? sheet.lineItems : [];
+
+  lineItems.forEach((lineItem) => {
+    const kpiType = getKpiType(lineItem?.description);
+    if (!kpiType) return;
+
+    const rowValues = {};
+    (lineItem.values || []).forEach((value) => {
+      const colName = value?.column;
+      const key = getColumnKey(colName);
+      if (!key || key === "total" || key === "grand total") return;
+
+      const numericValue = Number(value?.numericValue || 0);
+      rowValues[colName] = numericValue;
+
+      if (!storeMetrics[colName]) storeMetrics[colName] = {};
+      storeMetrics[colName][kpiType] = numericValue;
+    });
+
+    kpiRows.push({
+      kpi: kpiType,
+      description: lineItem.description,
+      valuesByStore: rowValues
+    });
+  });
+
+  const storeEbitdaRanking = Object.entries(storeMetrics)
+    .filter(([, metrics]) => Number.isFinite(metrics?.EBITDA))
+    .map(([store, metrics]) => ({
+      store,
+      ebitda: metrics.EBITDA
+    }))
+    .sort((a, b) => b.ebitda - a.ebitda);
+
+  return {
+    storeCount: Object.keys(storeMetrics).length,
+    availableKpis: [...new Set(kpiRows.map((row) => row.kpi))],
+    stores: storeMetrics,
+    kpiRows,
+    ebitdaRanking: {
+      top5: storeEbitdaRanking.slice(0, 5),
+      bottom5: storeEbitdaRanking.slice(-5).reverse(),
+      allStoresSorted: storeEbitdaRanking
+    }
+  };
+}
+
 /**
  * Build a bounded JSON payload for model analysis to stay below token/rate limits
  */
@@ -1236,7 +1304,8 @@ function buildBoundedStructuredPayload(structuredData) {
           ? sheet.lineItems.slice(0, maxItemsPerSheet).map(compactLineItem)
           : [],
         totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0,
-        dataTruncated: sheet.lineItems && sheet.lineItems.length > maxItemsPerSheet
+        dataTruncated: sheet.lineItems && sheet.lineItems.length > maxItemsPerSheet,
+        storePerformanceSnapshot: buildStorePerformanceSnapshot(sheet)
       }))
     };
 
@@ -1264,7 +1333,8 @@ function buildBoundedStructuredPayload(structuredData) {
         ? sheet.lineItems.slice(0, 6).map(compactLineItem)
         : [],
       totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0,
-      dataTruncated: true
+      dataTruncated: true,
+      storePerformanceSnapshot: buildStorePerformanceSnapshot(sheet)
     }))
   };
 
@@ -1291,6 +1361,9 @@ async function callModelWithJSON({ structuredData, question, documentType }) {
 
 Data may be truncated for large files to stay within model token limits; clearly mention this limitation in your response when relevant.
 
+When answering store-level performance questions, ALWAYS use "storePerformanceSnapshot" and include all stores present in that snapshot (not just sample rows).
+If "ebitdaRanking.allStoresSorted" exists, use it as the source of truth for top/bottom performer ranking.
+
 \`\`\`json
 ${JSON.stringify(dataForAI)}
 \`\`\`
@@ -1309,7 +1382,7 @@ ${question || "Please provide a comprehensive MIS commentary analyzing this fina
       model: "gpt-4o-mini",
       messages,
       temperature: 0,
-      max_tokens: 15000,
+      max_tokens: 3000,
       top_p: 1.0,
       frequency_penalty: 0.0,
       presence_penalty: 0.0
