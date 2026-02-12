@@ -89,7 +89,16 @@ async function downloadFileToBuffer(
 }
 
 /**
- * Detect file type
+ * Determine the most likely file type for a downloaded file.
+ *
+ * Uses magic-number inspection of the provided buffer when available, then falls back
+ * to URL suffixes and Content-Type hints to classify common document, spreadsheet,
+ * presentation, image, and text formats.
+ *
+ * @param {string} fileUrl - The original file URL (used for suffix hints).
+ * @param {string} contentType - The HTTP Content-Type header value (used for MIME hints).
+ * @param {Buffer} buffer - A portion or the entirety of the file bytes (used for magic-number detection).
+ * @returns {string} The detected file type (one of: "pdf", "docx", "doc", "pptx", "ppt", "xlsx", "csv", "txt", "json", "xml", "html", "png", "jpg", "gif", "bmp", "webp"); defaults to `"txt"` if undetermined.
  */
 function detectFileType(fileUrl, contentType, buffer) {
   const lowerUrl = (fileUrl || "").toLowerCase();
@@ -139,7 +148,14 @@ function detectFileType(fileUrl, contentType, buffer) {
 }
 
 /**
- * Heuristic CSV detector for text/plain uploads without a .csv suffix
+ * Determine whether a binary buffer most likely contains CSV-formatted text.
+ *
+ * Samples the buffer as UTF-8 text and checks for consistent use of common delimiters
+ * (comma, tab, semicolon, pipe) across multiple non-empty lines to decide if the
+ * content resembles a CSV.
+ *
+ * @param {Buffer|Uint8Array} buffer - Binary content to inspect.
+ * @returns {boolean} `true` if the buffer likely represents CSV text, `false` otherwise.
  */
 function isLikelyCsvBuffer(buffer) {
   if (!buffer || buffer.length === 0) return false;
@@ -181,7 +197,9 @@ function bufferToText(buffer) {
 }
 
 /**
- * Extract CSV
+ * Convert a buffer containing CSV data into UTF-8 text and return it as CSV content.
+ * @param {Buffer} buffer - Raw file bytes of the CSV.
+ * @returns {{type: string, textContent: string}} Object with `type` equal to `"csv"` and `textContent` containing the CSV decoded as UTF-8 text.
  */
 function extractCsv(buffer) {
   const text = bufferToText(buffer);
@@ -190,7 +208,11 @@ function extractCsv(buffer) {
 
 
 /**
- * Extract plain text-like files (txt/json/xml/html)
+ * Convert a binary buffer containing plain text or text-like formats into trimmed UTF-8 text.
+ *
+ * @param {Buffer} buffer - Binary file contents to decode as UTF-8 text; BOM will be handled.
+ * @param {string} [type="txt"] - Detected file type label (e.g., "txt", "json", "xml", "html"); used to tag the result.
+ * @returns {{type: string, textContent: string}} An object with the provided `type` and the decoded, trimmed text content.
  */
 function extractTextLike(buffer, type = "txt") {
   const text = bufferToText(buffer).trim();
@@ -981,7 +1003,12 @@ function processSheetOldWay(sheet, allStructuredSheets) {
 }
 
 /**
- * 🔥 ENHANCED SYSTEM PROMPT for P&L analysis
+ * Build an enhanced system prompt guiding an AI to analyze financial data with strict column-aware rules.
+ *
+ * Returns a tailored instruction set optimized for the given document type (e.g., detailed Profit & Loss or General Ledger guidance), emphasizing column verification, column-specific validation, and output formatting expectations.
+ *
+ * @param {string} documentType - The type of financial document to target; recognized values include "PROFIT_LOSS", "GENERAL_LEDGER", or any other value for a general analysis prompt.
+ * @returns {string} A complete system prompt string configured with rules and formatting requirements appropriate for the specified document type.
  */
 function getEnhancedSystemPrompt(documentType) {
   const basePrompt = `You are an expert financial analyst and MIS report writer. You will receive financial data in structured JSON format.
@@ -1111,6 +1138,12 @@ Use markdown tables extensively. Always show column names in tables.`;
 }
 
 
+/**
+ * Truncates a string to a maximum length and appends a concise truncation notice when trimmed.
+ * @param {string} text - The input string to truncate.
+ * @param {number} [maxChars=60000] - Maximum number of characters to retain from the start of `text`.
+ * @returns {string} The original `text` if its length is less than or equal to `maxChars`, otherwise the truncated prefix followed by `\n\n[TRUNCATED N CHARS]` where `N` is the number of removed characters.
+ */
 function truncateText(text, maxChars = 60000) {
   if (!text) return "";
   if (text.length <= maxChars) return text;
@@ -1120,7 +1153,23 @@ function truncateText(text, maxChars = 60000) {
 }
 
 /**
- * Call model for unstructured text documents (PDF/DOCX/PPTX/TXT/etc)
+ * Analyze unstructured document text with an accounting-focused AI prompt and return the model's response.
+ *
+ * Sends the truncated extracted text and an optional user question to the OpenAI chat completion endpoint
+ * using a strict, accounting-oriented system prompt that requires answers be grounded in the supplied text.
+ *
+ * @param {Object} params - Function parameters.
+ * @param {Object} params.extracted - Extraction result for the uploaded file.
+ * @param {string} params.extracted.type - Detected file type (e.g., "pdf", "docx", "txt").
+ * @param {string} params.extracted.textContent - Extracted plain text from the document.
+ * @param {string} [params.question] - Optional user question or instruction to guide the analysis.
+ * @returns {Object} Result object containing the model reply and debugging details.
+ * @returns {string|null} returns.reply - The cleaned model reply text, or `null` when unavailable.
+ * @returns {Object} returns.raw - Raw response JSON returned by the OpenAI API (or parse fallback info).
+ * @returns {number} returns.httpStatus - HTTP status code from the OpenAI API response.
+ * @returns {string|undefined} returns.finishReason - Model finish reason (e.g., "stop"), if provided.
+ * @returns {Object|undefined} returns.tokenUsage - Token usage information from the API response, if provided.
+ * @returns {string|undefined} returns.error - Error message when the API returned an error.
  */
 async function callModelWithText({ extracted, question }) {
   const text = truncateText(extracted.textContent || "");
@@ -1192,107 +1241,61 @@ ${text}`
 }
 
 /**
- * Compact line item payload to avoid oversized model requests
+ * Send column-aware structured financial data and an optional question to an OpenAI chat model to obtain an analytical commentary.
+ *
+ * The function prepares a trimmed JSON representation of the provided structured sheets (capping line items per sheet), injects a tailored system prompt based on the document type, and requests a focused MIS/financial analysis that explicitly references column names when stating figures.
+ *
+ * @param {Object} params
+ * @param {Object} params.structuredData - Structured document object containing at least `documentType`, `sheetCount`, and `sheets` (an array of sheet objects with fields like `sheetName`, `sheetType`, `structure`, `summary`, and `lineItems`). Line items per sheet are truncated to a maximum of 600 before sending.
+ * @param {string} [params.question] - Optional user question or instructions to append to the AI prompt; when omitted a default MIS commentary request is used.
+ * @param {string} [params.documentType] - Optional explicit document type hint (e.g., "PROFIT_LOSS", "GENERAL_LEDGER"); also derived from `structuredData.documentType` when present.
+ * @returns {Object} Result object containing:
+ *   - `reply` {string|null} — The AI-generated text analysis, or `null` if no usable reply was produced.
+ *   - `raw` {Object|string} — Raw API response parsed as JSON, or raw text when parsing failed.
+ *   - `httpStatus` {number} — HTTP status code returned by the OpenAI API.
+ *   - `finishReason` {string|undefined} — Model finish reason (e.g., "stop", "length") when available.
+ *   - `tokenUsage` {Object|undefined} — Token usage information from the API response when available.
+ *   - `error` {string|undefined} — Error message when the API returned an error.
  */
-function compactLineItem(lineItem = {}) {
-  const compactValues = Array.isArray(lineItem.values)
-    ? lineItem.values.slice(0, 12).map((value) => ({
-        column: value?.column,
-        columnIndex: value?.columnIndex,
-        numericValue: value?.numericValue
-      }))
-    : [];
+async function callModelWithJSON({ structuredData, question, documentType }) {
+  const systemPrompt = getEnhancedSystemPrompt(documentType);
 
-  return {
-    rowNumber: lineItem.rowNumber,
-    description: String(lineItem.description || "").slice(0, 180),
-    values: compactValues
-  };
-}
-
-/**
- * Build a bounded JSON payload for model analysis to stay below token/rate limits
- */
-function buildBoundedStructuredPayload(structuredData) {
-  const maxJsonChars = 90000;
-  const maxSheets = 6;
-  const itemSteps = [180, 120, 80, 50, 30, 20, 12, 8];
-
-  for (const maxItemsPerSheet of itemSteps) {
-    const payload = {
-      documentType: structuredData.documentType,
-      sheetCount: structuredData.sheetCount,
-      sheets: (structuredData.sheets || []).slice(0, maxSheets).map((sheet) => ({
+  // Prepare data for AI with emphasis on column structure
+  const dataForAI = {
+    documentType: structuredData.documentType,
+    sheetCount: structuredData.sheetCount,
+    sheets: structuredData.sheets.map(sheet => {
+      // Limit data to prevent token overflow
+      const maxItems = 600;
+      
+      return {
         sheetName: sheet.sheetName,
         sheetType: sheet.sheetType,
+        structure: sheet.structure,
         summary: sheet.summary,
-        columnGuide: (sheet.structure?.columns || []).map((col) => ({
+        lineItems: sheet.lineItems ? sheet.lineItems.slice(0, maxItems) : [],
+        totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0,
+        dataTruncated: sheet.lineItems && sheet.lineItems.length > maxItems,
+        
+        // Add explicit column mapping for clarity
+        columnGuide: sheet.structure?.columns?.map(col => ({
           name: col.header,
           position: col.index,
           type: col.purpose,
           isNumeric: col.isNumeric
-        })),
-        lineItems: Array.isArray(sheet.lineItems)
-          ? sheet.lineItems.slice(0, maxItemsPerSheet).map(compactLineItem)
-          : [],
-        totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0,
-        dataTruncated: sheet.lineItems && sheet.lineItems.length > maxItemsPerSheet
-      }))
-    };
-
-    const serialized = JSON.stringify(payload);
-    if (serialized.length <= maxJsonChars) {
-      return { payload, maxItemsPerSheet, serializedLength: serialized.length };
-    }
-  }
-
-  // Final safety fallback if even the most aggressive step is still too large
-  const fallback = {
-    documentType: structuredData.documentType,
-    sheetCount: structuredData.sheetCount,
-    sheets: (structuredData.sheets || []).slice(0, 3).map((sheet) => ({
-      sheetName: sheet.sheetName,
-      sheetType: sheet.sheetType,
-      summary: sheet.summary,
-      columnGuide: (sheet.structure?.columns || []).slice(0, 20).map((col) => ({
-        name: col.header,
-        position: col.index,
-        type: col.purpose,
-        isNumeric: col.isNumeric
-      })),
-      lineItems: Array.isArray(sheet.lineItems)
-        ? sheet.lineItems.slice(0, 6).map(compactLineItem)
-        : [],
-      totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0,
-      dataTruncated: true
-    }))
+        }))
+      };
+    })
   };
-
-  return {
-    payload: fallback,
-    maxItemsPerSheet: 6,
-    serializedLength: JSON.stringify(fallback).length
-  };
-}
-
-/**
- * 🔥 CALL MODEL WITH STRUCTURED JSON
- */
-async function callModelWithJSON({ structuredData, question, documentType }) {
-  const systemPrompt = getEnhancedSystemPrompt(documentType);
-  const { payload: dataForAI, maxItemsPerSheet, serializedLength } = buildBoundedStructuredPayload(structuredData);
-  console.log(`📦 Structured payload size: ${serializedLength} chars (max ${maxItemsPerSheet} items/sheet)`);
 
   const messages = [
     { role: "system", content: systemPrompt },
-    {
-      role: "user",
+    { 
+      role: "user", 
       content: `Here is the structured financial data in JSON format. Pay special attention to the column structure and ensure all figures are correctly attributed to their respective columns.
 
-Data may be truncated for large files to stay within model token limits; clearly mention this limitation in your response when relevant.
-
 \`\`\`json
-${JSON.stringify(dataForAI)}
+${JSON.stringify(dataForAI, null, 2)}
 \`\`\`
 
 ${question || "Please provide a comprehensive MIS commentary analyzing this financial data. Ensure all figures are correctly attributed to their respective columns/stores/periods. Use the column names explicitly when stating any figures."}`
@@ -1527,7 +1530,24 @@ async function markdownToWord(markdownText) {
 }
 
 /**
- * MAIN handler
+ * HTTP POST handler that accepts a file URL, extracts and (if possible) structures its content, runs an accounting-focused AI analysis, and returns a JSON result (optionally with a generated Word document).
+ *
+ * Expects a POST body containing `fileUrl` (string) and an optional `question` (string). The handler downloads the file, detects its type, extracts text or structured sheets, performs column-aware structuring when appropriate, invokes an OpenAI model for analysis, attempts to convert the AI reply to a Word (.docx) file, and sends a JSON response summarizing the outcome.
+ *
+ * The response JSON includes keys such as:
+ * - `ok`: whether processing completed successfully,
+ * - `type`: detected file type (e.g., "pdf", "xlsx", "docx", "txt", "csv", image types),
+ * - `documentType`: inferred document category (e.g., "PROFIT_LOSS", "GENERAL"),
+ * - `reply`: the AI-generated analysis (markdown/plain),
+ * - `wordDownload`: base64-encoded .docx content when generation succeeds,
+ * - `downloadUrl`: data URL for the generated Word document,
+ * - `structuredData`: summary info when structured sheets were produced,
+ * - `debug`: diagnostic fields (status, token usage, etc.).
+ *
+ * Requires the `OPENAI_API_KEY` environment variable to be set. Responds with appropriate HTTP status codes for method and input validation, and with error details on failures.
+ *
+ * @param {import('http').IncomingMessage & { body?: any }} req - Incoming HTTP request; POST body should include `fileUrl`.
+ * @param {import('http').ServerResponse & { json(obj: any): void, status(code: number): any }} res - HTTP response object used to send JSON responses and status codes.
  */
 export default async function handler(req, res) {
   cors(res);
