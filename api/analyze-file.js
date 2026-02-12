@@ -124,6 +124,7 @@ function detectFileType(fileUrl, contentType, buffer) {
     lowerType.includes("excel")
   ) return "xlsx";
   if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv")) return "csv";
+  if (lowerType.includes("text/plain") && isLikelyCsvBuffer(buffer)) return "csv";
   if (lowerUrl.endsWith(".txt") || lowerType.includes("text/plain")) return "txt";
   if (lowerUrl.endsWith(".json") || lowerType.includes("application/json")) return "json";
   if (lowerUrl.endsWith(".xml") || lowerType.includes("application/xml") || lowerType.includes("text/xml")) return "xml";
@@ -135,6 +136,38 @@ function detectFileType(fileUrl, contentType, buffer) {
   if (lowerUrl.endsWith(".webp") || lowerType.includes("image/webp")) return "webp";
 
   return "txt";
+}
+
+/**
+ * Heuristic CSV detector for text/plain uploads without a .csv suffix
+ */
+function isLikelyCsvBuffer(buffer) {
+  if (!buffer || buffer.length === 0) return false;
+
+  const sample = bufferToText(buffer).slice(0, 24 * 1024).trim();
+  if (!sample) return false;
+
+  const lines = sample
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 10);
+
+  if (lines.length < 2) return false;
+
+  const delimiters = [",", "\t", ";", "|"];
+
+  const likelyDelimiter = delimiters.find((delimiter) => {
+    const counts = lines.map((line) => line.split(delimiter).length - 1);
+    const rowsWithDelimiter = counts.filter((count) => count > 0).length;
+    if (rowsWithDelimiter < 2) return false;
+
+    const nonZeroCounts = counts.filter((count) => count > 0);
+    const uniqueCounts = new Set(nonZeroCounts);
+    return uniqueCounts.size <= 2;
+  });
+
+  return Boolean(likelyDelimiter);
 }
 
 /**
@@ -1159,47 +1192,180 @@ ${text}`
 }
 
 /**
- * 🔥 CALL MODEL WITH STRUCTURED JSON
+ * Compact line item payload to avoid oversized model requests
  */
-async function callModelWithJSON({ structuredData, question, documentType }) {
-  const systemPrompt = getEnhancedSystemPrompt(documentType);
+function compactLineItem(lineItem = {}) {
+  const compactValues = Array.isArray(lineItem.values)
+    ? lineItem.values.slice(0, 12).map((value) => ({
+        column: value?.column,
+        columnIndex: value?.columnIndex,
+        numericValue: value?.numericValue
+      }))
+    : [];
 
-  // Prepare data for AI with emphasis on column structure
-  const dataForAI = {
-    documentType: structuredData.documentType,
-    sheetCount: structuredData.sheetCount,
-    sheets: structuredData.sheets.map(sheet => {
-      // Limit data to prevent token overflow
-      const maxItems = 600;
-      
-      return {
+  return {
+    rowNumber: lineItem.rowNumber,
+    description: String(lineItem.description || "").slice(0, 180),
+    values: compactValues
+  };
+}
+
+
+function getColumnKey(columnName = "") {
+  return String(columnName).trim().toLowerCase();
+}
+
+function getKpiType(description = "") {
+  const d = String(description).toLowerCase();
+
+  if (/\bebitda\b/.test(d)) return "EBITDA";
+  if (/operating\s+profit|ebit|profit\s+before\s+tax|pbt/.test(d)) return "OPERATING_PROFIT";
+  if (/\btotal\s+revenue\b|\brevenue\b|\bsales\b|\bnet\s+sales\b/.test(d)) return "REVENUE";
+  if (/\bgross\s+profit\b/.test(d)) return "GROSS_PROFIT";
+  if (/\btotal\s+expense\b|\bexpenses\b|\bopex\b/.test(d)) return "TOTAL_EXPENSE";
+  if (/\bnet\s+profit\b|\bpat\b|profit\s+after\s+tax/.test(d)) return "NET_PROFIT";
+
+  return null;
+}
+
+function buildStorePerformanceSnapshot(sheet) {
+  const storeMetrics = {};
+  const kpiRows = [];
+  const lineItems = Array.isArray(sheet?.lineItems) ? sheet.lineItems : [];
+
+  lineItems.forEach((lineItem) => {
+    const kpiType = getKpiType(lineItem?.description);
+    if (!kpiType) return;
+
+    const rowValues = {};
+    (lineItem.values || []).forEach((value) => {
+      const colName = value?.column;
+      const key = getColumnKey(colName);
+      if (!key || key === "total" || key === "grand total") return;
+
+      const numericValue = Number(value?.numericValue || 0);
+      rowValues[colName] = numericValue;
+
+      if (!storeMetrics[colName]) storeMetrics[colName] = {};
+      storeMetrics[colName][kpiType] = numericValue;
+    });
+
+    kpiRows.push({
+      kpi: kpiType,
+      description: lineItem.description,
+      valuesByStore: rowValues
+    });
+  });
+
+  const storeEbitdaRanking = Object.entries(storeMetrics)
+    .filter(([, metrics]) => Number.isFinite(metrics?.EBITDA))
+    .map(([store, metrics]) => ({
+      store,
+      ebitda: metrics.EBITDA
+    }))
+    .sort((a, b) => b.ebitda - a.ebitda);
+
+  return {
+    storeCount: Object.keys(storeMetrics).length,
+    availableKpis: [...new Set(kpiRows.map((row) => row.kpi))],
+    stores: storeMetrics,
+    kpiRows,
+    ebitdaRanking: {
+      top5: storeEbitdaRanking.slice(0, 5),
+      bottom5: storeEbitdaRanking.slice(-5).reverse(),
+      allStoresSorted: storeEbitdaRanking
+    }
+  };
+}
+
+/**
+ * Build a bounded JSON payload for model analysis to stay below token/rate limits
+ */
+function buildBoundedStructuredPayload(structuredData) {
+  const maxJsonChars = 90000;
+  const maxSheets = 6;
+  const itemSteps = [180, 120, 80, 50, 30, 20, 12, 8];
+
+  for (const maxItemsPerSheet of itemSteps) {
+    const payload = {
+      documentType: structuredData.documentType,
+      sheetCount: structuredData.sheetCount,
+      sheets: (structuredData.sheets || []).slice(0, maxSheets).map((sheet) => ({
         sheetName: sheet.sheetName,
         sheetType: sheet.sheetType,
-        structure: sheet.structure,
         summary: sheet.summary,
-        lineItems: sheet.lineItems ? sheet.lineItems.slice(0, maxItems) : [],
-        totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0,
-        dataTruncated: sheet.lineItems && sheet.lineItems.length > maxItems,
-        
-        // Add explicit column mapping for clarity
-        columnGuide: sheet.structure?.columns?.map(col => ({
+        columnGuide: (sheet.structure?.columns || []).map((col) => ({
           name: col.header,
           position: col.index,
           type: col.purpose,
           isNumeric: col.isNumeric
-        }))
-      };
-    })
+        })),
+        lineItems: Array.isArray(sheet.lineItems)
+          ? sheet.lineItems.slice(0, maxItemsPerSheet).map(compactLineItem)
+          : [],
+        totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0,
+        dataTruncated: sheet.lineItems && sheet.lineItems.length > maxItemsPerSheet,
+        storePerformanceSnapshot: buildStorePerformanceSnapshot(sheet)
+      }))
+    };
+
+    const serialized = JSON.stringify(payload);
+    if (serialized.length <= maxJsonChars) {
+      return { payload, maxItemsPerSheet, serializedLength: serialized.length };
+    }
+  }
+
+  // Final safety fallback if even the most aggressive step is still too large
+  const fallback = {
+    documentType: structuredData.documentType,
+    sheetCount: structuredData.sheetCount,
+    sheets: (structuredData.sheets || []).slice(0, 3).map((sheet) => ({
+      sheetName: sheet.sheetName,
+      sheetType: sheet.sheetType,
+      summary: sheet.summary,
+      columnGuide: (sheet.structure?.columns || []).slice(0, 20).map((col) => ({
+        name: col.header,
+        position: col.index,
+        type: col.purpose,
+        isNumeric: col.isNumeric
+      })),
+      lineItems: Array.isArray(sheet.lineItems)
+        ? sheet.lineItems.slice(0, 6).map(compactLineItem)
+        : [],
+      totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0,
+      dataTruncated: true,
+      storePerformanceSnapshot: buildStorePerformanceSnapshot(sheet)
+    }))
   };
+
+  return {
+    payload: fallback,
+    maxItemsPerSheet: 6,
+    serializedLength: JSON.stringify(fallback).length
+  };
+}
+
+/**
+ * 🔥 CALL MODEL WITH STRUCTURED JSON
+ */
+async function callModelWithJSON({ structuredData, question, documentType }) {
+  const systemPrompt = getEnhancedSystemPrompt(documentType);
+  const { payload: dataForAI, maxItemsPerSheet, serializedLength } = buildBoundedStructuredPayload(structuredData);
+  console.log(`📦 Structured payload size: ${serializedLength} chars (max ${maxItemsPerSheet} items/sheet)`);
 
   const messages = [
     { role: "system", content: systemPrompt },
-    { 
-      role: "user", 
+    {
+      role: "user",
       content: `Here is the structured financial data in JSON format. Pay special attention to the column structure and ensure all figures are correctly attributed to their respective columns.
 
+Data may be truncated for large files to stay within model token limits; clearly mention this limitation in your response when relevant.
+
+When answering store-level performance questions, ALWAYS use "storePerformanceSnapshot" and include all stores present in that snapshot (not just sample rows).
+If "ebitdaRanking.allStoresSorted" exists, use it as the source of truth for top/bottom performer ranking.
+
 \`\`\`json
-${JSON.stringify(dataForAI, null, 2)}
+${JSON.stringify(dataForAI)}
 \`\`\`
 
 ${question || "Please provide a comprehensive MIS commentary analyzing this financial data. Ensure all figures are correctly attributed to their respective columns/stores/periods. Use the column names explicitly when stating any figures."}`
