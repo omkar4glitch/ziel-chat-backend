@@ -124,6 +124,7 @@ function detectFileType(fileUrl, contentType, buffer) {
     lowerType.includes("excel")
   ) return "xlsx";
   if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv")) return "csv";
+  if (lowerType.includes("text/plain") && isLikelyCsvBuffer(buffer)) return "csv";
   if (lowerUrl.endsWith(".txt") || lowerType.includes("text/plain")) return "txt";
   if (lowerUrl.endsWith(".json") || lowerType.includes("application/json")) return "json";
   if (lowerUrl.endsWith(".xml") || lowerType.includes("application/xml") || lowerType.includes("text/xml")) return "xml";
@@ -135,6 +136,38 @@ function detectFileType(fileUrl, contentType, buffer) {
   if (lowerUrl.endsWith(".webp") || lowerType.includes("image/webp")) return "webp";
 
   return "txt";
+}
+
+/**
+ * Heuristic CSV detector for text/plain uploads without a .csv suffix
+ */
+function isLikelyCsvBuffer(buffer) {
+  if (!buffer || buffer.length === 0) return false;
+
+  const sample = bufferToText(buffer).slice(0, 24 * 1024).trim();
+  if (!sample) return false;
+
+  const lines = sample
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 10);
+
+  if (lines.length < 2) return false;
+
+  const delimiters = [",", "\t", ";", "|"];
+
+  const likelyDelimiter = delimiters.find((delimiter) => {
+    const counts = lines.map((line) => line.split(delimiter).length - 1);
+    const rowsWithDelimiter = counts.filter((count) => count > 0).length;
+    if (rowsWithDelimiter < 2) return false;
+
+    const nonZeroCounts = counts.filter((count) => count > 0);
+    const uniqueCounts = new Set(nonZeroCounts);
+    return uniqueCounts.size <= 2;
+  });
+
+  return Boolean(likelyDelimiter);
 }
 
 /**
