@@ -350,6 +350,32 @@ function extractXlsx(buffer) {
   }
 }
 
+// After: const extracted = extractXlsx(buffer);
+console.log("\n🔍 EBITDA DIAGNOSTIC:");
+if (extracted.sheets && extracted.sheets[0]) {
+  const sheet = extracted.sheets[0];
+  
+  // Find EBITDA row
+  const ebitdaRow = sheet.rawArray?.find(row => 
+    String(row[0]).toLowerCase().includes('ebitda')
+  );
+  
+  if (ebitdaRow) {
+    console.log("✅ EBITDA FOUND:", ebitdaRow);
+  } else {
+    console.log("❌ EBITDA NOT FOUND");
+    console.log("First 20 rows, first column:");
+    sheet.rawArray?.slice(0, 20).forEach((row, i) => {
+      console.log(`  ${i}: "${row[0]}"`);
+    });
+  }
+}
+
+
+
+
+
+
 /**
  * Extract Word Document (.docx)
  */
