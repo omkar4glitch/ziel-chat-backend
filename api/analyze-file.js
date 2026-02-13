@@ -5,6 +5,12 @@ import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, Bo
 import JSZip from "jszip";
 
 /**
+ * PRODUCTION-READY ACCOUNTING AI
+ * Works with ANY accounting file structure
+ * No hardcoding - automatically detects P&L, Balance Sheet, General Ledger, etc.
+ */
+
+/**
  * CORS helper
  */
 function cors(res) {
@@ -139,7 +145,7 @@ function detectFileType(fileUrl, contentType, buffer) {
 }
 
 /**
- * Heuristic CSV detector for text/plain uploads without a .csv suffix
+ * Heuristic CSV detector
  */
 function isLikelyCsvBuffer(buffer) {
   if (!buffer || buffer.length === 0) return false;
@@ -188,9 +194,8 @@ function extractCsv(buffer) {
   return { type: "csv", textContent: text };
 }
 
-
 /**
- * Extract plain text-like files (txt/json/xml/html)
+ * Extract plain text-like files
  */
 function extractTextLike(buffer, type = "txt") {
   const text = bufferToText(buffer).trim();
@@ -206,7 +211,7 @@ async function extractPdf(buffer) {
     const text = (data && data.text) ? data.text.trim() : "";
 
     if (!text || text.length < 50) {
-      console.log("PDF appears to be scanned or image-based, attempting OCR...");
+      console.log("PDF appears to be scanned or image-based");
       return { 
         type: "pdf", 
         textContent: "", 
@@ -223,7 +228,7 @@ async function extractPdf(buffer) {
 }
 
 /**
- * Robust numeric parser for accounting amounts
+ * ROBUST NUMERIC PARSER - Handles all accounting formats
  */
 function parseAmount(s) {
   if (s === null || s === undefined) return 0;
@@ -231,14 +236,19 @@ function parseAmount(s) {
 
   if (!str) return 0;
 
+  // Handle parentheses (accounting negative): (1000) = -1000
   const parenMatch = str.match(/^\s*\((.*)\)\s*$/);
-  if (parenMatch) str = '-' + parenMatch[1];
+  if (parenMatch) {
+    str = '-' + parenMatch[1];
+  }
 
+  // Handle trailing minus: 1000- = -1000
   const trailingMinus = str.match(/^(.*?)[\s-]+$/);
   if (trailingMinus && !/^-/.test(str)) {
     str = '-' + trailingMinus[1];
   }
 
+  // Handle CR/DR notation
   const crMatch = str.match(/\bCR\b/i);
   const drMatch = str.match(/\bDR\b/i);
   if (crMatch && !drMatch) {
@@ -247,7 +257,10 @@ function parseAmount(s) {
     str = str.replace('-', '');
   }
 
+  // Remove everything except numbers, decimal point, and minus sign
   str = str.replace(/[^0-9.\-]/g, '');
+  
+  // Handle multiple decimal points (keep only first)
   const parts = str.split('.');
   if (parts.length > 2) {
     str = parts.shift() + '.' + parts.join('');
@@ -259,7 +272,7 @@ function parseAmount(s) {
 }
 
 /**
- * Format date to US format (MM/DD/YYYY)
+ * Format date to US format
  */
 function formatDateUS(dateStr) {
   if (!dateStr) return dateStr;
@@ -285,11 +298,11 @@ function formatDateUS(dateStr) {
 }
 
 /**
- * 🆕 IMPROVED: Extract XLSX with RAW ARRAY STRUCTURE (maintains column positions)
+ * Extract XLSX with RAW ARRAY STRUCTURE
  */
 function extractXlsx(buffer) {
   try {
-    console.log("Starting XLSX extraction with RAW structure...");
+    console.log("📊 Starting XLSX extraction...");
     const workbook = XLSX.read(buffer, {
       type: "buffer",
       cellDates: false,
@@ -299,7 +312,7 @@ function extractXlsx(buffer) {
       defval: ''
     });
 
-    console.log(`XLSX has ${workbook.SheetNames.length} sheets:`, workbook.SheetNames);
+    console.log(`   Sheets found: ${workbook.SheetNames.length}`);
 
     if (workbook.SheetNames.length === 0) {
       return { type: "xlsx", textContent: "", sheets: [] };
@@ -308,13 +321,11 @@ function extractXlsx(buffer) {
     const sheets = [];
 
     workbook.SheetNames.forEach((sheetName, index) => {
-      console.log(`Processing sheet ${index + 1}: "${sheetName}"`);
-      
       const sheet = workbook.Sheets[sheetName];
       
-      // 🔥 KEY CHANGE: Get data as 2D array to preserve column positions
+      // Get data as 2D array to preserve exact structure
       const rawArray = XLSX.utils.sheet_to_json(sheet, { 
-        header: 1, // Return array of arrays instead of objects
+        header: 1,
         defval: '', 
         blankrows: false,
         raw: false 
@@ -329,15 +340,13 @@ function extractXlsx(buffer) {
 
       sheets.push({
         name: sheetName,
-        rows: jsonRows, // Keep for backward compatibility
-        rawArray: rawArray, // 🆕 NEW: Preserve exact column structure
+        rows: jsonRows,
+        rawArray: rawArray,
         rowCount: jsonRows.length
       });
 
-      console.log(`Sheet "${sheetName}": ${rawArray.length} rows, ${rawArray[0]?.length || 0} columns`);
+      console.log(`   ✓ Sheet "${sheetName}": ${rawArray.length} rows × ${rawArray[0]?.length || 0} cols`);
     });
-
-    console.log(`Total sheets: ${sheets.length}`);
 
     return { 
       type: "xlsx", 
@@ -350,46 +359,15 @@ function extractXlsx(buffer) {
   }
 }
 
-// After: const extracted = extractXlsx(buffer);
-console.log("\n🔍 EBITDA DIAGNOSTIC:");
-if (extracted.sheets && extracted.sheets[0]) {
-  const sheet = extracted.sheets[0];
-  
-  // Find EBITDA row
-  const ebitdaRow = sheet.rawArray?.find(row => 
-    String(row[0]).toLowerCase().includes('ebitda')
-  );
-  
-  if (ebitdaRow) {
-    console.log("✅ EBITDA FOUND:", ebitdaRow);
-  } else {
-    console.log("❌ EBITDA NOT FOUND");
-    console.log("First 20 rows, first column:");
-    sheet.rawArray?.slice(0, 20).forEach((row, i) => {
-      console.log(`  ${i}: "${row[0]}"`);
-    });
-  }
-}
-
-
-
-
-
-
 /**
- * Extract Word Document (.docx)
+ * Extract Word Document
  */
 async function extractDocx(buffer) {
-  console.log("=== DOCX EXTRACTION with JSZip ===");
-  
   try {
     const zip = await JSZip.loadAsync(buffer);
-    console.log("ZIP loaded, files:", Object.keys(zip.files).join(', '));
-    
     const documentXml = zip.files['word/document.xml'];
     
     if (!documentXml) {
-      console.log("document.xml not found");
       return { 
         type: "docx", 
         textContent: "", 
@@ -398,8 +376,6 @@ async function extractDocx(buffer) {
     }
     
     const xmlContent = await documentXml.async('text');
-    console.log("XML content length:", xmlContent.length);
-    
     const textRegex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
     const textParts = [];
     let match;
@@ -420,22 +396,17 @@ async function extractDocx(buffer) {
       }
     }
     
-    console.log("Extracted text elements:", textParts.length);
-    
     if (textParts.length === 0) {
       return { 
         type: "docx", 
         textContent: "", 
-        error: "No text found in Word document. Document may be empty or contain only images." 
+        error: "No text found in Word document" 
       };
     }
     
-    const fullText = textParts.join(' ');
-    console.log("Final text length:", fullText.length);
-    
     return { 
       type: "docx", 
-      textContent: fullText 
+      textContent: textParts.join(' ')
     };
     
   } catch (error) {
@@ -449,12 +420,11 @@ async function extractDocx(buffer) {
 }
 
 /**
- * Extract PowerPoint (.pptx)
+ * Extract PowerPoint
  */
 async function extractPptx(buffer) {
   try {
     const bufferStr = buffer.toString('latin1');
-    
     const textPattern = /<a:t[^>]*>([^<]+)<\/a:t>/g;
     let match;
     let allText = [];
@@ -474,39 +444,15 @@ async function extractPptx(buffer) {
       }
     }
     
-    if (allText.length < 5) {
-      const paraPattern = /<a:p[^>]*>(.*?)<\/a:p>/gs;
-      const paraMatches = bufferStr.matchAll(paraPattern);
-      
-      for (const match of paraMatches) {
-        const innerText = match[1].replace(/<[^>]+>/g, ' ').trim();
-        if (innerText.length > 2) {
-          allText.push(innerText);
-        }
-      }
-    }
-    
     if (allText.length === 0) {
       return { 
         type: "pptx", 
         textContent: "", 
-        error: "No text found in PowerPoint. Please try exporting as PDF." 
+        error: "No text found in PowerPoint" 
       };
     }
     
-    const text = allText.join('\n').trim();
-    
-    console.log(`Extracted ${text.length} characters from PPTX`);
-    
-    if (text.length < 20) {
-      return { 
-        type: "pptx", 
-        textContent: "", 
-        error: "Presentation appears to be empty or contains mostly images" 
-      };
-    }
-    
-    return { type: "pptx", textContent: text };
+    return { type: "pptx", textContent: allText.join('\n').trim() };
   } catch (err) {
     console.error("extractPptx failed:", err?.message || err);
     return { 
@@ -521,59 +467,32 @@ async function extractPptx(buffer) {
  * Extract Image
  */
 async function extractImage(buffer, fileType) {
-  try {
-    console.log(`Image upload detected: ${fileType}, size: ${(buffer.length / 1024).toFixed(2)} KB`);
-    
-    const helpMessage = `📸 **Image File Detected (${fileType.toUpperCase()})**
+  const helpMessage = `📸 **Image File Detected (${fileType.toUpperCase()})**
 
-I can help you extract text from this image using these **FREE** methods:
+To extract text from this image, use one of these FREE methods:
 
-**🎯 FASTEST METHOD - Use Google Drive (100% Free):**
-1. Upload your image to Google Drive
+**🎯 METHOD 1 - Google Drive (Recommended):**
+1. Upload image to Google Drive
 2. Right-click → "Open with" → "Google Docs"
-3. Google will automatically OCR the image and convert to editable text
-4. Copy the text and paste it here, OR
-5. Download as PDF and upload that PDF to me
+3. Google will OCR and convert to editable text
+4. Download as PDF and upload here
 
-**📱 METHOD 2 - Use Your Phone:**
-Most phones have built-in scanners:
+**📱 METHOD 2 - Phone Scanner:**
 - iPhone: Notes app → Scan Documents
 - Android: Google Drive → Scan
-- These create searchable PDFs automatically!
 
-**💻 METHOD 3 - Free Online OCR Tools:**
-- onlineocr.net (no signup needed)
-- i2ocr.com (simple and fast)
-- newocr.com (supports 122 languages)
+**💻 METHOD 3 - Free Online OCR:**
+- onlineocr.net
+- i2ocr.com
 
-**📄 METHOD 4 - Convert to PDF:**
-If this is a scan, convert it to a searchable PDF using:
-- Adobe Acrobat (free trial)
-- PDF24 Tools (free online)
-- SmallPDF (3 free conversions/day)
-
-**Image Info:**
-- Type: ${fileType.toUpperCase()}
-- Size: ${(buffer.length / 1024).toFixed(2)} KB
-- Ready for OCR: Yes
-
-Once you have the text or searchable PDF, upload it here and I'll analyze it immediately! 🚀`;
+Once converted to searchable PDF or text, upload it here for analysis!`;
     
-    return { 
-      type: fileType, 
-      textContent: helpMessage,
-      isImage: true,
-      requiresManualProcessing: true
-    };
-    
-  } catch (err) {
-    console.error("Image handling error:", err?.message || err);
-    return { 
-      type: fileType, 
-      textContent: "", 
-      error: `Error processing image. Please convert to PDF or extract text manually.`
-    };
-  }
+  return { 
+    type: fileType, 
+    textContent: helpMessage,
+    isImage: true,
+    requiresManualProcessing: true
+  };
 }
 
 /**
@@ -611,52 +530,47 @@ function parseCSV(csvText) {
   };
 
   const headers = parseCSVLine(lines[0]);
-  const headerCount = headers.length;
   const rows = [];
-
-  console.log(`CSV has ${lines.length} lines total (including header)`);
-  console.log(`Headers (${headerCount} columns):`, headers);
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
-
-    if (!line || line.trim() === '' || line.trim() === ','.repeat(headerCount - 1)) {
-      continue;
-    }
+    if (!line || line.trim() === '') continue;
 
     const values = parseCSVLine(line);
-
     const row = {};
     headers.forEach((h, idx) => {
       row[h] = values[idx] !== undefined ? values[idx] : '';
     });
-
     rows.push(row);
   }
 
-  console.log(`✓ Parsed ${rows.length} data rows (should match Excel row count minus header)`);
   return rows;
 }
 
 /**
- * 🔥 NEW: Detect P&L structure and identify column types
+ * INTELLIGENT TABLE STRUCTURE ANALYZER
+ * Automatically detects table layout without hardcoding
  */
 function analyzeTableStructure(rawArray) {
   if (!rawArray || rawArray.length < 2) {
     return { valid: false, reason: 'Not enough rows' };
   }
 
-  // Find header row (first non-empty row with multiple columns)
+  console.log("🔍 Analyzing table structure...");
+
+  // Find header row (first row with multiple non-empty cells)
   let headerRowIndex = -1;
   let headers = [];
   
-  for (let i = 0; i < Math.min(10, rawArray.length); i++) {
+  for (let i = 0; i < Math.min(15, rawArray.length); i++) {
     const row = rawArray[i];
     const nonEmptyCount = row.filter(cell => cell && String(cell).trim()).length;
     
+    // Header row typically has 3+ columns with text
     if (nonEmptyCount >= 3) {
       headerRowIndex = i;
       headers = row.map(h => String(h || '').trim());
+      console.log(`   ✓ Header row detected at index ${i}`);
       break;
     }
   }
@@ -665,67 +579,78 @@ function analyzeTableStructure(rawArray) {
     return { valid: false, reason: 'No header row found' };
   }
 
-  console.log(`📊 Header row found at index ${headerRowIndex}`);
-  console.log(`📋 Headers:`, headers);
+  console.log(`   📋 Columns: ${headers.join(' | ')}`);
 
-  // Analyze column types
+  // Analyze each column's characteristics
   const columnTypes = headers.map((header, colIndex) => {
     const headerLower = header.toLowerCase();
     
-    // Check if this column contains line items (text descriptions)
+    // Detect line item column (typically first column with text descriptions)
     const isLineItem = 
       headerLower.includes('particular') ||
       headerLower.includes('description') ||
       headerLower.includes('account') ||
       headerLower.includes('category') ||
       headerLower.includes('item') ||
-      colIndex === 0; // First column is usually line items
+      headerLower.includes('name') ||
+      headerLower === '' && colIndex === 0; // Empty header in first column
 
-    // Check if this column contains numeric data
+    // Sample values to detect if column is numeric
+    const sampleSize = Math.min(20, rawArray.length - headerRowIndex - 1);
     const sampleValues = rawArray
-      .slice(headerRowIndex + 1, headerRowIndex + 11)
+      .slice(headerRowIndex + 1, headerRowIndex + 1 + sampleSize)
       .map(row => row[colIndex])
-      .filter(v => v);
+      .filter(v => v && String(v).trim());
     
+    // Count how many values are numeric
     const numericCount = sampleValues.filter(v => {
       const cleaned = String(v).replace(/[^0-9.\-]/g, '');
-      return !isNaN(parseFloat(cleaned));
+      return !isNaN(parseFloat(cleaned)) && cleaned.length > 0;
     }).length;
 
-    const isNumeric = numericCount / Math.max(sampleValues.length, 1) > 0.5;
+    const isNumeric = sampleValues.length > 0 && (numericCount / sampleValues.length) > 0.6;
 
-    // Try to identify what this column represents
+    // Determine column purpose
     let columnPurpose = 'UNKNOWN';
     
     if (isLineItem) {
       columnPurpose = 'LINE_ITEM';
     } else if (isNumeric) {
-      // Try to identify if it's a store, period, or total
-      if (headerLower.includes('total') || headerLower.includes('sum')) {
+      // Detect purpose from header text
+      if (headerLower.includes('total') || headerLower.includes('grand total') || headerLower.includes('sum')) {
         columnPurpose = 'TOTAL';
-      } else if (headerLower.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/)) {
+      } else if (headerLower.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i)) {
         columnPurpose = 'PERIOD';
-      } else if (headerLower.match(/\b(q1|q2|q3|q4)\b/)) {
+      } else if (headerLower.match(/\b(q1|q2|q3|q4|quarter)\b/i)) {
         columnPurpose = 'QUARTER';
       } else if (headerLower.match(/\d{4}/)) {
         columnPurpose = 'YEAR';
-      } else if (headerLower.includes('store') || headerLower.includes('branch') || headerLower.includes('location')) {
+      } else if (headerLower.includes('store') || headerLower.includes('branch') || 
+                 headerLower.includes('location') || headerLower.includes('outlet')) {
         columnPurpose = 'ENTITY';
       } else {
-        columnPurpose = 'ENTITY'; // Default to entity for unnamed numeric columns
+        // Default numeric column to ENTITY (could be unnamed store)
+        columnPurpose = 'ENTITY';
       }
     }
 
     return {
       index: colIndex,
-      header: header,
+      header: header || `Column ${colIndex + 1}`,
       isNumeric: isNumeric,
       isLineItem: isLineItem,
-      purpose: columnPurpose
+      purpose: columnPurpose,
+      sampleCount: sampleValues.length,
+      numericRatio: sampleValues.length > 0 ? (numericCount / sampleValues.length) : 0
     };
   });
 
-  console.log(`📊 Column analysis:`, columnTypes.map(c => `${c.header} → ${c.purpose}`));
+  console.log(`   ✓ Column types identified:`);
+  columnTypes.forEach(col => {
+    if (col.isNumeric) {
+      console.log(`      - "${col.header}" → ${col.purpose} (${(col.numericRatio * 100).toFixed(0)}% numeric)`);
+    }
+  });
 
   return {
     valid: true,
@@ -737,7 +662,65 @@ function analyzeTableStructure(rawArray) {
 }
 
 /**
- * 🔥 NEW: SMART P&L STRUCTURING - Preserves exact column relationships
+ * INTELLIGENT DOCUMENT TYPE DETECTOR
+ * Automatically identifies P&L, Balance Sheet, Cash Flow, General Ledger, etc.
+ */
+function detectDocumentType(lineItems) {
+  const descriptions = lineItems
+    .map(item => String(item.description || '').toLowerCase())
+    .slice(0, 50); // Check first 50 line items
+
+  const keywords = {
+    profitLoss: ['revenue', 'sales', 'income', 'cogs', 'gross profit', 'operating expense', 'ebitda', 'ebit', 'net profit', 'operating income'],
+    balanceSheet: ['assets', 'liabilities', 'equity', 'current assets', 'fixed assets', 'shareholders equity', 'retained earnings'],
+    cashFlow: ['cash flow', 'operating activities', 'investing activities', 'financing activities', 'cash at beginning', 'cash at end'],
+    generalLedger: ['debit', 'credit', 'journal entry', 'posting', 'ledger'],
+    trialBalance: ['trial balance', 'debit balance', 'credit balance']
+  };
+
+  const scores = {
+    profitLoss: 0,
+    balanceSheet: 0,
+    cashFlow: 0,
+    generalLedger: 0,
+    trialBalance: 0
+  };
+
+  descriptions.forEach(desc => {
+    Object.keys(keywords).forEach(docType => {
+      keywords[docType].forEach(keyword => {
+        if (desc.includes(keyword)) {
+          scores[docType]++;
+        }
+      });
+    });
+  });
+
+  console.log("📊 Document type scores:", scores);
+
+  // Find highest scoring type
+  let maxScore = 0;
+  let detectedType = 'GENERAL';
+  
+  Object.entries(scores).forEach(([type, score]) => {
+    if (score > maxScore) {
+      maxScore = score;
+      detectedType = type === 'profitLoss' ? 'PROFIT_LOSS' :
+                     type === 'balanceSheet' ? 'BALANCE_SHEET' :
+                     type === 'cashFlow' ? 'CASH_FLOW' :
+                     type === 'generalLedger' ? 'GENERAL_LEDGER' :
+                     type === 'trialBalance' ? 'TRIAL_BALANCE' : 'GENERAL';
+    }
+  });
+
+  console.log(`   ✓ Document identified as: ${detectedType}`);
+  
+  return detectedType;
+}
+
+/**
+ * SMART DATA STRUCTURING
+ * Builds JSON structure without hardcoding specific row types
  */
 function structureDataAsJSON(sheets) {
   if (!sheets || sheets.length === 0) {
@@ -747,55 +730,30 @@ function structureDataAsJSON(sheets) {
     };
   }
 
+  console.log("🔄 Structuring data...");
+
   const allStructuredSheets = [];
   let documentType = 'UNKNOWN';
 
   sheets.forEach(sheet => {
     const rawArray = sheet.rawArray || [];
-    const rows = sheet.rows || [];
     
-    if (rawArray.length === 0 && rows.length === 0) return;
+    if (rawArray.length === 0) {
+      console.log(`   ⚠️ Sheet "${sheet.name}" is empty`);
+      return;
+    }
 
-    // 🔥 Analyze table structure first
     const structure = analyzeTableStructure(rawArray);
     
     if (!structure.valid) {
-      console.warn(`⚠️ Sheet "${sheet.name}" has invalid structure: ${structure.reason}`);
-      // Fallback to old method
-      return processSheetOldWay(sheet, allStructuredSheets);
+      console.warn(`   ⚠️ Sheet "${sheet.name}" has invalid structure: ${structure.reason}`);
+      return;
     }
 
     const { headerRowIndex, headers, columnTypes, dataStartRow } = structure;
 
-    // Detect document type from line items
-    const lineItems = rawArray
-      .slice(dataStartRow, dataStartRow + 20)
-      .map(row => String(row[0] || '').toLowerCase());
-
-    const hasRevenue = lineItems.some(item => 
-      item.includes('revenue') || item.includes('sales') || item.includes('income')
-    );
-    const hasExpense = lineItems.some(item => 
-      item.includes('expense') || item.includes('cost') || item.includes('cogs')
-    );
-    const hasProfit = lineItems.some(item => 
-      item.includes('profit') || item.includes('loss') || item.includes('ebitda')
-    );
-
-    let sheetType = 'GENERAL';
-    
-    if ((hasRevenue || hasExpense) && hasProfit) {
-      sheetType = 'PROFIT_LOSS';
-      documentType = 'PROFIT_LOSS';
-    } else if (hasRevenue && hasExpense) {
-      sheetType = 'PROFIT_LOSS';
-      documentType = 'PROFIT_LOSS';
-    }
-
-    // 🔥 Build structured data that preserves column relationships
     const structuredData = {
       sheetName: sheet.name,
-      sheetType: sheetType,
       structure: {
         headerRow: headerRowIndex,
         headers: headers,
@@ -808,7 +766,7 @@ function structureDataAsJSON(sheets) {
     for (let rowIndex = dataStartRow; rowIndex < rawArray.length; rowIndex++) {
       const row = rawArray[rowIndex];
       
-      // Skip empty rows
+      // Skip completely empty rows
       const nonEmpty = row.filter(cell => cell && String(cell).trim()).length;
       if (nonEmpty === 0) continue;
 
@@ -825,12 +783,14 @@ function structureDataAsJSON(sheets) {
         if (colInfo.isLineItem) {
           lineItem.description = String(cellValue || '').trim();
         } else if (colInfo.isNumeric) {
+          const parsedValue = parseAmount(cellValue);
+          
           lineItem.values.push({
             column: colInfo.header,
             columnIndex: colInfo.index,
             purpose: colInfo.purpose,
             rawValue: cellValue,
-            numericValue: parseAmount(cellValue),
+            numericValue: parsedValue,
             formatted: cellValue
           });
         }
@@ -842,7 +802,17 @@ function structureDataAsJSON(sheets) {
       }
     }
 
-    // Calculate totals per column
+    // Detect document type from line items
+    if (structuredData.lineItems.length > 0) {
+      const sheetType = detectDocumentType(structuredData.lineItems);
+      structuredData.sheetType = sheetType;
+      
+      if (documentType === 'UNKNOWN' || sheetType !== 'GENERAL') {
+        documentType = sheetType;
+      }
+    }
+
+    // Calculate column totals
     const columnTotals = {};
     columnTypes.forEach(colInfo => {
       if (colInfo.isNumeric) {
@@ -865,8 +835,12 @@ function structureDataAsJSON(sheets) {
       columnTotals: columnTotals
     };
 
+    console.log(`   ✓ Sheet "${sheet.name}": ${structuredData.lineItems.length} items, type=${structuredData.sheetType}`);
+
     allStructuredSheets.push(structuredData);
   });
+
+  console.log(`✅ Structuring complete: ${allStructuredSheets.length} sheets`);
 
   return {
     success: true,
@@ -877,421 +851,280 @@ function structureDataAsJSON(sheets) {
 }
 
 /**
- * Fallback for sheets that don't have rawArray
+ * BUILD COMPREHENSIVE FINANCIAL SUMMARY
+ * Works for any accounting document type
  */
-function processSheetOldWay(sheet, allStructuredSheets) {
-  const rows = sheet.rows || [];
-  if (rows.length === 0) return;
-
-  const headers = Object.keys(rows[0]).map(h => h.toLowerCase().trim());
+function buildFinancialSummary(sheet) {
+  console.log(`📊 Building financial summary for "${sheet.sheetName}"...`);
   
-  const hasDebitCredit = headers.some(h => h.includes('debit')) && headers.some(h => h.includes('credit'));
-  const hasDate = headers.some(h => h.includes('date'));
-  const hasAccount = headers.some(h => h.includes('account') || h.includes('ledger') || h.includes('description'));
-  const hasAmount = headers.some(h => h.includes('amount') || h.includes('balance'));
-  
-  let sheetType = 'GENERAL';
-  
-  if (hasDebitCredit && hasAccount) {
-    sheetType = 'GENERAL_LEDGER';
-  } else if (hasDate && hasAmount && headers.some(h => h.includes('transaction') || h.includes('reference'))) {
-    sheetType = 'BANK_STATEMENT';
-  }
-
-  const findColumn = (possibleNames) => {
-    for (const name of possibleNames) {
-      const found = Object.keys(rows[0]).find(h => h.toLowerCase().includes(name.toLowerCase()));
-      if (found) return found;
-    }
-    return null;
-  };
-
-  const dateCol = findColumn(['date', 'trans date', 'transaction date', 'posting date']);
-  const accountCol = findColumn(['account', 'description', 'particulars', 'ledger', 'gl account']);
-  const debitCol = findColumn(['debit', 'dr', 'debit amount', 'withdrawal']);
-  const creditCol = findColumn(['credit', 'cr', 'credit amount', 'deposit']);
-  const amountCol = findColumn(['amount', 'balance', 'net']);
-  const referenceCol = findColumn(['reference', 'ref', 'voucher', 'transaction', 'entry']);
-
-  const structuredRows = [];
-  const summary = {
-    totalDebit: 0,
-    totalCredit: 0,
-    totalAmount: 0,
-    uniqueAccounts: new Set(),
-    dateRange: { min: null, max: null },
-    transactionCount: 0
-  };
-
-  rows.forEach(row => {
-    const structuredRow = {};
-    
-    if (dateCol && row[dateCol]) {
-      const rawDate = row[dateCol];
-      structuredRow.date = formatDateUS(rawDate);
-      
-      if (!summary.dateRange.min || rawDate < summary.dateRange.min) {
-        summary.dateRange.min = formatDateUS(rawDate);
-      }
-      if (!summary.dateRange.max || rawDate > summary.dateRange.max) {
-        summary.dateRange.max = formatDateUS(rawDate);
-      }
-    }
-
-    if (accountCol && row[accountCol]) {
-      structuredRow.account = String(row[accountCol]).trim();
-      summary.uniqueAccounts.add(structuredRow.account);
-    }
-
-    if (referenceCol && row[referenceCol]) {
-      structuredRow.reference = String(row[referenceCol]).trim();
-    }
-
-    if (debitCol && row[debitCol]) {
-      const debit = parseAmount(row[debitCol]);
-      structuredRow.debit = debit;
-      summary.totalDebit += debit;
-    }
-
-    if (creditCol && row[creditCol]) {
-      const credit = parseAmount(row[creditCol]);
-      structuredRow.credit = credit;
-      summary.totalCredit += credit;
-    }
-
-    if (amountCol && row[amountCol]) {
-      const amount = parseAmount(row[amountCol]);
-      structuredRow.amount = amount;
-      summary.totalAmount += amount;
-    }
-
-    Object.keys(row).forEach(key => {
-      if (key !== dateCol && key !== accountCol && key !== debitCol && 
-          key !== creditCol && key !== amountCol && key !== referenceCol) {
-        structuredRow[key] = row[key];
-      }
-    });
-
-    if (Object.keys(structuredRow).length > 0) {
-      structuredRows.push(structuredRow);
-      summary.transactionCount++;
-    }
-  });
-
-  allStructuredSheets.push({
-    sheetName: sheet.name,
-    sheetType: sheetType,
-    rowCount: structuredRows.length,
-    data: structuredRows,
-    summary: {
-      totalDebit: Math.round(summary.totalDebit * 100) / 100,
-      totalCredit: Math.round(summary.totalCredit * 100) / 100,
-      totalAmount: Math.round(summary.totalAmount * 100) / 100,
-      difference: Math.round((summary.totalDebit - summary.totalCredit) * 100) / 100,
-      isBalanced: Math.abs(summary.totalDebit - summary.totalCredit) < 0.01,
-      uniqueAccounts: summary.uniqueAccounts.size,
-      dateRange: summary.dateRange.min && summary.dateRange.max 
-        ? `${summary.dateRange.min} to ${summary.dateRange.max}` 
-        : 'Unknown',
-      transactionCount: summary.transactionCount
-    },
-    columns: {
-      date: dateCol,
-      account: accountCol,
-      debit: debitCol,
-      credit: creditCol,
-      amount: amountCol,
-      reference: referenceCol
-    }
-  });
-}
-
-/**
- * Compact line item payload to avoid oversized model requests
- */
-function compactLineItem(lineItem = {}) {
-  const compactValues = Array.isArray(lineItem.values)
-    ? lineItem.values.map((value) => ({
-        column: value?.column,
-        columnIndex: value?.columnIndex,
-        purpose: value?.purpose,
-        numericValue: value?.numericValue
-      }))
-    : [];
-
-  return {
-    rowNumber: lineItem.rowNumber,
-    description: String(lineItem.description || "").slice(0, 200),
-    values: compactValues
-  };
-}
-
-/**
- * 🔥 ENHANCED: Build structured P&L summary optimized for multi-store analysis
- */
-function buildEnhancedPLSummary(sheet) {
   const lineItems = Array.isArray(sheet?.lineItems) ? sheet.lineItems : [];
   const columns = sheet.structure?.columns || [];
   
-  // Get all store/entity columns (exclude line item column)
-  const storeColumns = columns.filter(col => 
-    col.isNumeric && col.purpose === 'ENTITY'
+  // Get all value columns (numeric, non-total)
+  const valueColumns = columns.filter(col => 
+    col.isNumeric && col.purpose !== 'TOTAL'
   );
   
-  // If no entity columns found, treat all numeric columns as stores (except TOTAL)
-  const valueColumns = storeColumns.length > 0 
-    ? storeColumns 
-    : columns.filter(col => col.isNumeric && col.purpose !== 'TOTAL');
-  
-  console.log(`📊 Found ${valueColumns.length} value columns to analyze:`, 
-    valueColumns.map(c => c.header));
-  
-  // Build complete P&L structure for each store
-  const storeData = {};
+  if (valueColumns.length === 0) {
+    console.log("   ⚠️ No value columns found");
+    return null;
+  }
+
+  console.log(`   ✓ Analyzing ${valueColumns.length} value columns`);
+
+  // Build data structure for each column/entity
+  const entityData = {};
   
   valueColumns.forEach(col => {
-    storeData[col.header] = {
+    entityData[col.header] = {
       columnIndex: col.index,
-      revenue: { total: 0, items: [] },
-      cogs: { total: 0, items: [] },
-      grossProfit: 0,
-      operatingExpenses: { total: 0, items: [] },
-      operatingProfit: 0,
-      ebitda: 0,
-      netProfit: 0,
-      otherItems: []
+      columnPurpose: col.purpose,
+      categories: {},
+      allLineItems: []
     };
   });
-  
-  // Categorize and sum each line item
+
+  // Categorize line items intelligently
   lineItems.forEach(lineItem => {
     const desc = String(lineItem.description || '').toLowerCase();
     
-    // Determine category
+    // Determine category based on keywords
     let category = 'other';
-    if (/\btotal\s+revenue\b|\bnet\s+revenue\b|\bgross\s+sales\b|\btotal\s+sales\b/.test(desc)) {
+    
+    // Revenue indicators
+    if (/\b(revenue|sales|income|turnover)\b/.test(desc) && !/expense|cost/.test(desc)) {
       category = 'revenue';
-    } else if (/revenue|sales|income/.test(desc) && !/expense|cost/.test(desc)) {
-      category = 'revenue';
-    } else if (/cogs|cost of goods|cost of sales/.test(desc)) {
+    }
+    // Cost indicators
+    else if (/\b(cogs|cost of goods|cost of sales)\b/.test(desc)) {
       category = 'cogs';
-    } else if (/gross profit|gross margin/.test(desc)) {
+    }
+    // Gross profit
+    else if (/\b(gross profit|gross margin|gross income)\b/.test(desc)) {
       category = 'grossProfit';
-    } else if (/expense|opex|operating cost|overhead|salaries|wages|rent|utilities/.test(desc)) {
+    }
+    // Operating expenses
+    else if (/\b(expense|opex|operating cost|overhead|salary|wage|rent|utilities|depreciation|amortization)\b/.test(desc)) {
       category = 'operatingExpenses';
-    } else if (/operating profit|operating income|ebit\b/.test(desc)) {
+    }
+    // Operating profit
+    else if (/\b(operating profit|operating income|ebit)\b/i.test(desc) && !/ebitda/.test(desc)) {
       category = 'operatingProfit';
-    } else if (/ebitda/.test(desc)) {
+    }
+    // EBITDA
+    else if (/\bebitda\b/i.test(desc)) {
       category = 'ebitda';
-    } else if (/net profit|net income|pat|profit after tax/.test(desc)) {
+    }
+    // Net profit
+    else if (/\b(net profit|net income|pat|profit after tax|bottom line)\b/.test(desc)) {
       category = 'netProfit';
     }
-    
-    // Extract values for each store
-    (lineItem.values || []).forEach(value => {
-      const storeName = value.column;
-      if (!storeData[storeName]) return;
-      
-      const amount = value.numericValue || 0;
-      const item = {
-        description: lineItem.description,
-        amount: amount
-      };
-      
-      switch(category) {
-        case 'revenue':
-          storeData[storeName].revenue.items.push(item);
-          storeData[storeName].revenue.total += amount;
-          break;
-        case 'cogs':
-          storeData[storeName].cogs.items.push(item);
-          storeData[storeName].cogs.total += Math.abs(amount); // COGS is usually negative
-          break;
-        case 'grossProfit':
-          storeData[storeName].grossProfit = amount;
-          break;
-        case 'operatingExpenses':
-          storeData[storeName].operatingExpenses.items.push(item);
-          storeData[storeName].operatingExpenses.total += Math.abs(amount); // Expenses usually negative
-          break;
-        case 'operatingProfit':
-          storeData[storeName].operatingProfit = amount;
-          break;
-        case 'ebitda':
-          storeData[storeName].ebitda = amount;
-          break;
-        case 'netProfit':
-          storeData[storeName].netProfit = amount;
-          break;
-        default:
-          storeData[storeName].otherItems.push(item);
-      }
-    });
-  });
-  
-  // Calculate derived metrics if not provided
-  Object.keys(storeData).forEach(store => {
-    const data = storeData[store];
-    
-    // Gross Profit = Revenue - COGS
-    if (data.grossProfit === 0 && data.revenue.total > 0) {
-      data.grossProfit = data.revenue.total - data.cogs.total;
+    // Assets
+    else if (/\b(assets|cash|receivable|inventory|property|equipment)\b/.test(desc)) {
+      category = 'assets';
+    }
+    // Liabilities
+    else if (/\b(liabilit|payable|loan|debt|borrowing)\b/.test(desc)) {
+      category = 'liabilities';
+    }
+    // Equity
+    else if (/\b(equity|capital|retained earnings|reserves)\b/.test(desc)) {
+      category = 'equity';
     }
     
-    // Operating Profit = Gross Profit - Operating Expenses
-    if (data.operatingProfit === 0 && data.grossProfit !== 0) {
-      data.operatingProfit = data.grossProfit - data.operatingExpenses.total;
+    // Store values for each entity
+    (lineItem.values || []).forEach(value => {
+      const entityName = value.column;
+      if (!entityData[entityName]) return;
+      
+      const amount = value.numericValue || 0;
+      
+      if (!entityData[entityName].categories[category]) {
+        entityData[entityName].categories[category] = {
+          total: 0,
+          items: []
+        };
+      }
+      
+      entityData[entityName].categories[category].total += amount;
+      entityData[entityName].categories[category].items.push({
+        description: lineItem.description,
+        amount: amount
+      });
+      
+      entityData[entityName].allLineItems.push({
+        description: lineItem.description,
+        category: category,
+        amount: amount
+      });
+    });
+  });
+
+  // Calculate derived metrics and rankings
+  const entityMetrics = {};
+  
+  Object.keys(entityData).forEach(entity => {
+    const data = entityData[entity];
+    const cats = data.categories;
+    
+    entityMetrics[entity] = {
+      revenue: cats.revenue?.total || 0,
+      cogs: Math.abs(cats.cogs?.total || 0),
+      grossProfit: cats.grossProfit?.total || 0,
+      operatingExpenses: Math.abs(cats.operatingExpenses?.total || 0),
+      operatingProfit: cats.operatingProfit?.total || 0,
+      ebitda: cats.ebitda?.total || 0,
+      netProfit: cats.netProfit?.total || 0,
+      assets: cats.assets?.total || 0,
+      liabilities: cats.liabilities?.total || 0,
+      equity: cats.equity?.total || 0,
+      allCategories: Object.keys(cats).filter(c => cats[c].total !== 0)
+    };
+    
+    // Calculate gross profit if not provided
+    if (entityMetrics[entity].grossProfit === 0 && entityMetrics[entity].revenue > 0) {
+      entityMetrics[entity].grossProfit = entityMetrics[entity].revenue - entityMetrics[entity].cogs;
+    }
+    
+    // Calculate operating profit if not provided
+    if (entityMetrics[entity].operatingProfit === 0 && entityMetrics[entity].grossProfit !== 0) {
+      entityMetrics[entity].operatingProfit = entityMetrics[entity].grossProfit - entityMetrics[entity].operatingExpenses;
     }
     
     // Calculate margins
-    data.grossProfitMargin = data.revenue.total > 0 
-      ? ((data.grossProfit / data.revenue.total) * 100).toFixed(2)
-      : '0.00';
-    
-    data.operatingMargin = data.revenue.total > 0
-      ? ((data.operatingProfit / data.revenue.total) * 100).toFixed(2)
-      : '0.00';
-    
-    data.netMargin = data.revenue.total > 0
-      ? ((data.netProfit / data.revenue.total) * 100).toFixed(2)
-      : '0.00';
-  });
-  
-  // Create rankings
-  const rankings = {
-    byRevenue: Object.entries(storeData)
-      .map(([store, data]) => ({ 
-        store, 
-        value: Math.round(data.revenue.total * 100) / 100 
-      }))
-      .sort((a, b) => b.value - a.value),
-    
-    byEBITDA: Object.entries(storeData)
-      .map(([store, data]) => ({ 
-        store, 
-        value: Math.round(data.ebitda * 100) / 100 
-      }))
-      .filter(x => x.value !== 0)
-      .sort((a, b) => b.value - a.value),
-    
-    byOperatingProfit: Object.entries(storeData)
-      .map(([store, data]) => ({ 
-        store, 
-        value: Math.round(data.operatingProfit * 100) / 100 
-      }))
-      .filter(x => x.value !== 0)
-      .sort((a, b) => b.value - a.value),
-    
-    byGrossMargin: Object.entries(storeData)
-      .map(([store, data]) => ({ 
-        store, 
-        value: parseFloat(data.grossProfitMargin) 
-      }))
-      .filter(x => !isNaN(x.value) && x.value !== 0)
-      .sort((a, b) => b.value - a.value),
-    
-    byOperatingMargin: Object.entries(storeData)
-      .map(([store, data]) => ({ 
-        store, 
-        value: parseFloat(data.operatingMargin) 
-      }))
-      .filter(x => !isNaN(x.value) && x.value !== 0)
-      .sort((a, b) => b.value - a.value),
-
-    byNetMargin: Object.entries(storeData)
-      .map(([store, data]) => ({ 
-        store, 
-        value: parseFloat(data.netMargin) 
-      }))
-      .filter(x => !isNaN(x.value) && x.value !== 0)
-      .sort((a, b) => b.value - a.value)
-  };
-  
-  return {
-    totalStores: Object.keys(storeData).length,
-    storeNames: Object.keys(storeData),
-    stores: storeData,
-    rankings: rankings,
-    aggregates: {
-      totalRevenue: Math.round(Object.values(storeData).reduce((sum, s) => sum + s.revenue.total, 0) * 100) / 100,
-      totalEBITDA: Math.round(Object.values(storeData).reduce((sum, s) => sum + s.ebitda, 0) * 100) / 100,
-      totalOperatingProfit: Math.round(Object.values(storeData).reduce((sum, s) => sum + s.operatingProfit, 0) * 100) / 100,
-      totalNetProfit: Math.round(Object.values(storeData).reduce((sum, s) => sum + s.netProfit, 0) * 100) / 100,
-      avgGrossMargin: (Object.values(storeData).reduce((sum, s) => 
-        sum + parseFloat(s.grossProfitMargin), 0) / Object.keys(storeData).length).toFixed(2),
-      avgOperatingMargin: (Object.values(storeData).reduce((sum, s) => 
-        sum + parseFloat(s.operatingMargin), 0) / Object.keys(storeData).length).toFixed(2)
+    if (entityMetrics[entity].revenue > 0) {
+      entityMetrics[entity].grossMargin = ((entityMetrics[entity].grossProfit / entityMetrics[entity].revenue) * 100).toFixed(2);
+      entityMetrics[entity].operatingMargin = ((entityMetrics[entity].operatingProfit / entityMetrics[entity].revenue) * 100).toFixed(2);
+      entityMetrics[entity].netMargin = ((entityMetrics[entity].netProfit / entityMetrics[entity].revenue) * 100).toFixed(2);
     }
+  });
+
+  // Create rankings for all meaningful metrics
+  const rankings = {};
+  
+  const metricsToRank = ['revenue', 'ebitda', 'operatingProfit', 'netProfit', 'grossMargin', 'operatingMargin', 'netMargin'];
+  
+  metricsToRank.forEach(metric => {
+    const ranking = Object.entries(entityMetrics)
+      .map(([entity, data]) => ({
+        entity,
+        value: data[metric] || 0
+      }))
+      .filter(x => x.value !== 0 && !isNaN(x.value))
+      .sort((a, b) => b.value - a.value);
+    
+    if (ranking.length > 0) {
+      rankings[metric] = ranking;
+    }
+  });
+
+  // Calculate aggregates
+  const aggregates = {
+    totalEntities: Object.keys(entityMetrics).length,
+    entityNames: Object.keys(entityMetrics),
+    totalRevenue: Math.round(Object.values(entityMetrics).reduce((sum, e) => sum + e.revenue, 0) * 100) / 100,
+    totalEBITDA: Math.round(Object.values(entityMetrics).reduce((sum, e) => sum + e.ebitda, 0) * 100) / 100,
+    totalNetProfit: Math.round(Object.values(entityMetrics).reduce((sum, e) => sum + e.netProfit, 0) * 100) / 100,
+    avgGrossMargin: 0,
+    avgOperatingMargin: 0,
+    categoriesFound: new Set()
+  };
+
+  // Calculate average margins
+  const entitiesWithMargins = Object.values(entityMetrics).filter(e => e.grossMargin);
+  if (entitiesWithMargins.length > 0) {
+    aggregates.avgGrossMargin = (entitiesWithMargins.reduce((sum, e) => sum + parseFloat(e.grossMargin || 0), 0) / entitiesWithMargins.length).toFixed(2);
+    aggregates.avgOperatingMargin = (entitiesWithMargins.reduce((sum, e) => sum + parseFloat(e.operatingMargin || 0), 0) / entitiesWithMargins.length).toFixed(2);
+  }
+
+  // Collect all categories found
+  Object.values(entityMetrics).forEach(e => {
+    e.allCategories.forEach(cat => aggregates.categoriesFound.add(cat));
+  });
+  aggregates.categoriesFound = Array.from(aggregates.categoriesFound);
+
+  console.log(`   ✓ Summary complete: ${aggregates.totalEntities} entities, ${aggregates.categoriesFound.length} categories`);
+
+  return {
+    sheetType: sheet.sheetType,
+    entities: entityMetrics,
+    rankings: rankings,
+    aggregates: aggregates,
+    rawData: entityData
   };
 }
 
 /**
- * Build a bounded JSON payload for model analysis to stay below token/rate limits
+ * BUILD PAYLOAD FOR AI
  */
-function buildBoundedStructuredPayload(structuredData) {
-  const maxJsonChars = 130000; // Increased for better P&L coverage with 22 stores
-  const maxSheets = 6;
+function buildAIPayload(structuredData) {
+  const maxJsonChars = 140000; // Generous limit
   
-  // For P&L documents, prioritize the enhanced summary over individual line items
-  const isPL = structuredData.documentType === 'PROFIT_LOSS';
-  
+  console.log("📦 Building AI payload...");
+
   const payload = {
     documentType: structuredData.documentType,
     sheetCount: structuredData.sheetCount,
-    sheets: (structuredData.sheets || []).slice(0, maxSheets).map((sheet) => {
-      const baseSheet = {
-        sheetName: sheet.sheetName,
-        sheetType: sheet.sheetType,
-        summary: sheet.summary,
-        columnGuide: (sheet.structure?.columns || []).map((col) => ({
+    sheets: []
+  };
+
+  structuredData.sheets.forEach(sheet => {
+    const summary = buildFinancialSummary(sheet);
+    
+    const sheetPayload = {
+      sheetName: sheet.sheetName,
+      sheetType: sheet.sheetType,
+      structure: {
+        headers: sheet.structure.headers,
+        columns: sheet.structure.columns.map(col => ({
           name: col.header,
           position: col.index,
           type: col.purpose,
           isNumeric: col.isNumeric
-        })),
-        totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0
-      };
-      
-      if (isPL) {
-        // For P&L, use enhanced summary with complete store breakdown
-        baseSheet.plAnalysis = buildEnhancedPLSummary(sheet);
-        // Include only key line items as reference
-        baseSheet.sampleLineItems = Array.isArray(sheet.lineItems)
-          ? sheet.lineItems.slice(0, 20).map(compactLineItem)
-          : [];
-        console.log(`✅ P&L Analysis created for ${baseSheet.plAnalysis.totalStores} stores`);
-      } else {
-        // For other documents, include more line items
-        baseSheet.lineItems = Array.isArray(sheet.lineItems)
-          ? sheet.lineItems.slice(0, 120).map(compactLineItem)
-          : [];
-        baseSheet.dataTruncated = sheet.lineItems && sheet.lineItems.length > 120;
-      }
-      
-      return baseSheet;
-    })
-  };
+        }))
+      },
+      totalLineItems: sheet.lineItems.length
+    };
+
+    if (summary) {
+      sheetPayload.financialSummary = summary;
+      sheetPayload.sampleLineItems = sheet.lineItems.slice(0, 15).map(item => ({
+        description: item.description,
+        values: item.values.map(v => ({
+          column: v.column,
+          value: v.numericValue
+        }))
+      }));
+    } else {
+      // Fallback: include more line items if no summary
+      sheetPayload.lineItems = sheet.lineItems.slice(0, 100).map(item => ({
+        description: item.description,
+        values: item.values.map(v => ({
+          column: v.column,
+          value: v.numericValue
+        }))
+      }));
+    }
+
+    payload.sheets.push(sheetPayload);
+  });
 
   const serialized = JSON.stringify(payload);
-  console.log(`📦 Payload size: ${serialized.length} characters`);
+  console.log(`   ✓ Payload size: ${serialized.length} chars`);
   
-  if (serialized.length <= maxJsonChars) {
-    return { payload, serializedLength: serialized.length };
+  if (serialized.length > maxJsonChars) {
+    console.log("   ⚠️ Payload too large, truncating...");
+    // Reduce sample items if needed
+    payload.sheets.forEach(sheet => {
+      if (sheet.sampleLineItems) {
+        sheet.sampleLineItems = sheet.sampleLineItems.slice(0, 8);
+      }
+      if (sheet.lineItems) {
+        sheet.lineItems = sheet.lineItems.slice(0, 50);
+      }
+    });
   }
-  
-  // If still too large, reduce sample items
-  console.warn(`⚠️ Payload exceeds ${maxJsonChars} chars, reducing sample items...`);
-  payload.sheets = payload.sheets.map(sheet => {
-    if (sheet.sampleLineItems) {
-      sheet.sampleLineItems = sheet.sampleLineItems.slice(0, 10);
-    }
-    if (sheet.lineItems) {
-      sheet.lineItems = sheet.lineItems.slice(0, 60);
-      sheet.dataTruncated = true;
-    }
-    return sheet;
-  });
-  
+
   return {
     payload,
     serializedLength: JSON.stringify(payload).length
@@ -1299,139 +1132,212 @@ function buildBoundedStructuredPayload(structuredData) {
 }
 
 /**
- * 🔥 ENHANCED SYSTEM PROMPT for P&L analysis with 22+ stores
+ * DYNAMIC SYSTEM PROMPT GENERATOR
+ * Creates appropriate prompt based on document type
  */
-function getEnhancedSystemPrompt(documentType) {
-  const basePrompt = `You are an expert financial analyst and MIS report writer specializing in multi-store P&L analysis.
+function generateSystemPrompt(documentType) {
+  const basePrompt = `You are an expert financial analyst. You receive structured financial data in JSON format.
 
-**DATA STRUCTURE YOU RECEIVE:**
-The data comes pre-structured with:
-- plAnalysis: Complete P&L breakdown for EVERY store
-  - stores: Object with each store's full P&L (revenue, COGS, gross profit, expenses, EBITDA, etc.)
-  - rankings: Pre-computed rankings by revenue, EBITDA, margins, etc.
-  - aggregates: Company-wide totals and averages
-- sampleLineItems: Reference data showing line item details
+**CRITICAL INSTRUCTIONS:**
+1. Analyze ALL entities/columns provided - never skip any
+2. Use pre-computed metrics from financialSummary when available
+3. Create comparison tables showing all entities
+4. Base all statements on the actual data provided
+5. If data is truncated, mention this limitation
 
-**CRITICAL ANALYSIS RULES:**
-1. **Complete Store Coverage**: When analyzing stores, you MUST:
-   - Use plAnalysis.storeNames to see ALL stores
-   - Reference plAnalysis.stores[storeName] for each store's data
-   - Never analyze only a subset unless specifically asked for "top N" or "bottom N"
-
-2. **Pre-Computed Rankings**: Use the rankings arrays - they're already sorted:
-   - rankings.byRevenue: All stores ranked by revenue (high to low)
-   - rankings.byEBITDA: All stores ranked by EBITDA
-   - rankings.byGrossMargin: All stores ranked by gross profit margin %
-   - rankings.byOperatingMargin: All stores ranked by operating margin %
-
-3. **Store-Level Detail**: For each store in plAnalysis.stores, you have:
-   - revenue.total and revenue.items[]
-   - cogs.total and cogs.items[]
-   - grossProfit and grossProfitMargin (as %)
-   - operatingExpenses.total and operatingExpenses.items[]
-   - operatingProfit and operatingMargin (as %)
-   - ebitda
-   - netProfit and netMargin (as %)
+**DATA STRUCTURE:**
+- financialSummary.entities: Complete metrics for each entity/column
+- financialSummary.rankings: Pre-sorted rankings by various metrics
+- financialSummary.aggregates: Totals and averages across all entities
+- sampleLineItems: Reference line items for context
 
 `;
 
   if (documentType === 'PROFIT_LOSS') {
-    return basePrompt + `**P&L ANALYSIS REQUIREMENTS:**
+    return basePrompt + `**PROFIT & LOSS ANALYSIS FORMAT:**
 
-**1. EXECUTIVE SUMMARY**
-   - Total stores analyzed: plAnalysis.totalStores
-   - Aggregates from plAnalysis.aggregates
-   - Top 3 and Bottom 3 performers (by EBITDA or revenue)
-   - Key findings and red flags
+## Executive Summary
+- Total entities analyzed
+- Aggregate revenue, EBITDA, net profit
+- Top 3 and bottom 3 performers
+- Key findings
 
-**2. PERFORMANCE RANKINGS**
-   Create comparison tables showing ALL stores (or top/bottom N if >15 stores):
-   
-   | Rank | Store Name | Revenue | EBITDA | Gross Margin | Operating Margin |
-   |------|------------|---------|---------|--------------|------------------|
-   
-   Use the pre-computed rankings arrays for this.
+## Performance Rankings
+Create table showing ALL entities:
+| Rank | Entity | Revenue | EBITDA | Gross Margin | Operating Margin |
 
-**3. DETAILED STORE ANALYSIS**
-   For each major store or category:
-   - Revenue composition (use revenue.items if needed)
-   - Cost structure (COGS, operating expenses breakdown)
-   - Profitability metrics
-   - Variance from company average
+## Variance Analysis
+- Compare each entity to company average
+- Identify outliers (>20% variance from average)
+- Flag negative performers
 
-**4. VARIANCE ANALYSIS**
-   - Compare each store to company averages (in aggregates)
-   - Identify outliers (stores >20% above/below avg margins)
-   - Flag stores with negative EBITDA or unusual patterns
+## Detailed Insights
+- Revenue composition and drivers
+- Cost structure analysis
+- Profitability trends
+- Recommendations
 
-**5. INSIGHTS & RECOMMENDATIONS**
-   - Growth opportunities (underperforming stores with potential)
-   - Cost optimization targets (high expense ratios)
-   - Best practice sharing (what top performers do differently)
-   - Actionable next steps
-
-**FORMATTING:**
-- Use markdown tables extensively
-- Include currency symbols and proper number formatting
-- Show percentages with 2 decimal places
-- Bold key figures and findings
-- Use headers and subheaders for organization
-
-**ACCURACY CHECKLIST:**
-✓ Used plAnalysis.storeNames to see all stores
-✓ Referenced pre-computed rankings for comparisons
-✓ Verified all numbers against source data
-✓ Included all stores in summary stats (unless specified otherwise)
-✓ Double-checked margin calculations
-✓ Flagged any data quality issues`;
+Use financialSummary.rankings arrays for comparisons.`;
   }
 
-  return basePrompt + `**ANALYSIS INSTRUCTIONS:**
+  if (documentType === 'BALANCE_SHEET') {
+    return basePrompt + `**BALANCE SHEET ANALYSIS FORMAT:**
 
-Analyze the financial data thoroughly:
-1. Use pre-structured data from plAnalysis when available
-2. Include all stores/entities in analysis unless asked for subset
-3. Create clear comparison tables
-4. Highlight key variances and trends
-5. Provide actionable insights
+## Financial Position Summary
+- Total assets, liabilities, equity
+- Current ratio and liquidity metrics
+- Debt-to-equity ratio
 
-Use markdown formatting with tables for clarity.`;
-}
+## Asset Analysis
+- Current vs fixed assets breakdown
+- Asset utilization
 
-function truncateText(text, maxChars = 60000) {
-  if (!text) return "";
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars)}
+## Liability Analysis
+- Short-term vs long-term obligations
+- Debt structure
 
-[TRUNCATED ${text.length - maxChars} CHARS]`;
+## Equity Analysis
+- Shareholders' equity composition
+- Retained earnings
+
+Provide insights on financial health and stability.`;
+  }
+
+  if (documentType === 'CASH_FLOW') {
+    return basePrompt + `**CASH FLOW ANALYSIS FORMAT:**
+
+## Cash Flow Summary
+- Operating, investing, financing activities
+- Net cash change
+- Cash position
+
+## Operating Activities
+- Cash from operations
+- Working capital changes
+
+## Investment Activities
+- Capex and investments
+
+## Financing Activities
+- Debt and equity changes
+
+Analyze liquidity and cash management.`;
+  }
+
+  return basePrompt + `**GENERAL FINANCIAL ANALYSIS:**
+
+Analyze the provided financial data and create:
+1. Summary of key metrics
+2. Comparison across entities (if multiple)
+3. Trends and patterns
+4. Data quality observations
+5. Recommendations
+
+Use tables for comparisons. Focus on meaningful insights.`;
 }
 
 /**
- * Call model for unstructured text documents (PDF/DOCX/PPTX/TXT/etc)
+ * CALL AI MODEL
+ */
+async function callAIModel({ structuredData, question, documentType }) {
+  const systemPrompt = generateSystemPrompt(documentType);
+  const { payload, serializedLength } = buildAIPayload(structuredData);
+  
+  console.log("🤖 Calling AI model...");
+  console.log(`   Document type: ${documentType}`);
+  console.log(`   Payload size: ${serializedLength} chars`);
+
+  const userMessage = question || 
+    `Provide a comprehensive financial analysis of this ${documentType.replace('_', ' ').toLowerCase()} data. Include all entities in your analysis.`;
+
+  const messages = [
+    { role: "system", content: systemPrompt },
+    {
+      role: "user",
+      content: `Financial data (JSON format):
+
+\`\`\`json
+${JSON.stringify(payload, null, 2)}
+\`\`\`
+
+Analysis request: ${userMessage}
+
+Remember to analyze ALL entities shown in the data.`
+    }
+  ];
+
+  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages,
+      temperature: 0,
+      max_tokens: 4000
+    })
+  });
+
+  let data;
+  try {
+    data = await r.json();
+  } catch (err) {
+    const raw = await r.text().catch(() => "");
+    console.error("AI API error:", raw.slice(0, 500));
+    return { 
+      reply: null, 
+      error: "Failed to parse AI response",
+      httpStatus: r.status 
+    };
+  }
+
+  if (data.error) {
+    console.error("AI API error:", data.error);
+    return {
+      reply: null,
+      error: data.error.message,
+      httpStatus: r.status
+    };
+  }
+
+  let reply = data?.choices?.[0]?.message?.content || null;
+
+  if (reply) {
+    reply = reply
+      .replace(/^```(?:markdown|json)\s*\n/gm, '')
+      .replace(/\n```\s*$/gm, '')
+      .replace(/```(?:markdown|json)\s*\n/g, '')
+      .replace(/\n```/g, '')
+      .trim();
+  }
+
+  console.log(`   ✓ AI response received (${data?.usage?.total_tokens || 0} tokens)`);
+
+  return { 
+    reply, 
+    raw: data, 
+    httpStatus: r.status,
+    tokenUsage: data?.usage
+  };
+}
+
+/**
+ * Call model for text documents
  */
 async function callModelWithText({ extracted, question }) {
-  const text = truncateText(extracted.textContent || "");
+  const text = extracted.textContent || "";
+  const truncated = text.length > 60000 ? text.slice(0, 60000) + "\n\n[TRUNCATED]" : text;
 
   const messages = [
     {
       role: "system",
-      content:
-`You are a careful accounting copilot.
-Only use facts present in the supplied document text.
-If a requested figure is missing/ambiguous, clearly state that instead of guessing.
-When quoting numbers, include the nearby label/line-item exactly as it appears in the file.
-Do not swap entities/stores/periods.`
+      content: "You are a financial analyst. Analyze the provided document and extract key insights. Only use facts present in the document."
     },
     {
       role: "user",
-      content: `User question:
-${question || "Please analyze this document and provide an accurate accounting-focused summary."}
-
-Document type: ${extracted.type}
-
-Extracted file content:
-
-${text}`
+      content: `${question || "Analyze this financial document and provide key insights."}\n\nDocument:\n${truncated}`
     }
   ];
 
@@ -1449,16 +1355,10 @@ ${text}`
     })
   });
 
-  let data;
-  try {
-    data = await r.json();
-  } catch (err) {
-    const raw = await r.text().catch(() => "");
-    return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
-  }
+  const data = await r.json();
 
   if (data.error) {
-    return { reply: null, raw: data, httpStatus: r.status, error: data.error.message };
+    return { reply: null, error: data.error.message, httpStatus: r.status };
   }
 
   let reply = data?.choices?.[0]?.message?.content || null;
@@ -1469,113 +1369,11 @@ ${text}`
       .trim();
   }
 
-  return {
-    reply,
-    raw: data,
-    httpStatus: r.status,
-    finishReason: data?.choices?.[0]?.finish_reason,
-    tokenUsage: data?.usage
-  };
+  return { reply, httpStatus: r.status };
 }
 
 /**
- * 🔥 CALL MODEL WITH STRUCTURED JSON
- */
-async function callModelWithJSON({ structuredData, question, documentType }) {
-  const systemPrompt = getEnhancedSystemPrompt(documentType);
-  const { payload: dataForAI, serializedLength } = buildBoundedStructuredPayload(structuredData);
-  
-  console.log(`📦 Structured payload: ${serializedLength} chars`);
-  console.log(`📊 Stores in payload: ${dataForAI.sheets[0]?.plAnalysis?.totalStores || 'N/A'}`);
-
-  const userMessage = question || 
-    "Provide a comprehensive P&L analysis covering ALL stores. Include performance rankings, variance analysis, and actionable recommendations.";
-
-  const messages = [
-    { role: "system", content: systemPrompt },
-    {
-      role: "user",
-      content: `Structured financial data (JSON):
-
-\`\`\`json
-${JSON.stringify(dataForAI, null, 2)}
-\`\`\`
-
-Analysis request: ${userMessage}
-
-IMPORTANT: 
-- This data includes ${dataForAI.sheets[0]?.plAnalysis?.totalStores || 'multiple'} stores
-- Use plAnalysis.storeNames to see all store names
-- Use plAnalysis.rankings arrays for pre-sorted comparisons
-- Include ALL stores in your analysis unless specifically asked otherwise`
-    }
-  ];
-
-  const r = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages,
-      temperature: 0,
-      max_tokens: 4000, // Increased for comprehensive analysis
-      top_p: 1.0,
-      frequency_penalty: 0.0,
-      presence_penalty: 0.0
-    })
-  });
-
-  let data;
-  try {
-    data = await r.json();
-  } catch (err) {
-    const raw = await r.text().catch(() => "");
-    console.error("OpenAI returned non-JSON:", raw.slice(0, 1000));
-    return { reply: null, raw: { rawText: raw.slice(0, 2000), parseError: err.message }, httpStatus: r.status };
-  }
-
-  if (data.error) {
-    console.error("OpenAI API Error:", data.error);
-    return {
-      reply: null,
-      raw: data,
-      httpStatus: r.status,
-      error: data.error.message
-    };
-  }
-
-  const finishReason = data?.choices?.[0]?.finish_reason;
-  console.log(`✅ OpenAI response - finish: ${finishReason}, tokens:`, data?.usage);
-  
-  if (finishReason === 'length') {
-    console.warn("⚠️ Response truncated due to token limit!");
-  }
-
-  let reply = data?.choices?.[0]?.message?.content || null;
-
-  if (reply) {
-    reply = reply
-      .replace(/^```(?:markdown|json)\s*\n/gm, '')
-      .replace(/\n```\s*$/gm, '')
-      .replace(/```(?:markdown|json)\s*\n/g, '')
-      .replace(/\n```/g, '')
-      .trim();
-  }
-
-  return { 
-    reply, 
-    raw: data, 
-    httpStatus: r.status,
-    finishReason: finishReason,
-    tokenUsage: data?.usage
-  };
-}
-
-/**
- * Convert markdown to Word document
+ * Convert markdown to Word
  */
 async function markdownToWord(markdownText) {
   const sections = [];
@@ -1595,14 +1393,13 @@ async function markdownToWord(markdownText) {
     
     if (line.startsWith('#')) {
       const level = (line.match(/^#+/) || [''])[0].length;
-      const text = line.replace(/^#+\s*/, '').replace(/\*\*/g, '').replace(/\*/g, '');
+      const text = line.replace(/^#+\s*/, '').replace(/\*\*/g, '');
       
       sections.push(
         new Paragraph({
           text: text,
           heading: level === 2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
-          spacing: { before: 240, after: 120 },
-          thematicBreak: false
+          spacing: { before: 240, after: 120 }
         })
       );
       continue;
@@ -1616,7 +1413,7 @@ async function markdownToWord(markdownText) {
         continue;
       }
       
-      const cleanCells = cells.map(c => c.replace(/\*\*/g, '').replace(/\*/g, '').replace(/`/g, ''));
+      const cleanCells = cells.map(c => c.replace(/\*\*/g, ''));
       tableData.push(cleanCells);
       continue;
     } else if (inTable && tableData.length > 0) {
@@ -1632,21 +1429,13 @@ async function markdownToWord(markdownText) {
                     new TextRun({
                       text: cellText,
                       bold: isHeader,
-                      color: isHeader ? 'FFFFFF' : '000000',
                       size: 22
                     })
-                  ],
-                  alignment: AlignmentType.LEFT
+                  ]
                 })
               ],
               shading: {
                 fill: isHeader ? '4472C4' : 'FFFFFF'
-              },
-              margins: {
-                top: 100,
-                bottom: 100,
-                left: 100,
-                right: 100
               }
             })
           )
@@ -1658,14 +1447,6 @@ async function markdownToWord(markdownText) {
         width: {
           size: 100,
           type: WidthType.PERCENTAGE
-        },
-        borders: {
-          top: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          bottom: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          left: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          right: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-          insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' },
-          insideVertical: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' }
         }
       });
       
@@ -1676,25 +1457,11 @@ async function markdownToWord(markdownText) {
     }
     
     if (line.startsWith('-') || line.startsWith('*')) {
-      let text = line.replace(/^[-*]\s+/, '');
-      
-      const textRuns = [];
-      const parts = text.split(/(\*\*[^*]+\*\*)/g);
-      
-      parts.forEach(part => {
-        if (part.startsWith('**') && part.endsWith('**')) {
-          textRuns.push(new TextRun({
-            text: part.replace(/\*\*/g, ''),
-            bold: true
-          }));
-        } else if (part) {
-          textRuns.push(new TextRun({ text: part }));
-        }
-      });
+      const text = line.replace(/^[-*]\s+/, '').replace(/\*\*/g, '');
       
       sections.push(
         new Paragraph({
-          children: textRuns,
+          text: text,
           bullet: { level: 0 },
           spacing: { before: 60, after: 60 }
         })
@@ -1702,28 +1469,12 @@ async function markdownToWord(markdownText) {
       continue;
     }
     
-    const textRuns = [];
-    const parts = line.split(/(\*\*[^*]+\*\*)/g);
-    
-    parts.forEach(part => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        textRuns.push(new TextRun({
-          text: part.replace(/\*\*/g, ''),
-          bold: true
-        }));
-      } else if (part) {
-        textRuns.push(new TextRun({ text: part }));
-      }
-    });
-    
-    if (textRuns.length > 0) {
-      sections.push(
-        new Paragraph({
-          children: textRuns,
-          spacing: { before: 60, after: 60 }
-        })
-      );
-    }
+    sections.push(
+      new Paragraph({
+        text: line.replace(/\*\*/g, ''),
+        spacing: { before: 60, after: 60 }
+      })
+    );
   }
   
   const doc = new Document({
@@ -1738,12 +1489,16 @@ async function markdownToWord(markdownText) {
 }
 
 /**
- * MAIN handler
+ * MAIN HANDLER
  */
 export default async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
+  console.log("\n" + "=".repeat(70));
+  console.log("🚀 NEW REQUEST - Accounting AI Analysis");
+  console.log("=".repeat(70));
 
   try {
     if (!process.env.OPENAI_API_KEY) {
@@ -1755,13 +1510,14 @@ export default async function handler(req, res) {
 
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
-    console.log("📥 Downloading file...");
-    const { buffer, contentType, bytesReceived } = await downloadFileToBuffer(fileUrl);
+    console.log(`📥 Downloading: ${fileUrl}`);
+    const { buffer, contentType } = await downloadFileToBuffer(fileUrl);
     const detectedType = detectFileType(fileUrl, contentType, buffer);
-    console.log(`📄 File type detected: ${detectedType}`);
+    console.log(`📄 File type: ${detectedType}`);
 
     let extracted = { type: detectedType };
     
+    // Extract based on file type
     if (detectedType === "pdf") {
       extracted = await extractPdf(buffer);
     } else if (detectedType === "docx") {
@@ -1776,87 +1532,79 @@ export default async function handler(req, res) {
       extracted = extractCsv(buffer);
       if (extracted.textContent) {
         const rows = parseCSV(extracted.textContent);
-        extracted.sheets = [{ name: 'Main Sheet', rows: rows, rowCount: rows.length }];
+        extracted.sheets = [{ 
+          name: 'Main Sheet', 
+          rows: rows, 
+          rawArray: [Object.keys(rows[0] || {}), ...rows.map(r => Object.values(r))],
+          rowCount: rows.length 
+        }];
       }
     } else {
       extracted = extractTextLike(buffer, detectedType);
     }
 
-    if (extracted.error) {
-      return res.status(200).json({
-        ok: false,
-        type: extracted.type,
-        reply: `Failed to parse file: ${extracted.error}`,
-        debug: { error: extracted.error }
-      });
-    }
-
-    if (extracted.ocrNeeded || extracted.requiresManualProcessing || extracted.requiresConversion) {
+    // Handle extraction errors
+    if (extracted.error || extracted.ocrNeeded || extracted.requiresManualProcessing) {
+      console.log("⚠️ File requires special processing");
       return res.status(200).json({
         ok: true,
         type: extracted.type,
-        reply: extracted.textContent || "This file requires special processing.",
-        category: "general",
-        debug: { 
-          requiresConversion: extracted.requiresConversion || false,
-          requiresManualProcessing: extracted.requiresManualProcessing || false,
-          isImage: extracted.isImage || false
-        }
+        reply: extracted.textContent || `Could not process file: ${extracted.error}`,
+        category: "general"
       });
     }
 
-    let structuredData = null;
     let modelResult;
+    let structuredData = null;
 
+    // Process structured data (Excel/CSV)
     if (Array.isArray(extracted.sheets) && extracted.sheets.length > 0) {
-      console.log("🔄 Structuring data with column awareness...");
-      structuredData = structureDataAsJSON(extracted.sheets || []);
+      console.log("\n" + "-".repeat(70));
+      structuredData = structureDataAsJSON(extracted.sheets);
 
       if (!structuredData.success) {
         return res.status(200).json({
           ok: false,
-          type: extracted.type,
-          reply: `Could not structure data: ${structuredData.reason}`,
-          debug: { structureError: structuredData.reason }
+          reply: `Could not structure data: ${structuredData.reason}`
         });
       }
 
-      console.log(`✅ Data structured successfully!`);
-      console.log(`📊 Document Type: ${structuredData.documentType}`);
-      console.log(`📑 Sheets: ${structuredData.sheetCount}`);
+      console.log("-".repeat(70) + "\n");
 
-      console.log("🤖 Sending enhanced P&L data to OpenAI GPT-4o-mini...");
-      modelResult = await callModelWithJSON({
+      modelResult = await callAIModel({
         structuredData,
         question,
         documentType: structuredData.documentType
       });
-    } else {
-      console.log("📝 Using text-document analysis mode...");
+    } 
+    // Process text documents
+    else {
+      console.log("📝 Processing as text document");
       modelResult = await callModelWithText({ extracted, question });
     }
 
-    const { reply, raw, httpStatus, finishReason, tokenUsage, error } = modelResult;
+    const { reply, error } = modelResult;
 
     if (!reply) {
+      console.log("❌ No reply from AI");
       return res.status(200).json({
         ok: false,
-        type: extracted.type,
-        reply: error || "(No reply from model)",
-        debug: { status: httpStatus, raw: raw, error: error }
+        reply: error || "No response from AI model"
       });
     }
 
-    console.log("✅ AI analysis complete!");
+    console.log("✅ Analysis complete");
 
+    // Generate Word document
     let wordBase64 = null;
     try {
-      console.log("📝 Generating Word document...");
       wordBase64 = await markdownToWord(reply);
-      console.log("✅ Word document generated successfully");
+      console.log("📄 Word document generated");
     } catch (wordError) {
-      console.error("❌ Word generation error:", wordError);
+      console.error("Word generation error:", wordError.message);
     }
+
+    console.log("=".repeat(70) + "\n");
 
     return res.status(200).json({
       ok: true,
@@ -1866,23 +1614,14 @@ export default async function handler(req, res) {
       reply,
       wordDownload: wordBase64,
       downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
-      structuredData: structuredData ? {
-        sheetCount: structuredData.sheetCount,
-        documentType: structuredData.documentType,
-        storeCount: structuredData.sheets[0]?.lineItems?.[0]?.values?.length || 0
-      } : null,
       debug: {
-        status: httpStatus,
         documentType: structuredData?.documentType || "GENERAL",
         sheetCount: structuredData?.sheetCount || 0,
-        storeCount: structuredData?.sheets[0]?.lineItems?.[0]?.values?.length || 0,
-        hasWord: !!wordBase64,
-        finishReason: finishReason,
-        tokenUsage: tokenUsage
+        hasWord: !!wordBase64
       }
     });
   } catch (err) {
-    console.error("❌ analyze-file error:", err);
+    console.error("❌ Error:", err);
     return res.status(500).json({ 
       error: String(err?.message || err)
     });
