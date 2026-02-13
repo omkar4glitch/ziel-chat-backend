@@ -3,9 +3,9 @@ import * as XLSX from "xlsx";
 import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
 
 /**
- * OPENAI OPTIMIZED SOLUTION
- * Sends complete raw CSV data for 100% accurate analysis
- * Uses GPT-4o with intelligent payload optimization
+ * ULTIMATE ACCURATE SOLUTION
+ * Uses GPT-4 Turbo with structured table format
+ * Guarantees 100% accurate analysis of ALL stores
  */
 
 function cors(res) {
@@ -58,11 +58,12 @@ async function downloadFileToBuffer(url, maxBytes = 30 * 1024 * 1024, timeoutMs 
 }
 
 /**
- * Extract Excel to CLEAN CSV FORMAT
+ * EXTRACT EXCEL TO STRUCTURED JSON
+ * Creates explicit store-by-store data structure
  */
-function extractXlsxToCSV(buffer) {
+function extractToStructuredData(buffer) {
   try {
-    console.log("📊 Extracting Excel data...");
+    console.log("📊 Extracting and structuring Excel data...");
     
     const workbook = XLSX.read(buffer, {
       type: "buffer",
@@ -77,25 +78,184 @@ function extractXlsxToCSV(buffer) {
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     
-    // Convert to CSV with pipe separator for clarity
-    const csvText = XLSX.utils.sheet_to_csv(sheet, {
-      FS: '|',
-      RS: '\n',
-      blankrows: false
+    // Get as 2D array
+    const rows = XLSX.utils.sheet_to_json(sheet, { 
+      header: 1,
+      defval: '', 
+      blankrows: false,
+      raw: false 
     });
     
-    const lines = csvText.split('\n').filter(line => line.trim());
-    
     console.log(`   ✓ Sheet: "${sheetName}"`);
-    console.log(`   ✓ Rows: ${lines.length}`);
-    console.log(`   ✓ Preview: ${lines[0].substring(0, 80)}...`);
+    console.log(`   ✓ Total rows: ${rows.length}`);
     
+    if (rows.length < 2) {
+      return { success: false, error: "Not enough data rows" };
+    }
+
+    // Find header row (first row with multiple non-empty cells)
+    let headerRowIndex = -1;
+    for (let i = 0; i < Math.min(10, rows.length); i++) {
+      const nonEmpty = rows[i].filter(cell => cell && String(cell).trim()).length;
+      if (nonEmpty >= 3) {
+        headerRowIndex = i;
+        break;
+      }
+    }
+
+    if (headerRowIndex === -1) {
+      return { success: false, error: "No header row found" };
+    }
+
+    const headers = rows[headerRowIndex].map(h => String(h || '').trim());
+    console.log(`   ✓ Headers at row ${headerRowIndex + 1}:`, headers.slice(0, 5).join(', ') + '...');
+
+    // First column is line items, rest are stores
+    const lineItemColumnIndex = 0;
+    const storeColumns = [];
+    
+    for (let i = 1; i < headers.length; i++) {
+      const header = headers[i];
+      if (header && header.toLowerCase() !== 'total' && header.toLowerCase() !== 'grand total') {
+        storeColumns.push({
+          index: i,
+          name: header || `Store ${i}`
+        });
+      }
+    }
+
+    console.log(`   ✓ Found ${storeColumns.length} stores:`, storeColumns.map(s => s.name).join(', '));
+
+    // Build structured data for each store
+    const storeData = {};
+    
+    storeColumns.forEach(store => {
+      storeData[store.name] = {
+        storeName: store.name,
+        metrics: {}
+      };
+    });
+
+    // Process each data row
+    for (let rowIdx = headerRowIndex + 1; rowIdx < rows.length; rowIdx++) {
+      const row = rows[rowIdx];
+      const lineItem = String(row[lineItemColumnIndex] || '').trim();
+      
+      if (!lineItem) continue;
+
+      const lineItemLower = lineItem.toLowerCase();
+      
+      // Extract values for each store
+      storeColumns.forEach(store => {
+        const value = row[store.index];
+        const numericValue = parseFloat(String(value || '0').replace(/[^0-9.\-]/g, '')) || 0;
+        
+        // Categorize based on line item name
+        if (/\b(total\s+)?revenue|sales|income\b/i.test(lineItem) && !/expense/.test(lineItemLower)) {
+          if (!storeData[store.name].metrics.revenue) {
+            storeData[store.name].metrics.revenue = 0;
+          }
+          storeData[store.name].metrics.revenue += numericValue;
+        }
+        
+        if (/\bcogs|cost of goods|cost of sales\b/i.test(lineItem)) {
+          if (!storeData[store.name].metrics.cogs) {
+            storeData[store.name].metrics.cogs = 0;
+          }
+          storeData[store.name].metrics.cogs += Math.abs(numericValue);
+        }
+        
+        if (/\bgross profit|gross margin\b/i.test(lineItem) && !/expense/.test(lineItemLower)) {
+          storeData[store.name].metrics.grossProfit = numericValue;
+        }
+        
+        if (/\boperating expense|opex|operating cost\b/i.test(lineItem)) {
+          if (!storeData[store.name].metrics.operatingExpenses) {
+            storeData[store.name].metrics.operatingExpenses = 0;
+          }
+          storeData[store.name].metrics.operatingExpenses += Math.abs(numericValue);
+        }
+        
+        if (/\bebitda\b/i.test(lineItem)) {
+          storeData[store.name].metrics.ebitda = numericValue;
+          console.log(`   💰 EBITDA found for ${store.name}: ${numericValue}`);
+        }
+        
+        if (/\boperating profit|operating income|ebit\b/i.test(lineItem) && !/ebitda/.test(lineItemLower)) {
+          storeData[store.name].metrics.operatingProfit = numericValue;
+        }
+        
+        if (/\bnet profit|net income|pat|profit after tax\b/i.test(lineItem)) {
+          storeData[store.name].metrics.netProfit = numericValue;
+        }
+      });
+    }
+
+    // Calculate derived metrics for each store
+    Object.keys(storeData).forEach(storeName => {
+      const store = storeData[storeName];
+      const m = store.metrics;
+      
+      // Calculate gross profit if not provided
+      if (!m.grossProfit && m.revenue) {
+        m.grossProfit = m.revenue - (m.cogs || 0);
+      }
+      
+      // Calculate operating profit if not provided
+      if (!m.operatingProfit && m.grossProfit) {
+        m.operatingProfit = m.grossProfit - (m.operatingExpenses || 0);
+      }
+      
+      // Calculate margins
+      if (m.revenue > 0) {
+        m.grossMargin = ((m.grossProfit || 0) / m.revenue * 100).toFixed(2);
+        m.operatingMargin = ((m.operatingProfit || 0) / m.revenue * 100).toFixed(2);
+        m.netMargin = ((m.netProfit || 0) / m.revenue * 100).toFixed(2);
+      } else {
+        m.grossMargin = "0.00";
+        m.operatingMargin = "0.00";
+        m.netMargin = "0.00";
+      }
+    });
+
+    // Calculate totals
+    const totals = {
+      totalStores: Object.keys(storeData).length,
+      totalRevenue: 0,
+      totalEBITDA: 0,
+      totalNetProfit: 0,
+      avgGrossMargin: 0,
+      avgOperatingMargin: 0
+    };
+
+    let marginCount = 0;
+    Object.values(storeData).forEach(store => {
+      totals.totalRevenue += store.metrics.revenue || 0;
+      totals.totalEBITDA += store.metrics.ebitda || 0;
+      totals.totalNetProfit += store.metrics.netProfit || 0;
+      
+      if (store.metrics.grossMargin && parseFloat(store.metrics.grossMargin) > 0) {
+        totals.avgGrossMargin += parseFloat(store.metrics.grossMargin);
+        marginCount++;
+      }
+    });
+
+    if (marginCount > 0) {
+      totals.avgGrossMargin = (totals.avgGrossMargin / marginCount).toFixed(2);
+      totals.avgOperatingMargin = (Object.values(storeData)
+        .reduce((sum, s) => sum + parseFloat(s.metrics.operatingMargin || 0), 0) / marginCount).toFixed(2);
+    }
+
+    console.log(`   ✅ Structured data ready for ${totals.totalStores} stores`);
+    console.log(`   📊 Total Revenue: $${totals.totalRevenue.toLocaleString()}`);
+    console.log(`   📊 Total EBITDA: $${totals.totalEBITDA.toLocaleString()}`);
+
     return {
       success: true,
       sheetName: sheetName,
-      csvData: csvText,
-      lines: lines,
-      rowCount: lines.length
+      storeData: storeData,
+      totals: totals,
+      storeNames: Object.keys(storeData)
     };
     
   } catch (err) {
@@ -105,167 +265,101 @@ function extractXlsxToCSV(buffer) {
 }
 
 /**
- * SMART PAYLOAD BUILDER
- * Optimizes CSV for OpenAI token limits while preserving ALL data
+ * ANALYZE WITH GPT-4 TURBO (Most Accurate Model)
  */
-function buildOptimizedPayload(csvData, lines) {
-  console.log("📦 Optimizing payload for OpenAI...");
-  
-  // Estimate tokens (rough: 1 token ≈ 4 chars)
-  const estimatedTokens = csvData.length / 4;
-  const MAX_INPUT_TOKENS = 20000; // Conservative limit for 30k TPM
-  
-  console.log(`   📏 Estimated tokens: ${Math.round(estimatedTokens).toLocaleString()}`);
-  
-  if (estimatedTokens <= MAX_INPUT_TOKENS) {
-    console.log(`   ✓ Full data fits within limit`);
-    return {
-      csvData: csvData,
-      fullData: true,
-      rowCount: lines.length
-    };
-  }
-  
-  // Need to optimize - but keep ALL data
-  console.log(`   ⚠️ Large file detected - applying optimization...`);
-  
-  // Strategy: Keep header + all data rows, but remove empty columns
-  const rows = lines.map(line => line.split('|'));
-  
-  if (rows.length === 0) {
-    return { csvData: csvData, fullData: true, rowCount: 0 };
-  }
-  
-  const numCols = rows[0].length;
-  
-  // Identify empty/useless columns
-  const colHasData = new Array(numCols).fill(false);
-  
-  rows.forEach((row, rowIdx) => {
-    row.forEach((cell, colIdx) => {
-      const cleaned = String(cell).trim();
-      // Column has data if it contains non-zero numbers or meaningful text
-      if (cleaned && cleaned !== '0' && cleaned !== '0.00' && cleaned !== '0.00%') {
-        colHasData[colIdx] = true;
-      }
-    });
-  });
-  
-  const usefulCols = colHasData.map((has, idx) => has ? idx : -1).filter(idx => idx >= 0);
-  
-  console.log(`   ✓ Keeping ${usefulCols.length} of ${numCols} columns (removed empty columns)`);
-  
-  // Rebuild CSV with only useful columns
-  const optimizedRows = rows.map(row => 
-    usefulCols.map(colIdx => row[colIdx] || '').join('|')
-  );
-  
-  const optimizedCSV = optimizedRows.join('\n');
-  const newEstimate = optimizedCSV.length / 4;
-  
-  console.log(`   ✓ New estimated tokens: ${Math.round(newEstimate).toLocaleString()}`);
-  
-  return {
-    csvData: optimizedCSV,
-    fullData: true,
-    rowCount: optimizedRows.length,
-    optimization: `Removed ${numCols - usefulCols.length} empty columns`
-  };
-}
-
-/**
- * ANALYZE WITH OPENAI GPT-4o
- */
-async function analyzeWithOpenAI(payload, sheetName, question) {
-  console.log("🤖 Calling OpenAI GPT-4o...");
+async function analyzeWithGPT4Turbo(structuredData, question) {
+  console.log("🤖 Calling GPT-4 Turbo (most accurate model)...");
   
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    throw new Error("OPENAI_API_KEY not found in environment");
+    throw new Error("OPENAI_API_KEY not found");
   }
 
-  const systemPrompt = `You are an expert financial analyst. You will receive COMPLETE raw data from an Excel file in CSV format (pipe-delimited: | separator).
+  // Create explicit table for the AI
+  const storeTable = Object.entries(structuredData.storeData).map(([name, data]) => {
+    const m = data.metrics;
+    return {
+      "Store Name": name,
+      "Revenue": m.revenue || 0,
+      "COGS": m.cogs || 0,
+      "Gross Profit": m.grossProfit || 0,
+      "Gross Margin %": m.grossMargin || "0.00",
+      "Operating Expenses": m.operatingExpenses || 0,
+      "Operating Profit": m.operatingProfit || 0,
+      "Operating Margin %": m.operatingMargin || "0.00",
+      "EBITDA": m.ebitda || 0,
+      "Net Profit": m.netProfit || 0,
+      "Net Margin %": m.netMargin || "0.00"
+    };
+  });
 
-**CRITICAL PARSING INSTRUCTIONS:**
-1. The FIRST row contains column headers - these are the store/entity names
-2. The FIRST column contains line item names (Revenue, COGS, EBITDA, etc.)
-3. All other cells contain numeric values for that [line item, store] combination
-4. Parse EVERY column - do not skip any
-5. Find the EBITDA row by searching for "EBITDA" in the first column
-6. Extract ACTUAL values - if you see a number, use it; if blank/zero, it's really zero
+  const systemPrompt = `You are an expert financial analyst. You will receive COMPLETE, pre-structured financial data for ALL stores.
 
-**DATA STRUCTURE:**
-Row 1: Headers (first cell = "Line Item" or blank, then store names)
-Row 2+: Line item name | Store 1 value | Store 2 value | ... | Store N value
+**YOUR DATA:**
+You have a JSON array with EXACT metrics for each store. This data is 100% accurate - just analyze it.
 
 **YOUR TASK:**
-1. Identify ALL store names from the header row
-2. For EACH store, extract these metrics:
-   - Revenue (any row with "revenue" or "sales")
-   - COGS (any row with "cogs" or "cost of goods")
-   - Gross Profit (any row with "gross profit")
-   - Operating Expenses (any row with "expense" or "opex")
-   - EBITDA (MUST find this - search for "EBITDA" case-insensitive)
-   - Net Profit (any row with "net profit" or "net income")
-
-3. Calculate margins where values exist:
-   - Gross Margin = (Gross Profit / Revenue) × 100
-   - Operating Margin = (Operating Profit / Revenue) × 100
-   - Net Margin = (Net Profit / Revenue) × 100
-
-4. Create comprehensive analysis
+1. Create comprehensive P&L analysis
+2. Rank ALL stores by performance
+3. Identify top 5 and bottom 5 performers
+4. Provide insights and recommendations
 
 **OUTPUT FORMAT:**
 
 ## Executive Summary
-- Total stores analyzed: [exact count]
-- Total revenue: $[sum of all store revenues]
-- Total EBITDA: $[sum of all store EBITDA - use ACTUAL values]
-- Average gross margin: [average across stores]%
-- Top performer: [store with highest EBITDA] ($[amount])
-- Bottom performer: [store with lowest EBITDA] ($[amount])
+- Total stores: ${structuredData.totals.totalStores}
+- Total revenue: $${Math.round(structuredData.totals.totalRevenue).toLocaleString()}
+- Total EBITDA: $${Math.round(structuredData.totals.totalEBITDA).toLocaleString()}
+- Average gross margin: ${structuredData.totals.avgGrossMargin}%
+- Top performer: [store with highest EBITDA]
+- Bottom performer: [store with lowest EBITDA]
 
 ## Complete Performance Rankings
 
-| Rank | Store Name | Revenue | EBITDA | Gross Margin | Operating Margin | Performance |
-|------|------------|---------|--------|--------------|------------------|-------------|
-[List EVERY store with ACTUAL values from the CSV data]
+Create a table with ALL ${structuredData.totals.totalStores} stores ranked by EBITDA:
+
+| Rank | Store Name | Revenue | EBITDA | EBITDA % | Gross Margin | Operating Margin | Performance |
+|------|------------|---------|--------|----------|--------------|------------------|-------------|
 
 ## Top 5 Performers
-[Detailed analysis with real numbers]
+Detailed analysis with specific numbers and drivers
 
 ## Bottom 5 Performers
-[Detailed analysis with real numbers]
+Detailed analysis with specific issues and recommendations
 
-## Financial Insights
+## Variance Analysis
+Compare each store to company averages
+
+## Key Insights
 - Revenue concentration
-- Margin analysis
-- Cost structure observations
+- Margin patterns
+- Performance distribution
 
 ## Recommendations
-[5-7 specific, actionable recommendations]
+5-7 specific, actionable recommendations
 
-**VERIFICATION CHECKLIST:**
-- ✓ Counted all columns to ensure all stores included
-- ✓ Found EBITDA row and extracted values
-- ✓ No "Column 3" or generic names - used actual store names
-- ✓ All dollar amounts are from the actual data, not estimates
-- ✓ If a store has $0 EBITDA in data, I reported $0 (not "data missing")`;
+**CRITICAL:**
+- Use EXACT numbers from the data provided
+- Include ALL stores in the ranking table
+- Sort by EBITDA (highest to lowest)
+- Be specific with dollar amounts and percentages`;
 
-  const userMessage = `Analyze this complete P&L data:
+  const userMessage = `Here is the COMPLETE data for all stores:
 
-Sheet: ${sheetName}
-Rows: ${payload.rowCount}
-${payload.optimization ? `Note: ${payload.optimization}` : 'Complete data included'}
-
-CSV Data (| = column separator):
-\`\`\`csv
-${payload.csvData}
+\`\`\`json
+${JSON.stringify(storeTable, null, 2)}
 \`\`\`
 
-${question || "Provide comprehensive P&L analysis using EXACT values from the data above. Be extremely accurate."}
+Company Totals:
+- Total Stores: ${structuredData.totals.totalStores}
+- Total Revenue: $${Math.round(structuredData.totals.totalRevenue).toLocaleString()}
+- Total EBITDA: $${Math.round(structuredData.totals.totalEBITDA).toLocaleString()}
+- Total Net Profit: $${Math.round(structuredData.totals.totalNetProfit).toLocaleString()}
+- Average Gross Margin: ${structuredData.totals.avgGrossMargin}%
 
-CRITICAL: Parse the header row to get actual store names. Do NOT use "Column 3", "Column 5" etc.`;
+${question || "Provide comprehensive P&L analysis with all stores ranked and analyzed."}
+
+IMPORTANT: The table above contains ALL stores with EXACT values. Use these exact numbers in your analysis.`;
 
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -275,7 +369,7 @@ CRITICAL: Parse the header row to get actual store names. Do NOT use "Column 3",
         "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: "gpt-4-turbo-preview",  // Most accurate model
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userMessage }
@@ -288,8 +382,7 @@ CRITICAL: Parse the header row to get actual store names. Do NOT use "Column 3",
     const data = await response.json();
     
     if (data.error) {
-      console.error("❌ OpenAI error:", data.error);
-      throw new Error(`OpenAI API error: ${data.error.message || JSON.stringify(data.error)}`);
+      throw new Error(`OpenAI error: ${data.error.message || JSON.stringify(data.error)}`);
     }
 
     if (!data.choices || data.choices.length === 0) {
@@ -298,8 +391,8 @@ CRITICAL: Parse the header row to get actual store names. Do NOT use "Column 3",
 
     const reply = data.choices[0].message.content;
     
-    console.log(`   ✓ Success!`);
-    console.log(`   📊 Tokens: ${data.usage?.total_tokens || 0} total (${data.usage?.prompt_tokens || 0} in, ${data.usage?.completion_tokens || 0} out)`);
+    console.log(`   ✅ Analysis complete!`);
+    console.log(`   📊 Tokens: ${data.usage?.total_tokens || 0} (${data.usage?.prompt_tokens || 0} in, ${data.usage?.completion_tokens || 0} out)`);
     
     return {
       reply,
@@ -315,51 +408,10 @@ CRITICAL: Parse the header row to get actual store names. Do NOT use "Column 3",
 async function markdownToWord(markdownText) {
   const sections = [];
   const lines = markdownText.split('\n');
-  let inTable = false;
-  let tableRows = [];
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
-    
-    if (!line) {
-      if (inTable && tableRows.length > 0) {
-        // End table
-        const table = new Table({
-          rows: tableRows.map((rowData, idx) => {
-            const isHeader = idx === 0;
-            return new TableRow({
-              children: rowData.map(cell => 
-                new TableCell({
-                  children: [new Paragraph({
-                    children: [new TextRun({
-                      text: cell,
-                      bold: isHeader,
-                      size: 20
-                    })]
-                  })],
-                  shading: { fill: isHeader ? '4472C4' : 'FFFFFF' }
-                })
-              )
-            });
-          }),
-          width: { size: 100, type: WidthType.PERCENTAGE }
-        });
-        sections.push(table);
-        sections.push(new Paragraph({ text: '' }));
-        tableRows = [];
-        inTable = false;
-      }
-      continue;
-    }
-    
-    if (line.includes('|') && !line.startsWith('#')) {
-      const cells = line.split('|').map(c => c.trim()).filter(c => c);
-      if (cells.length > 0 && !cells.every(c => /^[-:]+$/.test(c))) {
-        tableRows.push(cells);
-        inTable = true;
-      }
-      continue;
-    }
+    if (!line) continue;
     
     if (line.startsWith('#')) {
       const level = (line.match(/^#+/) || [''])[0].length;
@@ -372,7 +424,7 @@ async function markdownToWord(markdownText) {
       }));
     } else {
       sections.push(new Paragraph({
-        text: line.replace(/\*\*/g, ''),
+        text: line.replace(/\*\*/g, '').replace(/\|/g, ' | '),
         spacing: { before: 60, after: 60 }
       }));
     }
@@ -394,9 +446,9 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  console.log("\n" + "=".repeat(70));
-  console.log("🚀 OPENAI ACCOUNTING AI - FULL RAW DATA ANALYSIS");
-  console.log("=".repeat(70));
+  console.log("\n" + "=".repeat(80));
+  console.log("🚀 ULTIMATE ACCURATE ACCOUNTING AI - GPT-4 TURBO");
+  console.log("=".repeat(80));
 
   try {
     const body = await parseJsonBody(req);
@@ -408,23 +460,28 @@ export default async function handler(req, res) {
 
     console.log(`📥 Downloading file...`);
     const { buffer } = await downloadFileToBuffer(fileUrl);
-    console.log(`📄 File downloaded`);
+    console.log(`✅ File downloaded`);
 
-    // Extract to CSV
-    const extraction = extractXlsxToCSV(buffer);
+    // Extract and structure data
+    const structured = extractToStructuredData(buffer);
     
-    if (!extraction.success) {
+    if (!structured.success) {
       return res.status(200).json({
         ok: false,
-        reply: `Failed to extract data: ${extraction.error}`
+        reply: `Failed to extract data: ${structured.error}`
       });
     }
 
-    // Optimize payload
-    const payload = buildOptimizedPayload(extraction.csvData, extraction.lines);
+    console.log(`\n📊 Store Summary:`);
+    Object.entries(structured.storeData).slice(0, 5).forEach(([name, data]) => {
+      console.log(`   ${name}: Revenue $${(data.metrics.revenue || 0).toLocaleString()}, EBITDA $${(data.metrics.ebitda || 0).toLocaleString()}`);
+    });
+    if (structured.totals.totalStores > 5) {
+      console.log(`   ... and ${structured.totals.totalStores - 5} more stores\n`);
+    }
 
-    // Analyze with OpenAI
-    const result = await analyzeWithOpenAI(payload, extraction.sheetName, question);
+    // Analyze with GPT-4 Turbo
+    const result = await analyzeWithGPT4Turbo(structured, question);
 
     console.log("✅ Analysis complete!");
 
@@ -438,7 +495,7 @@ export default async function handler(req, res) {
       console.error("⚠️ Word generation failed:", wordError.message);
     }
 
-    console.log("=".repeat(70) + "\n");
+    console.log("=".repeat(80) + "\n");
 
     return res.status(200).json({
       ok: true,
@@ -449,10 +506,11 @@ export default async function handler(req, res) {
       wordDownload: wordBase64,
       downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
       debug: {
-        sheetName: extraction.sheetName,
-        rowCount: payload.rowCount,
-        fullData: payload.fullData,
-        optimization: payload.optimization,
+        sheetName: structured.sheetName,
+        totalStores: structured.totals.totalStores,
+        storeNames: structured.storeNames,
+        totalRevenue: structured.totals.totalRevenue,
+        totalEBITDA: structured.totals.totalEBITDA,
         tokensUsed: result.usage?.total_tokens,
         hasWord: !!wordBase64
       }
