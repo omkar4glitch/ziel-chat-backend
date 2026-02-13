@@ -686,7 +686,7 @@ function analyzeTableStructure(rawArray) {
       } else if (headerLower.includes('store') || headerLower.includes('branch') || headerLower.includes('location')) {
         columnPurpose = 'ENTITY';
       } else {
-        columnPurpose = 'VALUE';
+        columnPurpose = 'ENTITY'; // Default to entity for unnamed numeric columns
       }
     }
 
@@ -981,135 +981,396 @@ function processSheetOldWay(sheet, allStructuredSheets) {
 }
 
 /**
- * 🔥 ENHANCED SYSTEM PROMPT for P&L analysis
+ * Compact line item payload to avoid oversized model requests
+ */
+function compactLineItem(lineItem = {}) {
+  const compactValues = Array.isArray(lineItem.values)
+    ? lineItem.values.map((value) => ({
+        column: value?.column,
+        columnIndex: value?.columnIndex,
+        purpose: value?.purpose,
+        numericValue: value?.numericValue
+      }))
+    : [];
+
+  return {
+    rowNumber: lineItem.rowNumber,
+    description: String(lineItem.description || "").slice(0, 200),
+    values: compactValues
+  };
+}
+
+/**
+ * 🔥 ENHANCED: Build structured P&L summary optimized for multi-store analysis
+ */
+function buildEnhancedPLSummary(sheet) {
+  const lineItems = Array.isArray(sheet?.lineItems) ? sheet.lineItems : [];
+  const columns = sheet.structure?.columns || [];
+  
+  // Get all store/entity columns (exclude line item column)
+  const storeColumns = columns.filter(col => 
+    col.isNumeric && col.purpose === 'ENTITY'
+  );
+  
+  // If no entity columns found, treat all numeric columns as stores (except TOTAL)
+  const valueColumns = storeColumns.length > 0 
+    ? storeColumns 
+    : columns.filter(col => col.isNumeric && col.purpose !== 'TOTAL');
+  
+  console.log(`📊 Found ${valueColumns.length} value columns to analyze:`, 
+    valueColumns.map(c => c.header));
+  
+  // Build complete P&L structure for each store
+  const storeData = {};
+  
+  valueColumns.forEach(col => {
+    storeData[col.header] = {
+      columnIndex: col.index,
+      revenue: { total: 0, items: [] },
+      cogs: { total: 0, items: [] },
+      grossProfit: 0,
+      operatingExpenses: { total: 0, items: [] },
+      operatingProfit: 0,
+      ebitda: 0,
+      netProfit: 0,
+      otherItems: []
+    };
+  });
+  
+  // Categorize and sum each line item
+  lineItems.forEach(lineItem => {
+    const desc = String(lineItem.description || '').toLowerCase();
+    
+    // Determine category
+    let category = 'other';
+    if (/\btotal\s+revenue\b|\bnet\s+revenue\b|\bgross\s+sales\b|\btotal\s+sales\b/.test(desc)) {
+      category = 'revenue';
+    } else if (/revenue|sales|income/.test(desc) && !/expense|cost/.test(desc)) {
+      category = 'revenue';
+    } else if (/cogs|cost of goods|cost of sales/.test(desc)) {
+      category = 'cogs';
+    } else if (/gross profit|gross margin/.test(desc)) {
+      category = 'grossProfit';
+    } else if (/expense|opex|operating cost|overhead|salaries|wages|rent|utilities/.test(desc)) {
+      category = 'operatingExpenses';
+    } else if (/operating profit|operating income|ebit\b/.test(desc)) {
+      category = 'operatingProfit';
+    } else if (/ebitda/.test(desc)) {
+      category = 'ebitda';
+    } else if (/net profit|net income|pat|profit after tax/.test(desc)) {
+      category = 'netProfit';
+    }
+    
+    // Extract values for each store
+    (lineItem.values || []).forEach(value => {
+      const storeName = value.column;
+      if (!storeData[storeName]) return;
+      
+      const amount = value.numericValue || 0;
+      const item = {
+        description: lineItem.description,
+        amount: amount
+      };
+      
+      switch(category) {
+        case 'revenue':
+          storeData[storeName].revenue.items.push(item);
+          storeData[storeName].revenue.total += amount;
+          break;
+        case 'cogs':
+          storeData[storeName].cogs.items.push(item);
+          storeData[storeName].cogs.total += Math.abs(amount); // COGS is usually negative
+          break;
+        case 'grossProfit':
+          storeData[storeName].grossProfit = amount;
+          break;
+        case 'operatingExpenses':
+          storeData[storeName].operatingExpenses.items.push(item);
+          storeData[storeName].operatingExpenses.total += Math.abs(amount); // Expenses usually negative
+          break;
+        case 'operatingProfit':
+          storeData[storeName].operatingProfit = amount;
+          break;
+        case 'ebitda':
+          storeData[storeName].ebitda = amount;
+          break;
+        case 'netProfit':
+          storeData[storeName].netProfit = amount;
+          break;
+        default:
+          storeData[storeName].otherItems.push(item);
+      }
+    });
+  });
+  
+  // Calculate derived metrics if not provided
+  Object.keys(storeData).forEach(store => {
+    const data = storeData[store];
+    
+    // Gross Profit = Revenue - COGS
+    if (data.grossProfit === 0 && data.revenue.total > 0) {
+      data.grossProfit = data.revenue.total - data.cogs.total;
+    }
+    
+    // Operating Profit = Gross Profit - Operating Expenses
+    if (data.operatingProfit === 0 && data.grossProfit !== 0) {
+      data.operatingProfit = data.grossProfit - data.operatingExpenses.total;
+    }
+    
+    // Calculate margins
+    data.grossProfitMargin = data.revenue.total > 0 
+      ? ((data.grossProfit / data.revenue.total) * 100).toFixed(2)
+      : '0.00';
+    
+    data.operatingMargin = data.revenue.total > 0
+      ? ((data.operatingProfit / data.revenue.total) * 100).toFixed(2)
+      : '0.00';
+    
+    data.netMargin = data.revenue.total > 0
+      ? ((data.netProfit / data.revenue.total) * 100).toFixed(2)
+      : '0.00';
+  });
+  
+  // Create rankings
+  const rankings = {
+    byRevenue: Object.entries(storeData)
+      .map(([store, data]) => ({ 
+        store, 
+        value: Math.round(data.revenue.total * 100) / 100 
+      }))
+      .sort((a, b) => b.value - a.value),
+    
+    byEBITDA: Object.entries(storeData)
+      .map(([store, data]) => ({ 
+        store, 
+        value: Math.round(data.ebitda * 100) / 100 
+      }))
+      .filter(x => x.value !== 0)
+      .sort((a, b) => b.value - a.value),
+    
+    byOperatingProfit: Object.entries(storeData)
+      .map(([store, data]) => ({ 
+        store, 
+        value: Math.round(data.operatingProfit * 100) / 100 
+      }))
+      .filter(x => x.value !== 0)
+      .sort((a, b) => b.value - a.value),
+    
+    byGrossMargin: Object.entries(storeData)
+      .map(([store, data]) => ({ 
+        store, 
+        value: parseFloat(data.grossProfitMargin) 
+      }))
+      .filter(x => !isNaN(x.value) && x.value !== 0)
+      .sort((a, b) => b.value - a.value),
+    
+    byOperatingMargin: Object.entries(storeData)
+      .map(([store, data]) => ({ 
+        store, 
+        value: parseFloat(data.operatingMargin) 
+      }))
+      .filter(x => !isNaN(x.value) && x.value !== 0)
+      .sort((a, b) => b.value - a.value),
+
+    byNetMargin: Object.entries(storeData)
+      .map(([store, data]) => ({ 
+        store, 
+        value: parseFloat(data.netMargin) 
+      }))
+      .filter(x => !isNaN(x.value) && x.value !== 0)
+      .sort((a, b) => b.value - a.value)
+  };
+  
+  return {
+    totalStores: Object.keys(storeData).length,
+    storeNames: Object.keys(storeData),
+    stores: storeData,
+    rankings: rankings,
+    aggregates: {
+      totalRevenue: Math.round(Object.values(storeData).reduce((sum, s) => sum + s.revenue.total, 0) * 100) / 100,
+      totalEBITDA: Math.round(Object.values(storeData).reduce((sum, s) => sum + s.ebitda, 0) * 100) / 100,
+      totalOperatingProfit: Math.round(Object.values(storeData).reduce((sum, s) => sum + s.operatingProfit, 0) * 100) / 100,
+      totalNetProfit: Math.round(Object.values(storeData).reduce((sum, s) => sum + s.netProfit, 0) * 100) / 100,
+      avgGrossMargin: (Object.values(storeData).reduce((sum, s) => 
+        sum + parseFloat(s.grossProfitMargin), 0) / Object.keys(storeData).length).toFixed(2),
+      avgOperatingMargin: (Object.values(storeData).reduce((sum, s) => 
+        sum + parseFloat(s.operatingMargin), 0) / Object.keys(storeData).length).toFixed(2)
+    }
+  };
+}
+
+/**
+ * Build a bounded JSON payload for model analysis to stay below token/rate limits
+ */
+function buildBoundedStructuredPayload(structuredData) {
+  const maxJsonChars = 130000; // Increased for better P&L coverage with 22 stores
+  const maxSheets = 6;
+  
+  // For P&L documents, prioritize the enhanced summary over individual line items
+  const isPL = structuredData.documentType === 'PROFIT_LOSS';
+  
+  const payload = {
+    documentType: structuredData.documentType,
+    sheetCount: structuredData.sheetCount,
+    sheets: (structuredData.sheets || []).slice(0, maxSheets).map((sheet) => {
+      const baseSheet = {
+        sheetName: sheet.sheetName,
+        sheetType: sheet.sheetType,
+        summary: sheet.summary,
+        columnGuide: (sheet.structure?.columns || []).map((col) => ({
+          name: col.header,
+          position: col.index,
+          type: col.purpose,
+          isNumeric: col.isNumeric
+        })),
+        totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0
+      };
+      
+      if (isPL) {
+        // For P&L, use enhanced summary with complete store breakdown
+        baseSheet.plAnalysis = buildEnhancedPLSummary(sheet);
+        // Include only key line items as reference
+        baseSheet.sampleLineItems = Array.isArray(sheet.lineItems)
+          ? sheet.lineItems.slice(0, 20).map(compactLineItem)
+          : [];
+        console.log(`✅ P&L Analysis created for ${baseSheet.plAnalysis.totalStores} stores`);
+      } else {
+        // For other documents, include more line items
+        baseSheet.lineItems = Array.isArray(sheet.lineItems)
+          ? sheet.lineItems.slice(0, 120).map(compactLineItem)
+          : [];
+        baseSheet.dataTruncated = sheet.lineItems && sheet.lineItems.length > 120;
+      }
+      
+      return baseSheet;
+    })
+  };
+
+  const serialized = JSON.stringify(payload);
+  console.log(`📦 Payload size: ${serialized.length} characters`);
+  
+  if (serialized.length <= maxJsonChars) {
+    return { payload, serializedLength: serialized.length };
+  }
+  
+  // If still too large, reduce sample items
+  console.warn(`⚠️ Payload exceeds ${maxJsonChars} chars, reducing sample items...`);
+  payload.sheets = payload.sheets.map(sheet => {
+    if (sheet.sampleLineItems) {
+      sheet.sampleLineItems = sheet.sampleLineItems.slice(0, 10);
+    }
+    if (sheet.lineItems) {
+      sheet.lineItems = sheet.lineItems.slice(0, 60);
+      sheet.dataTruncated = true;
+    }
+    return sheet;
+  });
+  
+  return {
+    payload,
+    serializedLength: JSON.stringify(payload).length
+  };
+}
+
+/**
+ * 🔥 ENHANCED SYSTEM PROMPT for P&L analysis with 22+ stores
  */
 function getEnhancedSystemPrompt(documentType) {
-  const basePrompt = `You are an expert financial analyst and MIS report writer. You will receive financial data in structured JSON format.
+  const basePrompt = `You are an expert financial analyst and MIS report writer specializing in multi-store P&L analysis.
 
-**CRITICAL INSTRUCTIONS:**
-1. Pay EXTREMELY close attention to column headers and their exact positions
-2. Each value is tagged with its exact column and purpose
-3. NEVER mix up figures from different columns/stores/periods
-4. Always verify which column a number belongs to before using it
-5. Cross-reference column names with the values to ensure accuracy
+**DATA STRUCTURE YOU RECEIVE:**
+The data comes pre-structured with:
+- plAnalysis: Complete P&L breakdown for EVERY store
+  - stores: Object with each store's full P&L (revenue, COGS, gross profit, expenses, EBITDA, etc.)
+  - rankings: Pre-computed rankings by revenue, EBITDA, margins, etc.
+  - aggregates: Company-wide totals and averages
+- sampleLineItems: Reference data showing line item details
 
-**JSON DATA STRUCTURE YOU'LL RECEIVE:**
-- documentType: Type of financial document
-- sheets: Array containing:
-  - structure.headers: EXACT column names in order
-  - structure.columns: Detailed info about each column (type, purpose, position)
-  - lineItems: Each line has:
-    * description: The line item name
-    * values: Array of values, each with:
-      - column: Which column it's from
-      - columnIndex: Exact position
-      - purpose: What this column represents (ENTITY, PERIOD, TOTAL, etc.)
-      - numericValue: Parsed number
-      - formatted: Original format
+**CRITICAL ANALYSIS RULES:**
+1. **Complete Store Coverage**: When analyzing stores, you MUST:
+   - Use plAnalysis.storeNames to see ALL stores
+   - Reference plAnalysis.stores[storeName] for each store's data
+   - Never analyze only a subset unless specifically asked for "top N" or "bottom N"
+
+2. **Pre-Computed Rankings**: Use the rankings arrays - they're already sorted:
+   - rankings.byRevenue: All stores ranked by revenue (high to low)
+   - rankings.byEBITDA: All stores ranked by EBITDA
+   - rankings.byGrossMargin: All stores ranked by gross profit margin %
+   - rankings.byOperatingMargin: All stores ranked by operating margin %
+
+3. **Store-Level Detail**: For each store in plAnalysis.stores, you have:
+   - revenue.total and revenue.items[]
+   - cogs.total and cogs.items[]
+   - grossProfit and grossProfitMargin (as %)
+   - operatingExpenses.total and operatingExpenses.items[]
+   - operatingProfit and operatingMargin (as %)
+   - ebitda
+   - netProfit and netMargin (as %)
 
 `;
 
   if (documentType === 'PROFIT_LOSS') {
-    return basePrompt + `**SPECIFIC INSTRUCTIONS FOR PROFIT & LOSS:**
+    return basePrompt + `**P&L ANALYSIS REQUIREMENTS:**
 
-**CRITICAL ACCURACY RULES:**
-1. **Column Verification**
-   - Before stating ANY number, verify which column it came from
-   - Include column name when mentioning figures
-   - Example: "Store A Revenue: $50,000" NOT just "Revenue: $50,000"
+**1. EXECUTIVE SUMMARY**
+   - Total stores analyzed: plAnalysis.totalStores
+   - Aggregates from plAnalysis.aggregates
+   - Top 3 and Bottom 3 performers (by EBITDA or revenue)
+   - Key findings and red flags
 
-2. **Multi-Column Analysis**
-   - If multiple stores/periods exist, create separate sections for each
-   - Compare columns side-by-side in tables
-   - Flag any discrepancies or unusual patterns
-
-3. **Line Item Analysis**
-   - For each major category (Revenue, COGS, Operating Expenses):
-     * State the column name
-     * State the exact value
-     * Verify it matches the column header
-
-4. **Validation Checks**
-   - Sum up each column independently
-   - Verify totals match any "Total" rows
-   - Flag if calculated totals don't match stated totals
-   - Check for negative values where they shouldn't exist
-
-5. **Report Structure**
-   ## Executive Summary
-   - Overall financial health
-   - Key metrics across ALL columns
+**2. PERFORMANCE RANKINGS**
+   Create comparison tables showing ALL stores (or top/bottom N if >15 stores):
    
-   ## Column-by-Column Analysis
-   For each column:
-   - Column name and purpose
-   - Revenue breakdown
-   - Expense breakdown
-   - Profit/Loss
-   - Key ratios
+   | Rank | Store Name | Revenue | EBITDA | Gross Margin | Operating Margin |
+   |------|------------|---------|---------|--------------|------------------|
    
-   ## Comparative Analysis (if multiple columns)
-   - Side-by-side comparison table
-   - Variance analysis
-   - Performance ranking
-   
-   ## Detailed Findings
-   - Line item details
-   - Anomalies or concerns
-   - Data quality notes
-   
-   ## Recommendations
-   - Specific, actionable items
-   - Prioritized by impact
+   Use the pre-computed rankings arrays for this.
 
-**EXAMPLE OF CORRECT FORMAT:**
-"Store A reported Revenue of $100,000 (from column 'Store A'), while Store B reported $85,000 (from column 'Store B'), representing a 15% difference."
+**3. DETAILED STORE ANALYSIS**
+   For each major store or category:
+   - Revenue composition (use revenue.items if needed)
+   - Cost structure (COGS, operating expenses breakdown)
+   - Profitability metrics
+   - Variance from company average
 
-**NEVER DO THIS:**
-"Revenue is $100,000" (which store? which column?)`;
+**4. VARIANCE ANALYSIS**
+   - Compare each store to company averages (in aggregates)
+   - Identify outliers (stores >20% above/below avg margins)
+   - Flag stores with negative EBITDA or unusual patterns
+
+**5. INSIGHTS & RECOMMENDATIONS**
+   - Growth opportunities (underperforming stores with potential)
+   - Cost optimization targets (high expense ratios)
+   - Best practice sharing (what top performers do differently)
+   - Actionable next steps
+
+**FORMATTING:**
+- Use markdown tables extensively
+- Include currency symbols and proper number formatting
+- Show percentages with 2 decimal places
+- Bold key figures and findings
+- Use headers and subheaders for organization
+
+**ACCURACY CHECKLIST:**
+✓ Used plAnalysis.storeNames to see all stores
+✓ Referenced pre-computed rankings for comparisons
+✓ Verified all numbers against source data
+✓ Included all stores in summary stats (unless specified otherwise)
+✓ Double-checked margin calculations
+✓ Flagged any data quality issues`;
   }
 
-  if (documentType === 'GENERAL_LEDGER') {
-    return basePrompt + `**SPECIFIC INSTRUCTIONS FOR GENERAL LEDGER:**
+  return basePrompt + `**ANALYSIS INSTRUCTIONS:**
 
-1. **Financial Validation**
-   - Verify that total debits equal total credits for EACH column separately
-   - If multiple periods/entities, validate each independently
-   - Flag unbalanced entries with exact column and amount
+Analyze the financial data thoroughly:
+1. Use pre-structured data from plAnalysis when available
+2. Include all stores/entities in analysis unless asked for subset
+3. Create clear comparison tables
+4. Highlight key variances and trends
+5. Provide actionable insights
 
-2. **Column-Aware Reconciliation**
-   - When matching transactions, ensure they're from the SAME column
-   - Don't mix transactions from different periods/entities
-   - Create separate reconciliation for each column pair
-
-3. **Account Analysis Per Column**
-   - Analyze each column's accounts separately
-   - Compare same accounts across columns
-   - Identify column-specific patterns
-
-4. **Output Format**
-   Use detailed tables showing:
-   - Column name
-   - Account name
-   - Debit amount (with column source)
-   - Credit amount (with column source)
-   - Balance
-   
-   Always include column identifiers in every table row.`;
-  }
-
-  return basePrompt + `**GENERAL ANALYSIS INSTRUCTIONS:**
-
-Analyze the data thoroughly ensuring:
-1. Every number is attributed to its correct column
-2. Column comparisons are explicit and clear
-3. Tables show column headers prominently
-4. Summaries maintain column separation
-5. Recommendations are column-specific when relevant
-
-Use markdown tables extensively. Always show column names in tables.`;
+Use markdown formatting with tables for clarity.`;
 }
-
 
 function truncateText(text, maxChars = 60000) {
   if (!text) return "";
@@ -1192,183 +1453,35 @@ ${text}`
 }
 
 /**
- * Compact line item payload to avoid oversized model requests
- */
-function compactLineItem(lineItem = {}) {
-  const compactValues = Array.isArray(lineItem.values)
-    ? lineItem.values.slice(0, 12).map((value) => ({
-        column: value?.column,
-        columnIndex: value?.columnIndex,
-        numericValue: value?.numericValue
-      }))
-    : [];
-
-  return {
-    rowNumber: lineItem.rowNumber,
-    description: String(lineItem.description || "").slice(0, 180),
-    values: compactValues
-  };
-}
-
-
-function getColumnKey(columnName = "") {
-  return String(columnName).trim().toLowerCase();
-}
-
-function getKpiType(description = "") {
-  const d = String(description).toLowerCase();
-
-  if (/\bebitda\b/.test(d)) return "EBITDA";
-  if (/operating\s+profit|ebit|profit\s+before\s+tax|pbt/.test(d)) return "OPERATING_PROFIT";
-  if (/\btotal\s+revenue\b|\brevenue\b|\bsales\b|\bnet\s+sales\b/.test(d)) return "REVENUE";
-  if (/\bgross\s+profit\b/.test(d)) return "GROSS_PROFIT";
-  if (/\btotal\s+expense\b|\bexpenses\b|\bopex\b/.test(d)) return "TOTAL_EXPENSE";
-  if (/\bnet\s+profit\b|\bpat\b|profit\s+after\s+tax/.test(d)) return "NET_PROFIT";
-
-  return null;
-}
-
-function buildStorePerformanceSnapshot(sheet) {
-  const storeMetrics = {};
-  const kpiRows = [];
-  const lineItems = Array.isArray(sheet?.lineItems) ? sheet.lineItems : [];
-
-  lineItems.forEach((lineItem) => {
-    const kpiType = getKpiType(lineItem?.description);
-    if (!kpiType) return;
-
-    const rowValues = {};
-    (lineItem.values || []).forEach((value) => {
-      const colName = value?.column;
-      const key = getColumnKey(colName);
-      if (!key || key === "total" || key === "grand total") return;
-
-      const numericValue = Number(value?.numericValue || 0);
-      rowValues[colName] = numericValue;
-
-      if (!storeMetrics[colName]) storeMetrics[colName] = {};
-      storeMetrics[colName][kpiType] = numericValue;
-    });
-
-    kpiRows.push({
-      kpi: kpiType,
-      description: lineItem.description,
-      valuesByStore: rowValues
-    });
-  });
-
-  const storeEbitdaRanking = Object.entries(storeMetrics)
-    .filter(([, metrics]) => Number.isFinite(metrics?.EBITDA))
-    .map(([store, metrics]) => ({
-      store,
-      ebitda: metrics.EBITDA
-    }))
-    .sort((a, b) => b.ebitda - a.ebitda);
-
-  return {
-    storeCount: Object.keys(storeMetrics).length,
-    availableKpis: [...new Set(kpiRows.map((row) => row.kpi))],
-    stores: storeMetrics,
-    kpiRows,
-    ebitdaRanking: {
-      top5: storeEbitdaRanking.slice(0, 5),
-      bottom5: storeEbitdaRanking.slice(-5).reverse(),
-      allStoresSorted: storeEbitdaRanking
-    }
-  };
-}
-
-/**
- * Build a bounded JSON payload for model analysis to stay below token/rate limits
- */
-function buildBoundedStructuredPayload(structuredData) {
-  const maxJsonChars = 90000;
-  const maxSheets = 6;
-  const itemSteps = [180, 120, 80, 50, 30, 20, 12, 8];
-
-  for (const maxItemsPerSheet of itemSteps) {
-    const payload = {
-      documentType: structuredData.documentType,
-      sheetCount: structuredData.sheetCount,
-      sheets: (structuredData.sheets || []).slice(0, maxSheets).map((sheet) => ({
-        sheetName: sheet.sheetName,
-        sheetType: sheet.sheetType,
-        summary: sheet.summary,
-        columnGuide: (sheet.structure?.columns || []).map((col) => ({
-          name: col.header,
-          position: col.index,
-          type: col.purpose,
-          isNumeric: col.isNumeric
-        })),
-        lineItems: Array.isArray(sheet.lineItems)
-          ? sheet.lineItems.slice(0, maxItemsPerSheet).map(compactLineItem)
-          : [],
-        totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0,
-        dataTruncated: sheet.lineItems && sheet.lineItems.length > maxItemsPerSheet,
-        storePerformanceSnapshot: buildStorePerformanceSnapshot(sheet)
-      }))
-    };
-
-    const serialized = JSON.stringify(payload);
-    if (serialized.length <= maxJsonChars) {
-      return { payload, maxItemsPerSheet, serializedLength: serialized.length };
-    }
-  }
-
-  // Final safety fallback if even the most aggressive step is still too large
-  const fallback = {
-    documentType: structuredData.documentType,
-    sheetCount: structuredData.sheetCount,
-    sheets: (structuredData.sheets || []).slice(0, 3).map((sheet) => ({
-      sheetName: sheet.sheetName,
-      sheetType: sheet.sheetType,
-      summary: sheet.summary,
-      columnGuide: (sheet.structure?.columns || []).slice(0, 20).map((col) => ({
-        name: col.header,
-        position: col.index,
-        type: col.purpose,
-        isNumeric: col.isNumeric
-      })),
-      lineItems: Array.isArray(sheet.lineItems)
-        ? sheet.lineItems.slice(0, 6).map(compactLineItem)
-        : [],
-      totalLineItems: sheet.lineItems ? sheet.lineItems.length : 0,
-      dataTruncated: true,
-      storePerformanceSnapshot: buildStorePerformanceSnapshot(sheet)
-    }))
-  };
-
-  return {
-    payload: fallback,
-    maxItemsPerSheet: 6,
-    serializedLength: JSON.stringify(fallback).length
-  };
-}
-
-/**
  * 🔥 CALL MODEL WITH STRUCTURED JSON
  */
 async function callModelWithJSON({ structuredData, question, documentType }) {
   const systemPrompt = getEnhancedSystemPrompt(documentType);
-  const { payload: dataForAI, maxItemsPerSheet, serializedLength } = buildBoundedStructuredPayload(structuredData);
-  console.log(`📦 Structured payload size: ${serializedLength} chars (max ${maxItemsPerSheet} items/sheet)`);
+  const { payload: dataForAI, serializedLength } = buildBoundedStructuredPayload(structuredData);
+  
+  console.log(`📦 Structured payload: ${serializedLength} chars`);
+  console.log(`📊 Stores in payload: ${dataForAI.sheets[0]?.plAnalysis?.totalStores || 'N/A'}`);
+
+  const userMessage = question || 
+    "Provide a comprehensive P&L analysis covering ALL stores. Include performance rankings, variance analysis, and actionable recommendations.";
 
   const messages = [
     { role: "system", content: systemPrompt },
     {
       role: "user",
-      content: `Here is the structured financial data in JSON format. Pay special attention to the column structure and ensure all figures are correctly attributed to their respective columns.
-
-Data may be truncated for large files to stay within model token limits; clearly mention this limitation in your response when relevant.
-
-When answering store-level performance questions, ALWAYS use "storePerformanceSnapshot" and include all stores present in that snapshot (not just sample rows).
-If "ebitdaRanking.allStoresSorted" exists, use it as the source of truth for top/bottom performer ranking.
+      content: `Structured financial data (JSON):
 
 \`\`\`json
-${JSON.stringify(dataForAI)}
+${JSON.stringify(dataForAI, null, 2)}
 \`\`\`
 
-${question || "Please provide a comprehensive MIS commentary analyzing this financial data. Ensure all figures are correctly attributed to their respective columns/stores/periods. Use the column names explicitly when stating any figures."}`
+Analysis request: ${userMessage}
+
+IMPORTANT: 
+- This data includes ${dataForAI.sheets[0]?.plAnalysis?.totalStores || 'multiple'} stores
+- Use plAnalysis.storeNames to see all store names
+- Use plAnalysis.rankings arrays for pre-sorted comparisons
+- Include ALL stores in your analysis unless specifically asked otherwise`
     }
   ];
 
@@ -1382,7 +1495,7 @@ ${question || "Please provide a comprehensive MIS commentary analyzing this fina
       model: "gpt-4o-mini",
       messages,
       temperature: 0,
-      max_tokens: 3000,
+      max_tokens: 4000, // Increased for comprehensive analysis
       top_p: 1.0,
       frequency_penalty: 0.0,
       presence_penalty: 0.0
@@ -1409,11 +1522,10 @@ ${question || "Please provide a comprehensive MIS commentary analyzing this fina
   }
 
   const finishReason = data?.choices?.[0]?.finish_reason;
-  console.log(`OpenAI finish reason: ${finishReason}`);
-  console.log(`Token usage:`, data?.usage);
+  console.log(`✅ OpenAI response - finish: ${finishReason}, tokens:`, data?.usage);
   
   if (finishReason === 'length') {
-    console.warn("⚠️ Response was truncated due to token limit!");
+    console.warn("⚠️ Response truncated due to token limit!");
   }
 
   let reply = data?.choices?.[0]?.message?.content || null;
@@ -1687,7 +1799,7 @@ export default async function handler(req, res) {
       console.log(`📊 Document Type: ${structuredData.documentType}`);
       console.log(`📑 Sheets: ${structuredData.sheetCount}`);
 
-      console.log("🤖 Sending column-aware data to OpenAI GPT-4o-mini...");
+      console.log("🤖 Sending enhanced P&L data to OpenAI GPT-4o-mini...");
       modelResult = await callModelWithJSON({
         structuredData,
         question,
@@ -1730,12 +1842,14 @@ export default async function handler(req, res) {
       downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
       structuredData: structuredData ? {
         sheetCount: structuredData.sheetCount,
-        documentType: structuredData.documentType
+        documentType: structuredData.documentType,
+        storeCount: structuredData.sheets[0]?.lineItems?.[0]?.values?.length || 0
       } : null,
       debug: {
         status: httpStatus,
         documentType: structuredData?.documentType || "GENERAL",
         sheetCount: structuredData?.sheetCount || 0,
+        storeCount: structuredData?.sheets[0]?.lineItems?.[0]?.values?.length || 0,
         hasWord: !!wordBase64,
         finishReason: finishReason,
         tokenUsage: tokenUsage
