@@ -1055,12 +1055,10 @@ function buildFinancialSummary(sheet) {
 }
 
 /**
- * BUILD PAYLOAD FOR AI
+ * BUILD PAYLOAD FOR AI - FULL DATA, NO COMPRESSION
  */
 function buildAIPayload(structuredData) {
-  const maxJsonChars = 140000; // Generous limit
-  
-  console.log("📦 Building AI payload...");
+  console.log("📦 Building FULL AI payload (no compression)...");
 
   const payload = {
     documentType: structuredData.documentType,
@@ -1071,63 +1069,60 @@ function buildAIPayload(structuredData) {
   structuredData.sheets.forEach(sheet => {
     const summary = buildFinancialSummary(sheet);
     
+    if (!summary) {
+      console.log("   ⚠️ No summary generated for sheet");
+      return;
+    }
+
+    // FULL UNCOMPRESSED DATA
     const sheetPayload = {
       sheetName: sheet.sheetName,
       sheetType: sheet.sheetType,
-      structure: {
-        headers: sheet.structure.headers,
-        columns: sheet.structure.columns.map(col => ({
-          name: col.header,
-          position: col.index,
-          type: col.purpose,
-          isNumeric: col.isNumeric
+      
+      // All column headers
+      columns: sheet.structure.columns.map(col => ({
+        name: col.header,
+        position: col.index,
+        type: col.purpose,
+        isNumeric: col.isNumeric
+      })),
+      
+      // COMPLETE metrics for EVERY entity - no filtering
+      entities: summary.entities,
+      
+      // COMPLETE rankings - all entities
+      rankings: summary.rankings,
+      
+      // Aggregates
+      aggregates: summary.aggregates,
+      
+      // Sample line items for context
+      sampleLineItems: sheet.lineItems.slice(0, 20).map(item => ({
+        description: item.description,
+        values: item.values.map(v => ({
+          column: v.column,
+          value: v.numericValue,
+          formatted: v.formatted
         }))
-      },
+      })),
+      
       totalLineItems: sheet.lineItems.length
     };
-
-    if (summary) {
-      sheetPayload.financialSummary = summary;
-      sheetPayload.sampleLineItems = sheet.lineItems.slice(0, 15).map(item => ({
-        description: item.description,
-        values: item.values.map(v => ({
-          column: v.column,
-          value: v.numericValue
-        }))
-      }));
-    } else {
-      // Fallback: include more line items if no summary
-      sheetPayload.lineItems = sheet.lineItems.slice(0, 100).map(item => ({
-        description: item.description,
-        values: item.values.map(v => ({
-          column: v.column,
-          value: v.numericValue
-        }))
-      }));
-    }
 
     payload.sheets.push(sheetPayload);
   });
 
   const serialized = JSON.stringify(payload);
-  console.log(`   ✓ Payload size: ${serialized.length} chars`);
+  const sizeInChars = serialized.length;
+  const estimatedTokens = Math.round(sizeInChars / 3.5); // Rough estimate: 1 token ≈ 3.5 chars
   
-  if (serialized.length > maxJsonChars) {
-    console.log("   ⚠️ Payload too large, truncating...");
-    // Reduce sample items if needed
-    payload.sheets.forEach(sheet => {
-      if (sheet.sampleLineItems) {
-        sheet.sampleLineItems = sheet.sampleLineItems.slice(0, 8);
-      }
-      if (sheet.lineItems) {
-        sheet.lineItems = sheet.lineItems.slice(0, 50);
-      }
-    });
-  }
+  console.log(`   ✓ Full payload size: ${sizeInChars.toLocaleString()} chars`);
+  console.log(`   ✓ Estimated tokens: ~${estimatedTokens.toLocaleString()}`);
 
   return {
     payload,
-    serializedLength: JSON.stringify(payload).length
+    serializedLength: sizeInChars,
+    estimatedTokens: estimatedTokens
   };
 }
 
@@ -1136,71 +1131,135 @@ function buildAIPayload(structuredData) {
  * Creates appropriate prompt based on document type
  */
 function generateSystemPrompt(documentType) {
-  const basePrompt = `You are an expert financial analyst. You receive structured financial data in JSON format.
-
-**CRITICAL INSTRUCTIONS:**
-1. Analyze ALL entities/columns provided - never skip any
-2. Use pre-computed metrics from financialSummary when available
-3. Create comparison tables showing all entities
-4. Base all statements on the actual data provided
-5. If data is truncated, mention this limitation
+  const basePrompt = `You are an expert financial analyst. You receive COMPLETE structured financial data in JSON format with ALL entities included.
 
 **DATA STRUCTURE:**
-- financialSummary.entities: Complete metrics for each entity/column
-- financialSummary.rankings: Pre-sorted rankings by various metrics
-- financialSummary.aggregates: Totals and averages across all entities
-- sampleLineItems: Reference line items for context
+- entities: Complete metrics for EVERY entity/store/column
+  - revenue: Total revenue
+  - grossProfit: Gross profit
+  - grossMargin: Gross profit margin (%)
+  - operatingExpenses: Total operating expenses
+  - operatingProfit: Operating profit
+  - operatingMargin: Operating profit margin (%)
+  - ebitda: EBITDA
+  - netProfit: Net profit
+  - netMargin: Net profit margin (%)
+  
+- rankings: Pre-sorted rankings showing ALL entities
+  - revenue: All entities ranked by revenue (high to low)
+  - ebitda: All entities ranked by EBITDA
+  - grossMargin: All entities ranked by gross margin %
+  - operatingMargin: All entities ranked by operating margin %
+  - netMargin: All entities ranked by net margin %
+  
+- aggregates: Company-wide totals
+  - totalEntities: Total number of entities
+  - entityNames: Array of all entity names
+  - totalRevenue: Sum of all revenue
+  - totalEBITDA: Sum of all EBITDA
+  - avgGrossMargin: Average gross margin across entities
+  - avgOperatingMargin: Average operating margin across entities
+
+**CRITICAL INSTRUCTIONS:**
+1. You have COMPLETE data for ALL entities - analyze every single one
+2. Use rankings arrays - they're pre-sorted and complete
+3. Create comprehensive comparison tables showing ALL entities
+4. Calculate each entity's % contribution to total revenue
+5. Identify variance from company average for each entity
+6. All monetary values and percentages are already calculated
 
 `;
 
   if (documentType === 'PROFIT_LOSS') {
-    return basePrompt + `**PROFIT & LOSS ANALYSIS FORMAT:**
+    return basePrompt + `**P&L ANALYSIS FORMAT:**
 
 ## Executive Summary
-- Total entities analyzed
-- Aggregate revenue, EBITDA, net profit
-- Top 3 and bottom 3 performers
-- Key findings
+- Total entities: {aggregates.totalEntities}
+- Company total revenue: {aggregates.totalRevenue}
+- Company total EBITDA: {aggregates.totalEBITDA}
+- Company total net profit: {aggregates.totalNetProfit}
+- Average gross margin: {aggregates.avgGrossMargin}%
+- Average operating margin: {aggregates.avgOperatingMargin}%
+- Top performer: {rankings.ebitda[0]}
+- Bottom performer: {rankings.ebitda[last]}
+- Key findings (3-4 bullet points)
 
-## Performance Rankings
-Create table showing ALL entities:
-| Rank | Entity | Revenue | EBITDA | Gross Margin | Operating Margin |
+## Complete Performance Rankings
+Create comprehensive table with ALL entities (use rankings.revenue):
+
+| Rank | Entity | Revenue | % of Total | EBITDA | Gross Margin | Operating Margin | Net Margin |
+|------|--------|---------|------------|--------|--------------|------------------|------------|
+
+Calculate "% of Total" as: (entity.revenue / aggregates.totalRevenue * 100).toFixed(1)
+
+## Top Performers Deep Dive
+Analyze top 5 entities in detail:
+- What makes them successful
+- Revenue contribution
+- Margin analysis
+- Best practices to replicate
+
+## Bottom Performers Deep Dive  
+Analyze bottom 5 entities in detail:
+- Root causes of underperformance
+- Specific metrics that lag (margins, revenue, costs)
+- Improvement opportunities with estimated impact
+- Turnaround recommendations
 
 ## Variance Analysis
-- Compare each entity to company average
-- Identify outliers (>20% variance from average)
-- Flag negative performers
+For EACH entity, show variance from company average:
+- Gross margin vs average
+- Operating margin vs average
+- EBITDA as % of revenue vs average
 
-## Detailed Insights
-- Revenue composition and drivers
-- Cost structure analysis
-- Profitability trends
-- Recommendations
+Highlight entities with >20% variance (positive or negative).
 
-Use financialSummary.rankings arrays for comparisons.`;
+## Key Insights & Patterns
+- Revenue concentration (what % of total comes from top 5)
+- Margin distribution (range, outliers)
+- Cost structure observations
+- Performance clusters (groups of similar performers)
+
+## Actionable Recommendations
+Prioritized list of 5-7 specific actions:
+1. [High priority items for underperformers]
+2. [Margin improvement opportunities]
+3. [Best practice scaling from top performers]
+4. [Cost optimization targets]
+5. [Growth opportunities]
+
+**FORMAT REQUIREMENTS:**
+- Use markdown tables extensively
+- Bold all key numbers
+- Include currency symbols ($, ₹, etc.) 
+- Show percentages to 2 decimal places
+- List ALL entities somewhere in the analysis (even if briefly)`;
   }
 
   if (documentType === 'BALANCE_SHEET') {
     return basePrompt + `**BALANCE SHEET ANALYSIS FORMAT:**
 
 ## Financial Position Summary
-- Total assets, liabilities, equity
-- Current ratio and liquidity metrics
-- Debt-to-equity ratio
+- Total entities analyzed: {aggregates.totalEntities}
+- Company-wide metrics
 
 ## Asset Analysis
-- Current vs fixed assets breakdown
-- Asset utilization
+- Asset composition across entities
+- Current vs fixed assets
+- Asset quality assessment
 
-## Liability Analysis
-- Short-term vs long-term obligations
-- Debt structure
+## Liability & Equity Analysis  
+- Debt levels and structure
+- Equity positions
+- Solvency ratios
 
-## Equity Analysis
-- Shareholders' equity composition
-- Retained earnings
+## Comparative Entity Analysis
+Table showing ALL entities with key balance sheet metrics
 
-Provide insights on financial health and stability.`;
+## Financial Health Assessment
+- Strongest balance sheets (top 5)
+- Weakest balance sheets (bottom 5)
+- Risk factors and recommendations`;
   }
 
   if (documentType === 'CASH_FLOW') {
@@ -1208,33 +1267,36 @@ Provide insights on financial health and stability.`;
 
 ## Cash Flow Summary
 - Operating, investing, financing activities
-- Net cash change
-- Cash position
+- Net cash changes across all entities
 
-## Operating Activities
-- Cash from operations
-- Working capital changes
+## Entity Comparison
+Table showing cash flow metrics for ALL entities
 
-## Investment Activities
-- Capex and investments
+## Liquidity Analysis
+- Cash generation ability
+- Working capital trends
+- Cash management quality
 
-## Financing Activities
-- Debt and equity changes
-
-Analyze liquidity and cash management.`;
+## Recommendations
+- Cash optimization opportunities
+- Liquidity improvement actions`;
   }
 
   return basePrompt + `**GENERAL FINANCIAL ANALYSIS:**
 
-Analyze the provided financial data and create:
-1. Summary of key metrics
-2. Comparison across entities (if multiple)
-3. Trends and patterns
-4. Data quality observations
-5. Recommendations
+Provide comprehensive analysis of ALL entities:
 
-Use tables for comparisons. Focus on meaningful insights.`;
+1. **Summary**: Key metrics, totals, averages
+2. **Complete Rankings**: Table with all entities
+3. **Performance Distribution**: Top, middle, bottom performers
+4. **Variance Analysis**: Each entity vs company average
+5. **Insights**: Patterns, trends, outliers
+6. **Recommendations**: Specific, actionable items
+
+Use tables to show ALL entities in at least one comprehensive comparison.`;
 }
+
+
 
 /**
  * CALL AI MODEL
@@ -1273,10 +1335,10 @@ Remember to analyze ALL entities shown in the data.`
       "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",  // Full GPT-4o, NOT mini - handles large context better
       messages,
       temperature: 0,
-      max_tokens: 4000
+      max_tokens: 4096  // Maximum for comprehensive analysis
     })
   });
 
@@ -1348,10 +1410,10 @@ async function callModelWithText({ extracted, question }) {
       "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages,
       temperature: 0,
-      max_tokens: 2500
+      max_tokens: 3000
     })
   });
 
