@@ -5,7 +5,7 @@ import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, Bo
 import JSZip from "jszip";
 
 /**
- * PRODUCTION-READY ACCOUNTING AI
+ * PRODUCTION-READY ACCOUNTING AI - UPDATED FOR O1-PREVIEW
  * Works with ANY accounting file structure
  * No hardcoding - automatically detects P&L, Balance Sheet, General Ledger, etc.
  */
@@ -1296,27 +1296,27 @@ Provide comprehensive analysis of ALL entities:
 Use tables to show ALL entities in at least one comprehensive comparison.`;
 }
 
-
-
 /**
- * CALL AI MODEL
+ * CALL AI MODEL - UPDATED FOR O1-PREVIEW
  */
 async function callAIModel({ structuredData, question, documentType }) {
   const systemPrompt = generateSystemPrompt(documentType);
-  const { payload, serializedLength } = buildAIPayload(structuredData);
+  const { payload, serializedLength, estimatedTokens } = buildAIPayload(structuredData);
   
-  console.log("🤖 Calling AI model...");
+  console.log("🤖 Calling AI model (o1-preview)...");
   console.log(`   Document type: ${documentType}`);
-  console.log(`   Payload size: ${serializedLength} chars`);
+  console.log(`   Payload size: ${serializedLength.toLocaleString()} chars`);
+  console.log(`   Estimated tokens: ~${estimatedTokens.toLocaleString()}`);
 
   const userMessage = question || 
     `Provide a comprehensive financial analysis of this ${documentType.replace('_', ' ').toLowerCase()} data. Include all entities in your analysis.`;
 
-  const messages = [
-    { role: "system", content: systemPrompt },
-    {
-      role: "user",
-      content: `Financial data (JSON format):
+  // o1-preview combines system prompt into user message and doesn't support system role
+  const combinedPrompt = `${systemPrompt}
+
+---
+
+Financial data (JSON format):
 
 \`\`\`json
 ${JSON.stringify(payload, null, 2)}
@@ -1324,7 +1324,12 @@ ${JSON.stringify(payload, null, 2)}
 
 Analysis request: ${userMessage}
 
-Remember to analyze ALL entities shown in the data.`
+Remember to analyze ALL entities shown in the data.`;
+
+  const messages = [
+    {
+      role: "user",
+      content: combinedPrompt
     }
   ];
 
@@ -1335,10 +1340,9 @@ Remember to analyze ALL entities shown in the data.`
       "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: "gpt-4o",  // Full GPT-4o, NOT mini - handles large context better
-      messages,
-      temperature: 0,
-      max_tokens: 4096  // Maximum for comprehensive analysis
+      model: "o1-preview",  // o1-preview for higher TPM limits and better reasoning
+      messages
+      // NOTE: o1-preview doesn't support temperature, max_tokens, or system role
     })
   });
 
@@ -1375,7 +1379,12 @@ Remember to analyze ALL entities shown in the data.`
       .trim();
   }
 
-  console.log(`   ✓ AI response received (${data?.usage?.total_tokens || 0} tokens)`);
+  const totalTokens = data?.usage?.total_tokens || 0;
+  const reasoningTokens = data?.usage?.completion_tokens_details?.reasoning_tokens || 0;
+  
+  console.log(`   ✓ AI response received`);
+  console.log(`   ✓ Total tokens: ${totalTokens.toLocaleString()}`);
+  console.log(`   ✓ Reasoning tokens: ${reasoningTokens.toLocaleString()}`);
 
   return { 
     reply, 
@@ -1386,20 +1395,24 @@ Remember to analyze ALL entities shown in the data.`
 }
 
 /**
- * Call model for text documents
+ * Call model for text documents - UPDATED FOR O1-PREVIEW
  */
 async function callModelWithText({ extracted, question }) {
   const text = extracted.textContent || "";
-  const truncated = text.length > 60000 ? text.slice(0, 60000) + "\n\n[TRUNCATED]" : text;
+  const truncated = text.length > 100000 ? text.slice(0, 100000) + "\n\n[TRUNCATED]" : text;
+
+  // o1-preview doesn't use system role, combine into user message
+  const userPrompt = `You are a financial analyst. Analyze the provided document and extract key insights. Only use facts present in the document.
+
+${question || "Analyze this financial document and provide key insights."}
+
+Document:
+${truncated}`;
 
   const messages = [
     {
-      role: "system",
-      content: "You are a financial analyst. Analyze the provided document and extract key insights. Only use facts present in the document."
-    },
-    {
       role: "user",
-      content: `${question || "Analyze this financial document and provide key insights."}\n\nDocument:\n${truncated}`
+      content: userPrompt
     }
   ];
 
@@ -1410,10 +1423,9 @@ async function callModelWithText({ extracted, question }) {
       "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: "gpt-4o",
-      messages,
-      temperature: 0,
-      max_tokens: 3000
+      model: "o1-preview",
+      messages
+      // o1-preview doesn't support temperature or max_tokens
     })
   });
 
@@ -1559,7 +1571,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   console.log("\n" + "=".repeat(70));
-  console.log("🚀 NEW REQUEST - Accounting AI Analysis");
+  console.log("🚀 NEW REQUEST - Accounting AI Analysis (o1-preview)");
   console.log("=".repeat(70));
 
   try {
@@ -1679,7 +1691,9 @@ export default async function handler(req, res) {
       debug: {
         documentType: structuredData?.documentType || "GENERAL",
         sheetCount: structuredData?.sheetCount || 0,
-        hasWord: !!wordBase64
+        hasWord: !!wordBase64,
+        model: "o1-preview",
+        tokenUsage: modelResult.tokenUsage
       }
     });
   } catch (err) {
