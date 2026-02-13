@@ -5,7 +5,7 @@ import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, Bo
 import JSZip from "jszip";
 
 /**
- * PRODUCTION-READY ACCOUNTING AI - UPDATED FOR O1-PREVIEW
+ * PRODUCTION-READY ACCOUNTING AI - USING O1 MODEL
  * Works with ANY accounting file structure
  * No hardcoding - automatically detects P&L, Balance Sheet, General Ledger, etc.
  */
@@ -1303,7 +1303,7 @@ async function callAIModel({ structuredData, question, documentType }) {
   const systemPrompt = generateSystemPrompt(documentType);
   const { payload, serializedLength, estimatedTokens } = buildAIPayload(structuredData);
   
-  console.log("🤖 Calling AI model (o1-preview)...");
+  console.log("🤖 Calling AI model (o1)...");
   console.log(`   Document type: ${documentType}`);
   console.log(`   Payload size: ${serializedLength.toLocaleString()} chars`);
   console.log(`   Estimated tokens: ~${estimatedTokens.toLocaleString()}`);
@@ -1311,7 +1311,7 @@ async function callAIModel({ structuredData, question, documentType }) {
   const userMessage = question || 
     `Provide a comprehensive financial analysis of this ${documentType.replace('_', ' ').toLowerCase()} data. Include all entities in your analysis.`;
 
-  // o1-preview combines system prompt into user message and doesn't support system role
+  // o1 combines system prompt into user message and doesn't support system role
   const combinedPrompt = `${systemPrompt}
 
 ---
@@ -1340,9 +1340,9 @@ Remember to analyze ALL entities shown in the data.`;
       "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: "o1-preview",  // o1-preview for higher TPM limits and better reasoning
+      model: "o1",  // Full o1 model with higher TPM limits and better reasoning
       messages
-      // NOTE: o1-preview doesn't support temperature, max_tokens, or system role
+      // NOTE: o1 models don't support temperature, max_tokens, or system role
     })
   });
 
@@ -1395,13 +1395,13 @@ Remember to analyze ALL entities shown in the data.`;
 }
 
 /**
- * Call model for text documents - UPDATED FOR O1-PREVIEW
+ * Call model for text documents - UPDATED FOR O1
  */
 async function callModelWithText({ extracted, question }) {
   const text = extracted.textContent || "";
   const truncated = text.length > 100000 ? text.slice(0, 100000) + "\n\n[TRUNCATED]" : text;
 
-  // o1-preview doesn't use system role, combine into user message
+  // o1 doesn't use system role, combine into user message
   const userPrompt = `You are a financial analyst. Analyze the provided document and extract key insights. Only use facts present in the document.
 
 ${question || "Analyze this financial document and provide key insights."}
@@ -1423,9 +1423,9 @@ ${truncated}`;
       "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: "o1-preview",
+      model: "o1",
       messages
-      // o1-preview doesn't support temperature or max_tokens
+      // o1 doesn't support temperature or max_tokens
     })
   });
 
@@ -1571,7 +1571,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   console.log("\n" + "=".repeat(70));
-  console.log("🚀 NEW REQUEST - Accounting AI Analysis (o1-preview)");
+  console.log("🚀 NEW REQUEST - Accounting AI Analysis (o1 model)");
   console.log("=".repeat(70));
 
   try {
@@ -1692,7 +1692,7 @@ export default async function handler(req, res) {
         documentType: structuredData?.documentType || "GENERAL",
         sheetCount: structuredData?.sheetCount || 0,
         hasWord: !!wordBase64,
-        model: "o1-preview",
+        model: "o1",
         tokenUsage: modelResult.tokenUsage
       }
     });
