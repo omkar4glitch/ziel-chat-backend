@@ -1,50 +1,95 @@
-import * as XLSX from "xlsx";
-
 export function parseMIS(rawSheets) {
 
-  const sheet = rawSheets[0]; // P&L MTD
-  const data = sheet.data;
+  const sheet = rawSheets[0];
+  const rows = sheet.data;
 
-  let revenue = 0;
-  let cogs = 0;
-  let payroll = 0;
-  let rent = 0;
-  let grossMargin = 0;
+  const stores = {};
 
-  data.forEach(row => {
+  // Detect header row containing years (2025, 2024 etc)
+  let yearRowIndex = null;
 
-    const account = Object.values(row)[0]?.toString().toLowerCase();
+  for (let i = 0; i < 10; i++) {
+    const values = Object.values(rows[i] || {});
+    if (values.some(v => typeof v === "number" && v > 2000 && v < 2100)) {
+      yearRowIndex = i;
+      break;
+    }
+  }
 
-    if (!account) return;
+  if (yearRowIndex === null)
+    throw new Error("Year row not detected in MIS file");
 
-    const values = Object.values(row);
+  const yearRow = Object.values(rows[yearRowIndex]);
+  const headerRow = Object.values(rows[yearRowIndex - 1]);
 
-    const numericValues = values.filter(v => typeof v === "number");
+  const detectedYears = [...new Set(
+    yearRow.filter(v => typeof v === "number")
+  )];
 
-    const totalValue = numericValues[0] || 0; 
-    // first numeric column usually consolidated MTD
+  // Detect stores dynamically
+  let colIndex = 1;
 
-    if (account.includes("sales") || account.includes("revenue"))
-      revenue += totalValue;
+  while (colIndex < headerRow.length) {
 
-    if (account.includes("total cogs"))
-      cogs += totalValue;
+    const storeName = headerRow[colIndex];
 
-    if (account.includes("payroll"))
-      payroll += totalValue;
+    if (!storeName || typeof storeName !== "string") {
+      colIndex++;
+      continue;
+    }
 
-    if (account.includes("rent"))
-      rent += totalValue;
+    stores[storeName] = {};
 
-    if (account.includes("gross margin"))
-      grossMargin += totalValue;
+    detectedYears.forEach(year => {
+      stores[storeName][year] = {};
+    });
+
+    colIndex += detectedYears.length * 3; 
+    // assuming each year block = Amount | % | Diff
+  }
+
+  // Account Mapping Keywords (Dynamic)
+  const accountKeywords = {
+    revenue: ["revenue", "sales", "total income"],
+    cogs: ["cogs", "cost of goods"],
+    payroll: ["payroll", "labor"],
+    rent: ["rent"],
+    grossMargin: ["gross margin"]
+  };
+
+  // Parse rows
+  rows.forEach(row => {
+
+    const accountRaw = Object.values(row)[0];
+    if (!accountRaw) return;
+
+    const account = accountRaw.toString().toLowerCase();
+
+    let colPointer = 1;
+
+    Object.keys(stores).forEach(store => {
+
+      detectedYears.forEach(year => {
+
+        const amount = Number(Object.values(row)[colPointer] || 0);
+
+        Object.keys(accountKeywords).forEach(metric => {
+
+          if (accountKeywords[metric].some(k =>
+              account.includes(k))) {
+
+            stores[store][year][metric] =
+              (stores[store][year][metric] || 0) + amount;
+          }
+        });
+
+        colPointer += 3; // skip % and diff columns
+      });
+    });
   });
 
   return {
-    revenue,
-    cogs,
-    payroll,
-    rent,
-    grossMargin
+    stores,
+    years: detectedYears
   };
 }
