@@ -1,44 +1,46 @@
 export function calculateFinancials(data) {
 
-  if (data.stores) {
-    return calculateStoreWise(data.stores);
-  }
+  const result = { stores: {} };
 
-  if (data.periods) {
-    return calculatePeriodWise(data.periods);
-  }
-}
+  const years = data.years.sort((a, b) => b - a);
 
-function calculateStoreWise(stores) {
+  const currentYear = years[0];
+  const previousYear = years[1];
 
-  Object.keys(stores).forEach(store => {
+  Object.keys(data.stores).forEach(store => {
 
-    const period = stores[store].periods.MTD;
+    const current = data.stores[store][currentYear] || {};
+    const previous = data.stores[store][previousYear] || {};
 
-    period.ebitda = period.revenue - period.expenses;
-
-    period.ebitdaMargin =
-      period.revenue > 0
-        ? (period.ebitda / period.revenue) * 100
+    const revenueGrowth =
+      previous.revenue > 0
+        ? ((current.revenue - previous.revenue) /
+            previous.revenue) * 100
         : 0;
+
+    const totalExpenseCurrent =
+      (current.cogs || 0) +
+      (current.payroll || 0) +
+      (current.rent || 0);
+
+    const ebitda =
+      (current.revenue || 0) - totalExpenseCurrent;
+
+    const ebitdaMargin =
+      current.revenue > 0
+        ? (ebitda / current.revenue) * 100
+        : 0;
+
+    result.stores[store] = {
+      currentYear,
+      previousYear,
+      revenueCurrent: current.revenue,
+      revenuePrevious: previous.revenue,
+      revenueGrowth,
+      ebitda,
+      ebitdaMargin
+    };
   });
 
-  return { stores };
-}
-
-function calculatePeriodWise(periods) {
-
-  Object.keys(periods).forEach(period => {
-
-    const p = periods[period];
-
-    p.ebitda = p.revenue - p.expenses;
-
-    p.ebitdaMargin =
-      p.revenue > 0
-        ? (p.ebitda / p.revenue) * 100
-        : 0;
-  });
-
-  return { periods };
+  return result;
 }
