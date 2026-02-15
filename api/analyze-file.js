@@ -3,19 +3,14 @@ import * as XLSX from "xlsx";
 import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
 
 /**
- * UPDATED TO USE OPENAI RESPONSES API (NOT CHAT COMPLETIONS)
- * Endpoint: POST /v1/responses
- * Model: GPT-4o or GPT-5 (optimized for Responses API)
+ * CORRECTED: RESPONSES API WITHOUT max_tokens
  * 
- * RESPONSES API BENEFITS:
- * - Stateful by default
- * - Built-in tool support
- * - Better performance with reasoning models
- * - 40-80% better cache utilization
- * 
- * PRICING (GPT-4o):
- * - Input: $2.50 per 1M tokens
- * - Output: $10.00 per 1M tokens
+ * KEY DIFFERENCES FROM CHAT COMPLETIONS:
+ * ❌ NO max_tokens parameter
+ * ❌ NO messages array
+ * ✅ Uses "input" parameter
+ * ✅ Returns "output" array
+ * ✅ Stateful by default
  */
 
 function cors(res) {
@@ -69,7 +64,6 @@ async function downloadFileToBuffer(url, maxBytes = 30 * 1024 * 1024, timeoutMs 
 
 /**
  * EXTRACT EXCEL TO STRUCTURED JSON
- * Creates explicit store-by-store data structure
  */
 function extractToStructuredData(buffer) {
   try {
@@ -88,7 +82,6 @@ function extractToStructuredData(buffer) {
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     
-    // Get as 2D array
     const rows = XLSX.utils.sheet_to_json(sheet, { 
       header: 1,
       defval: '', 
@@ -103,7 +96,7 @@ function extractToStructuredData(buffer) {
       return { success: false, error: "Not enough data rows" };
     }
 
-    // Find header row (first row with multiple non-empty cells)
+    // Find header row
     let headerRowIndex = -1;
     for (let i = 0; i < Math.min(10, rows.length); i++) {
       const nonEmpty = rows[i].filter(cell => cell && String(cell).trim()).length;
@@ -120,7 +113,6 @@ function extractToStructuredData(buffer) {
     const headers = rows[headerRowIndex].map(h => String(h || '').trim());
     console.log(`   ✓ Headers at row ${headerRowIndex + 1}:`, headers.slice(0, 5).join(', ') + '...');
 
-    // First column is line items, rest are stores
     const lineItemColumnIndex = 0;
     const storeColumns = [];
     
@@ -136,7 +128,6 @@ function extractToStructuredData(buffer) {
 
     console.log(`   ✓ Found ${storeColumns.length} stores:`, storeColumns.map(s => s.name).join(', '));
 
-    // Build structured data for each store
     const storeData = {};
     
     storeColumns.forEach(store => {
@@ -146,7 +137,6 @@ function extractToStructuredData(buffer) {
       };
     });
 
-    // Process each data row
     for (let rowIdx = headerRowIndex + 1; rowIdx < rows.length; rowIdx++) {
       const row = rows[rowIdx];
       const lineItem = String(row[lineItemColumnIndex] || '').trim();
@@ -155,12 +145,10 @@ function extractToStructuredData(buffer) {
 
       const lineItemLower = lineItem.toLowerCase();
       
-      // Extract values for each store
       storeColumns.forEach(store => {
         const value = row[store.index];
         const numericValue = parseFloat(String(value || '0').replace(/[^0-9.\-]/g, '')) || 0;
         
-        // Categorize based on line item name
         if (/\b(total\s+)?revenue|sales|income\b/i.test(lineItem) && !/expense/.test(lineItemLower)) {
           if (!storeData[store.name].metrics.revenue) {
             storeData[store.name].metrics.revenue = 0;
@@ -188,7 +176,6 @@ function extractToStructuredData(buffer) {
         
         if (/\bebitda\b/i.test(lineItem)) {
           storeData[store.name].metrics.ebitda = numericValue;
-          console.log(`   💰 EBITDA found for ${store.name}: ${numericValue}`);
         }
         
         if (/\boperating profit|operating income|ebit\b/i.test(lineItem) && !/ebitda/.test(lineItemLower)) {
@@ -201,22 +188,18 @@ function extractToStructuredData(buffer) {
       });
     }
 
-    // Calculate derived metrics for each store
     Object.keys(storeData).forEach(storeName => {
       const store = storeData[storeName];
       const m = store.metrics;
       
-      // Calculate gross profit if not provided
       if (!m.grossProfit && m.revenue) {
         m.grossProfit = m.revenue - (m.cogs || 0);
       }
       
-      // Calculate operating profit if not provided
       if (!m.operatingProfit && m.grossProfit) {
         m.operatingProfit = m.grossProfit - (m.operatingExpenses || 0);
       }
       
-      // Calculate margins
       if (m.revenue > 0) {
         m.grossMargin = ((m.grossProfit || 0) / m.revenue * 100).toFixed(2);
         m.operatingMargin = ((m.operatingProfit || 0) / m.revenue * 100).toFixed(2);
@@ -228,7 +211,6 @@ function extractToStructuredData(buffer) {
       }
     });
 
-    // Calculate totals
     const totals = {
       totalStores: Object.keys(storeData).length,
       totalRevenue: 0,
@@ -258,7 +240,6 @@ function extractToStructuredData(buffer) {
 
     console.log(`   ✅ Structured data ready for ${totals.totalStores} stores`);
     console.log(`   📊 Total Revenue: $${totals.totalRevenue.toLocaleString()}`);
-    console.log(`   📊 Total EBITDA: $${totals.totalEBITDA.toLocaleString()}`);
 
     return {
       success: true,
@@ -275,19 +256,16 @@ function extractToStructuredData(buffer) {
 }
 
 /**
- * CORRECTED: ANALYZE WITH RESPONSES API
+ * CORRECTED: RESPONSES API - NO max_tokens PARAMETER
  * 
- * ENDPOINT: /v1/responses (NOT /v1/chat/completions)
- * KEY DIFFERENCES:
- * - Uses "input" parameter instead of "messages"
- * - Returns "output" array instead of "choices"
- * - Stateful by default
- * - Better for reasoning and agentic workflows
- * 
- * RECOMMENDED MODELS:
- * - "gpt-4o" - Latest, balanced ($2.50/$10 per 1M tokens)
- * - "gpt-5" - Best reasoning, optimized for Responses API
- * - "gpt-4o-mini" - Cheapest ($0.15/$0.60 per 1M tokens)
+ * VALID PARAMETERS FOR RESPONSES API:
+ * - model (required)
+ * - input (required) - string or array of messages
+ * - temperature (optional)
+ * - store (optional) - default true
+ * - instructions (optional) - system-level guidance
+ * - tools (optional)
+ * - previous_response_id (optional)
  */
 async function analyzeWithResponsesAPI(structuredData, question) {
   console.log("🤖 Calling OpenAI RESPONSES API (/v1/responses)...");
@@ -297,7 +275,6 @@ async function analyzeWithResponsesAPI(structuredData, question) {
     throw new Error("OPENAI_API_KEY not found in environment variables");
   }
 
-  // Create explicit table for the AI
   const storeTable = Object.entries(structuredData.storeData).map(([name, data]) => {
     const m = data.metrics;
     return {
@@ -315,16 +292,7 @@ async function analyzeWithResponsesAPI(structuredData, question) {
     };
   });
 
-  // Construct the input prompt (Responses API uses single "input" string)
   const inputPrompt = `You are an expert financial analyst specializing in multi-location P&L analysis, variance analysis, and performance benchmarking.
-
-**YOUR CAPABILITIES:**
-- Year-over-Year (YoY) analysis
-- Month-over-Month (MoM) analysis  
-- Budget vs Actual variance analysis
-- Multi-location performance comparison
-- Industry benchmark comparison
-- Ledger and bank reconciliation insights
 
 **COMPLETE FINANCIAL DATA FOR ANALYSIS:**
 
@@ -346,53 +314,28 @@ ${question || "Provide comprehensive P&L analysis with complete location ranking
 **OUTPUT REQUIREMENTS:**
 
 1. **Executive Summary** (3-5 bullet points)
-   - Total locations/stores analyzed
-   - Aggregate financial metrics
-   - Key highlights and red flags
 
 2. **Complete Performance Rankings**
-   Create a comprehensive table ranking ALL locations by EBITDA:
+   Create a table ranking ALL locations by EBITDA:
    
    | Rank | Location | Revenue | EBITDA | EBITDA % | Gross Margin | Operating Margin | Status |
-   |------|----------|---------|--------|----------|--------------|------------------|--------|
 
-3. **Variance Analysis**
-   - Compare each location to company averages
-   - Identify outliers (both positive and negative)
-   - Calculate variance percentages
+3. **Variance Analysis** - Compare each location to averages
 
-4. **Top Performers** (Top 5 or 20%)
-   - Specific drivers of success
-   - Best practices to replicate
+4. **Top Performers** - Top 5 with specific drivers
 
-5. **Bottom Performers** (Bottom 5 or 20%)
-   - Root cause analysis
-   - Actionable improvement recommendations
+5. **Bottom Performers** - Bottom 5 with improvement recommendations
 
 6. **Industry Benchmarks** (if applicable)
-   - Compare to industry standards for the sector
-   - Identify competitive advantages/disadvantages
 
 7. **Key Insights & Trends**
-   - Revenue concentration analysis
-   - Margin pattern observations
-   - Cost structure insights
 
-8. **Actionable Recommendations**
-   - 5-7 specific, prioritized recommendations
-   - Expected impact of each recommendation
+8. **Actionable Recommendations** - 5-7 specific recommendations
 
-**CRITICAL RULES:**
-✓ Use EXACT numbers from the provided data
-✓ Include ALL locations in rankings
-✓ Be specific with dollar amounts and percentages
-✓ Provide context for all variance calculations
-✓ Support all claims with data
-
-The JSON data above contains EXACT, validated metrics for each location. Use these precise numbers in your analysis.`;
+**CRITICAL:** Use EXACT numbers from the provided data. Include ALL locations in rankings.`;
 
   try {
-    // CORRECT ENDPOINT: /v1/responses (NOT /v1/chat/completions)
+    // CORRECTED REQUEST - NO max_tokens parameter
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
@@ -400,10 +343,11 @@ The JSON data above contains EXACT, validated metrics for each location. Use the
         "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: "gpt-4o",  // Can also use "gpt-5" or "gpt-4o-mini"
-        input: inputPrompt,  // NOTE: "input" not "messages"
+        model: "gpt-4o",  // Can also use "gpt-4o-mini" for lower cost
+        input: inputPrompt,
         temperature: 0.1,
-        max_tokens: 4096
+        store: false  // Set to false for stateless operation
+        // NOTE: NO max_tokens parameter - not supported in Responses API
       })
     });
 
@@ -418,18 +362,17 @@ The JSON data above contains EXACT, validated metrics for each location. Use the
       throw new Error(`OpenAI error: ${data.error.message || JSON.stringify(data.error)}`);
     }
 
-    // RESPONSES API returns "output" array, not "choices"
     if (!data.output || data.output.length === 0) {
       throw new Error("No output from Responses API");
     }
 
-    // Extract text from output items
+    // Extract text from output
     let reply = "";
     for (const item of data.output) {
       if (item.type === "message" && item.content) {
         for (const contentItem of item.content) {
           if (contentItem.type === "output_text" || contentItem.type === "text") {
-            reply += contentItem.text;
+            reply += contentItem.text || "";
           }
         }
       }
@@ -443,14 +386,13 @@ The JSON data above contains EXACT, validated metrics for each location. Use the
     console.log(`   📊 Model: ${data.model || 'gpt-4o'}`);
     console.log(`   📊 Response ID: ${data.id || 'N/A'}`);
     
-    // Note: Responses API may have different usage structure
     const tokensUsed = data.usage?.total_tokens || 0;
     const inputTokens = data.usage?.prompt_tokens || data.usage?.input_tokens || 0;
     const outputTokens = data.usage?.completion_tokens || data.usage?.output_tokens || 0;
     
     console.log(`   📊 Tokens: ${tokensUsed} (Input: ${inputTokens}, Output: ${outputTokens})`);
     
-    // Calculate approximate cost (for gpt-4o)
+    // Calculate cost for gpt-4o
     const inputCost = (inputTokens / 1000000) * 2.50;
     const outputCost = (outputTokens / 1000000) * 10.00;
     const totalCost = inputCost + outputCost;
@@ -479,7 +421,7 @@ The JSON data above contains EXACT, validated metrics for each location. Use the
 }
 
 /**
- * CONVERT MARKDOWN TO WORD DOCUMENT
+ * CONVERT MARKDOWN TO WORD
  */
 async function markdownToWord(markdownText) {
   const sections = [];
@@ -491,18 +433,15 @@ async function markdownToWord(markdownText) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     
-    // Skip empty lines
     if (!line) {
       inTable = false;
       if (tableRows.length > 0) {
-        // Process accumulated table
         sections.push(createTableFromMarkdown(tableRows));
         tableRows = [];
       }
       continue;
     }
     
-    // Handle tables
     if (line.startsWith('|')) {
       inTable = true;
       tableRows.push(line);
@@ -515,7 +454,6 @@ async function markdownToWord(markdownText) {
       }
     }
     
-    // Handle headers
     if (line.startsWith('#')) {
       const level = (line.match(/^#+/) || [''])[0].length;
       const text = line.replace(/^#+\s*/, '').replace(/\*\*/g, '');
@@ -527,18 +465,14 @@ async function markdownToWord(markdownText) {
                 HeadingLevel.HEADING_3,
         spacing: { before: 240, after: 120 }
       }));
-    }
-    // Handle bullet points
-    else if (line.startsWith('-') || line.startsWith('*')) {
+    } else if (line.startsWith('-') || line.startsWith('*')) {
       const text = line.replace(/^[-*]\s*/, '').replace(/\*\*/g, '');
       sections.push(new Paragraph({
         text: text,
         bullet: { level: 0 },
         spacing: { before: 60, after: 60 }
       }));
-    }
-    // Regular paragraphs
-    else {
+    } else {
       const text = line.replace(/\*\*/g, '');
       sections.push(new Paragraph({
         text: text,
@@ -547,7 +481,6 @@ async function markdownToWord(markdownText) {
     }
   }
   
-  // Process any remaining table
   if (tableRows.length > 0) {
     sections.push(createTableFromMarkdown(tableRows));
   }
@@ -560,12 +493,9 @@ async function markdownToWord(markdownText) {
   return buffer.toString('base64');
 }
 
-/**
- * CREATE TABLE FROM MARKDOWN
- */
 function createTableFromMarkdown(rows) {
   const tableData = rows
-    .filter(row => !row.includes('---')) // Skip separator rows
+    .filter(row => !row.includes('---'))
     .map(row => row.split('|').map(cell => cell.trim()).filter(cell => cell));
   
   if (tableData.length === 0) {
@@ -599,7 +529,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   console.log("\n" + "=".repeat(80));
-  console.log("🚀 ACCOUNTING AI - OpenAI RESPONSES API (/v1/responses)");
+  console.log("🚀 ACCOUNTING AI - OpenAI RESPONSES API (Corrected)");
   console.log("=".repeat(80));
 
   try {
@@ -613,11 +543,10 @@ export default async function handler(req, res) {
       });
     }
 
-    console.log(`📥 Downloading file from: ${fileUrl.substring(0, 50)}...`);
+    console.log(`📥 Downloading file...`);
     const { buffer } = await downloadFileToBuffer(fileUrl);
     console.log(`✅ File downloaded (${(buffer.length / 1024).toFixed(2)} KB)`);
 
-    // Extract and structure data
     const structured = extractToStructuredData(buffer);
     
     if (!structured.success) {
@@ -628,22 +557,18 @@ export default async function handler(req, res) {
       });
     }
 
-    console.log(`\n📊 Store Summary (showing first 5 of ${structured.totals.totalStores}):`);
+    console.log(`\n📊 Store Summary (first 5 of ${structured.totals.totalStores}):`);
     Object.entries(structured.storeData).slice(0, 5).forEach(([name, data]) => {
-      const rev = (data.metrics.revenue || 0).toLocaleString();
-      const ebitda = (data.metrics.ebitda || 0).toLocaleString();
-      console.log(`   ${name}: Revenue $${rev}, EBITDA $${ebitda}`);
+      console.log(`   ${name}: Revenue $${(data.metrics.revenue || 0).toLocaleString()}, EBITDA $${(data.metrics.ebitda || 0).toLocaleString()}`);
     });
     if (structured.totals.totalStores > 5) {
-      console.log(`   ... and ${structured.totals.totalStores - 5} more stores\n`);
+      console.log(`   ... and ${structured.totals.totalStores - 5} more\n`);
     }
 
-    // Analyze with Responses API
     const result = await analyzeWithResponsesAPI(structured, question);
 
     console.log("✅ Analysis complete!");
 
-    // Generate Word document
     let wordBase64 = null;
     try {
       console.log("📝 Generating Word document...");
