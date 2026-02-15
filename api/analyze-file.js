@@ -2,10 +2,12 @@ import fetch from "node-fetch";
 import FormData from "form-data";
 import { Document, Paragraph, HeadingLevel, Packer, Table, TableRow, TableCell, WidthType } from "docx";
 
-/**
- * CORRECTED: RESPONSES API + CODE INTERPRETER
- * Based on official OpenAI documentation
- */
+/*
+========================================
+OPENAI RESPONSES API + CODE INTERPRETER
+FULLY FIXED VERSION (2026 SAFE)
+========================================
+*/
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -29,408 +31,191 @@ async function parseJsonBody(req) {
   });
 }
 
-async function downloadFileToBuffer(url, maxBytes = 30 * 1024 * 1024, timeoutMs = 30000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  let r;
-  try {
-    r = await fetch(url, { signal: controller.signal });
-  } catch (err) {
-    clearTimeout(timer);
-    throw new Error(`Download failed: ${err.message}`);
-  }
-  clearTimeout(timer);
-
-  if (!r.ok) throw new Error(`Failed to download: ${r.status}`);
-
-  const chunks = [];
-  let total = 0;
-
-  for await (const chunk of r.body) {
-    total += chunk.length;
-    if (total > maxBytes) break;
-    chunks.push(chunk);
-  }
-
-  return { buffer: Buffer.concat(chunks) };
+async function downloadFileToBuffer(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("Failed to download file");
+  const buffer = Buffer.from(await r.arrayBuffer());
+  return { buffer };
 }
 
-/**
- * UPLOAD FILE TO OPENAI
- */
+/* ================================
+UPLOAD FILE TO OPENAI (FIXED)
+================================ */
 async function uploadFileToOpenAI(buffer, filename = "data.xlsx") {
   console.log("📤 Uploading file to OpenAI...");
-  
+
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY not found");
-  }
+  if (!apiKey) throw new Error("OPENAI_API_KEY missing");
 
   const formData = new FormData();
-  formData.append('file', buffer, {
-    filename: filename,
-    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  formData.append("file", buffer, filename);
+
+  // IMPORTANT: use user_data NOT assistants
+  formData.append("purpose", "user_data");
+
+  const response = await fetch("https://api.openai.com/v1/files", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      ...formData.getHeaders(),
+    },
+    body: formData,
   });
-  formData.append('purpose', 'assistants');
 
+  const text = await response.text();
+
+  let data;
   try {
-    const response = await fetch("https://api.openai.com/v1/files", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        ...formData.getHeaders()
-      },
-      body: formData
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`File upload failed (${response.status}): ${errorText}`);
-    }
-
-    const data = await response.json();
-    console.log(`   ✅ File uploaded: ${data.id}`);
-    
-    return {
-      file_id: data.id,
-      filename: data.filename,
-      bytes: data.bytes
-    };
-    
-  } catch (err) {
-    console.error("❌ Upload failed:", err.message);
-    throw err;
+    data = JSON.parse(text);
+  } catch {
+    console.error("❌ Upload raw response:", text);
+    throw new Error("File upload failed (non JSON)");
   }
+
+  if (!response.ok) {
+    throw new Error(data?.error?.message || "Upload failed");
+  }
+
+  console.log("✅ File uploaded:", data.id);
+  return data.id;
 }
 
-/**
- * CORRECTED: ANALYZE WITH RESPONSES API + CODE INTERPRETER
- * Using exact structure from official OpenAI documentation
- */
+/* ================================
+RESPONSES API + CODE INTERPRETER
+================================ */
 async function analyzeWithCodeInterpreter(fileId, userQuestion) {
-  console.log("🤖 Calling Responses API with Code Interpreter...");
-  
+  console.log("🤖 Running Code Interpreter...");
+
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY not found");
+  if (!apiKey) throw new Error("OPENAI_API_KEY missing");
+
+  const prompt =
+    userQuestion ||
+    `Analyze this financial file completely.
+Give:
+- Summary
+- KPI ratios
+- EBITDA analysis
+- Store performance
+- Trends
+- Suggestions`;
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4.1",
+      input: prompt,
+      tools: [
+        {
+          type: "code_interpreter",
+          container: {
+            file_ids: [fileId],
+          },
+        },
+      ],
+    }),
+  });
+
+  const text = await response.text();
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    console.error("❌ RAW OPENAI RESPONSE:\n", text);
+    throw new Error("OpenAI returned non-JSON response");
   }
 
-  const userPrompt = userQuestion || `Analyze this financial data file and provide:
-1. Executive Summary with key metrics  
-2. Complete performance rankings by location/store
-3. Variance analysis comparing each location to averages
-4. Top and bottom performers with specific insights
-5. Trends and patterns in the data
-6. Actionable recommendations
+  if (!response.ok) {
+    throw new Error(data?.error?.message || "OpenAI API error");
+  }
 
-Use Python/pandas to analyze the data and present findings in a structured format with tables.`;
+  let reply = "";
 
-  try {
-    // CORRECTED REQUEST STRUCTURE based on official docs
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4o",  // Can also use "gpt-5" or "gpt-4o-mini"
-        input: userPrompt,  // String input (not array for simple case)
-        tools: [
-          {
-            type: "code_interpreter",
-            container: {
-              type: "auto",
-              file_ids: [fileId]  // Uploaded file
-            }
-          }
-        ],
-        store: false  // Don't store conversation
-        // NOTE: No temperature, no max_tokens, no instructions at root level
-      })
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Responses API error (${response.status}): ${errorText}`);
-    }
-
-    const data = await response.json();
-    
-    if (data.error) {
-      throw new Error(`OpenAI error: ${data.error.message || JSON.stringify(data.error)}`);
-    }
-
-    if (!data.output || data.output.length === 0) {
-      throw new Error("No output from Responses API");
-    }
-
-    // Extract content from output
-    let fullReply = "";
-    let codeExecuted = [];
-    
-    for (const item of data.output) {
-      // Extract message content
-      if (item.type === "message" && item.content) {
-        for (const contentItem of item.content) {
-          if (contentItem.type === "output_text" || contentItem.type === "text") {
-            fullReply += (contentItem.text || "") + "\n";
-          }
+  for (const item of data.output || []) {
+    if (item.type === "message") {
+      for (const c of item.content || []) {
+        if (c.type === "output_text" || c.type === "text") {
+          reply += c.text;
         }
       }
-      
-      // Track code execution
-      if (item.type === "code_interpreter_call") {
-        codeExecuted.push({
-          code: item.code || "",
-          status: item.status || ""
-        });
-      }
     }
-
-    if (!fullReply.trim()) {
-      throw new Error("No text content found in output");
-    }
-    
-    console.log(`   ✅ Analysis complete!`);
-    console.log(`   📊 Model: ${data.model || 'gpt-4o'}`);
-    console.log(`   💻 Python code executed: ${codeExecuted.length} blocks`);
-    
-    // Calculate token usage
-    const tokensUsed = data.usage?.total_tokens || 0;
-    const inputTokens = data.usage?.input_tokens || 0;
-    const outputTokens = data.usage?.output_tokens || 0;
-    
-    console.log(`   📊 Tokens: ${tokensUsed} (Input: ${inputTokens}, Output: ${outputTokens})`);
-    
-    // Calculate cost
-    const inputCost = (inputTokens / 1000000) * 2.50;
-    const outputCost = (outputTokens / 1000000) * 10.00;
-    const codeInterpreterCost = 0.03; // $0.03 per session
-    const totalCost = inputCost + outputCost + codeInterpreterCost;
-    
-    console.log(`   💰 Cost: $${totalCost.toFixed(4)}`);
-    
-    return {
-      reply: fullReply.trim(),
-      codeExecuted: codeExecuted,
-      usage: {
-        total_tokens: tokensUsed,
-        input_tokens: inputTokens,
-        output_tokens: outputTokens
-      },
-      model: data.model,
-      response_id: data.id,
-      cost: {
-        input: inputCost,
-        output: outputCost,
-        code_interpreter: codeInterpreterCost,
-        total: totalCost
-      }
-    };
-    
-  } catch (err) {
-    console.error("❌ Responses API call failed:", err.message);
-    throw err;
   }
+
+  if (!reply) throw new Error("No reply from model");
+
+  console.log("✅ Analysis complete");
+  return reply;
 }
 
-/**
- * CONVERT MARKDOWN TO WORD
- */
-async function markdownToWord(markdownText) {
-  const sections = [];
-  const lines = markdownText.split('\n');
-  
-  let inTable = false;
-  let tableRows = [];
-  let inCodeBlock = false;
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    
-    // Handle code blocks
-    if (line.startsWith('```')) {
-      inCodeBlock = !inCodeBlock;
-      continue;
-    }
-    
-    if (inCodeBlock) {
-      continue; // Skip code block content
-    }
-    
-    if (!line) {
-      inTable = false;
-      if (tableRows.length > 0) {
-        sections.push(createTableFromMarkdown(tableRows));
-        tableRows = [];
-      }
-      continue;
-    }
-    
-    if (line.startsWith('|')) {
-      inTable = true;
-      tableRows.push(line);
-      continue;
-    } else {
-      if (inTable && tableRows.length > 0) {
-        sections.push(createTableFromMarkdown(tableRows));
-        tableRows = [];
-        inTable = false;
-      }
-    }
-    
-    if (line.startsWith('#')) {
-      const level = (line.match(/^#+/) || [''])[0].length;
-      const text = line.replace(/^#+\s*/, '').replace(/\*\*/g, '');
-      
-      sections.push(new Paragraph({
-        text: text,
-        heading: level === 1 ? HeadingLevel.HEADING_1 : 
-                level === 2 ? HeadingLevel.HEADING_2 : 
-                HeadingLevel.HEADING_3,
-        spacing: { before: 240, after: 120 }
-      }));
-    } else if (line.startsWith('-') || line.startsWith('*')) {
-      const text = line.replace(/^[-*]\s*/, '').replace(/\*\*/g, '');
-      sections.push(new Paragraph({
-        text: text,
-        bullet: { level: 0 },
-        spacing: { before: 60, after: 60 }
-      }));
-    } else {
-      const text = line.replace(/\*\*/g, '');
-      sections.push(new Paragraph({
-        text: text,
-        spacing: { before: 60, after: 60 }
-      }));
-    }
-  }
-  
-  if (tableRows.length > 0) {
-    sections.push(createTableFromMarkdown(tableRows));
-  }
-  
+/* ================================
+MARKDOWN → WORD
+================================ */
+async function markdownToWord(text) {
+  const paragraphs = text.split("\n").map(
+    (line) =>
+      new Paragraph({
+        text: line.replace(/\*\*/g, ""),
+        spacing: { after: 120 },
+      })
+  );
+
   const doc = new Document({
-    sections: [{ properties: {}, children: sections }]
+    sections: [{ children: paragraphs }],
   });
-  
+
   const buffer = await Packer.toBuffer(doc);
-  return buffer.toString('base64');
+  return buffer.toString("base64");
 }
 
-function createTableFromMarkdown(rows) {
-  const tableData = rows
-    .filter(row => !row.includes('---'))
-    .map(row => row.split('|').map(cell => cell.trim()).filter(cell => cell));
-  
-  if (tableData.length === 0) {
-    return new Paragraph({ text: '' });
-  }
-  
-  const tableRows = tableData.map((rowData, index) => {
-    return new TableRow({
-      children: rowData.map(cellText => new TableCell({
-        children: [new Paragraph({
-          text: cellText,
-          style: index === 0 ? 'Heading3' : undefined
-        })],
-        width: { size: 100 / rowData.length, type: WidthType.PERCENTAGE }
-      }))
-    });
-  });
-  
-  return new Table({
-    rows: tableRows,
-    width: { size: 100, type: WidthType.PERCENTAGE }
-  });
-}
-
-/**
- * MAIN HANDLER
- */
+/* ================================
+MAIN API HANDLER
+================================ */
 export default async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
-  console.log("\n" + "=".repeat(80));
-  console.log("🚀 ACCOUNTING AI - RESPONSES API + CODE INTERPRETER");
-  console.log("   GPT writes Python code dynamically based on your prompt!");
-  console.log("=".repeat(80));
+  console.log("\n🚀 ACCOUNTING AI STARTED");
 
   try {
     const body = await parseJsonBody(req);
-    const { fileUrl, question = "" } = body || {};
+    const { fileUrl, question } = body;
 
     if (!fileUrl) {
-      return res.status(400).json({ 
-        error: "fileUrl is required",
-        message: "Please provide a fileUrl parameter with the Excel file link"
-      });
+      return res.status(400).json({ error: "fileUrl required" });
     }
 
-    console.log(`📥 Step 1: Downloading file...`);
+    console.log("📥 Downloading file...");
     const { buffer } = await downloadFileToBuffer(fileUrl);
-    console.log(`   ✅ Downloaded (${(buffer.length / 1024).toFixed(2)} KB)`);
 
-    console.log(`\n📤 Step 2: Uploading to OpenAI...`);
-    const uploadedFile = await uploadFileToOpenAI(buffer, "financial_data.xlsx");
+    console.log("📤 Uploading...");
+    const fileId = await uploadFileToOpenAI(buffer);
 
-    console.log(`\n🤖 Step 3: Running Code Interpreter analysis...`);
-    console.log(`   User Question: "${question || 'Comprehensive analysis'}"`);
-    const result = await analyzeWithCodeInterpreter(uploadedFile.file_id, question);
+    console.log("🤖 Analyzing...");
+    const reply = await analyzeWithCodeInterpreter(fileId, question);
 
-    console.log(`\n✅ Analysis complete!`);
-    console.log(`   📊 Python blocks executed: ${result.codeExecuted.length}`);
-
-    // Generate Word document
     let wordBase64 = null;
     try {
-      console.log("\n📝 Generating Word document...");
-      wordBase64 = await markdownToWord(result.reply);
-      console.log("   ✅ Word document ready");
-    } catch (wordError) {
-      console.error("   ⚠️ Word generation failed:", wordError.message);
-    }
+      wordBase64 = await markdownToWord(reply);
+    } catch {}
 
-    console.log("=".repeat(80) + "\n");
-
-    return res.status(200).json({
+    return res.json({
       ok: true,
-      type: "xlsx",
-      documentType: "DYNAMIC_ANALYSIS",
-      category: "code_interpreter",
-      reply: result.reply,
-      wordDownload: wordBase64,
-      downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
-      metadata: {
-        api: "responses_api_with_code_interpreter",
-        endpoint: "/v1/responses",
-        model: result.model || "gpt-4o",
-        response_id: result.response_id,
-        uploaded_file_id: uploadedFile.file_id,
-        python_blocks_executed: result.codeExecuted.length,
-        tokensUsed: result.usage?.total_tokens || 0,
-        inputTokens: result.usage?.input_tokens || 0,
-        outputTokens: result.usage?.output_tokens || 0,
-        estimatedCost: result.cost?.total || 0,
-        costBreakdown: result.cost
-      },
-      codeExecuted: result.codeExecuted,
-      debug: {
-        hasWord: !!wordBase64,
-        uploadedBytes: uploadedFile.bytes
-      }
+      reply,
+      wordFile: wordBase64
+        ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}`
+        : null,
     });
-
   } catch (err) {
-    console.error("❌ Error:", err);
-    return res.status(500).json({ 
+    console.error("❌ ERROR:", err);
+    return res.status(500).json({
       ok: false,
-      error: String(err?.message || err),
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      error: err.message,
     });
   }
 }
