@@ -2,6 +2,19 @@ import fetch from "node-fetch";
 import FormData from "form-data";
 import { Document, Paragraph, HeadingLevel, Packer, Table, TableRow, TableCell, WidthType } from "docx";
 
+/**
+ * RESPONSES API + CODE INTERPRETER
+ * 
+ * FLOW:
+ * 1. Download Excel file from user's URL
+ * 2. Upload to OpenAI Files API
+ * 3. Use Responses API with code_interpreter tool
+ * 4. GPT writes Python code dynamically based on user prompt
+ * 5. Code executes and returns results
+ * 
+ * This is exactly how ChatGPT works!
+ */
+
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -51,6 +64,10 @@ async function downloadFileToBuffer(url, maxBytes = 30 * 1024 * 1024, timeoutMs 
   return { buffer: Buffer.concat(chunks) };
 }
 
+/**
+ * STEP 1: UPLOAD FILE TO OPENAI
+ * Returns file_id that can be used with code_interpreter
+ */
 async function uploadFileToOpenAI(buffer, filename = "data.xlsx") {
   console.log("📤 Uploading file to OpenAI...");
   
@@ -66,253 +83,221 @@ async function uploadFileToOpenAI(buffer, filename = "data.xlsx") {
   });
   formData.append('purpose', 'assistants');
 
-  const response = await fetch("https://api.openai.com/v1/files", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      ...formData.getHeaders()
-    },
-    body: formData
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`File upload failed (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json();
-  console.log(`   ✅ File uploaded: ${data.id}`);
-  
-  return {
-    file_id: data.id,
-    filename: data.filename,
-    bytes: data.bytes
-  };
-}
-
-async function createAssistant() {
-  console.log("🤖 Creating Assistant...");
-  
-  const apiKey = process.env.OPENAI_API_KEY;
-  
-  const response = await fetch("https://api.openai.com/v1/assistants", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`,
-      "OpenAI-Beta": "assistants=v2"
-    },
-    body: JSON.stringify({
-      name: "Financial Data Analyst",
-      instructions: `You are an expert financial analyst and data scientist. Analyze the provided Excel file and:
-1. Load the data using pandas
-2. Identify all stores/locations and metrics
-3. Calculate rankings, averages, and variances
-4. Provide detailed insights for each location
-5. Present findings in clear tables with specific numbers
-6. Give actionable recommendations`,
-      model: "gpt-4o",
-      tools: [{ type: "code_interpreter" }]
-    })
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Assistant creation failed (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json();
-  console.log(`   ✅ Assistant created: ${data.id}`);
-  return data.id;
-}
-
-async function createThread() {
-  console.log("💬 Creating Thread...");
-  
-  const apiKey = process.env.OPENAI_API_KEY;
-  
-  const response = await fetch("https://api.openai.com/v1/threads", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`,
-      "OpenAI-Beta": "assistants=v2"
-    },
-    body: JSON.stringify({})
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Thread creation failed (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json();
-  console.log(`   ✅ Thread created: ${data.id}`);
-  return data.id;
-}
-
-async function addMessage(threadId, fileId, userQuestion) {
-  console.log("📝 Adding message...");
-  
-  const apiKey = process.env.OPENAI_API_KEY;
-  
-  const messageContent = userQuestion || `Analyze this financial data Excel file thoroughly:
-
-1. Load the data and show me the structure
-2. Calculate complete rankings by location/store for all key metrics
-3. Compare each location to the overall average (variance analysis)
-4. Identify top 3 and bottom 3 performers with specific metrics
-5. Provide actionable insights and recommendations
-6. Present everything in clear tables with actual numbers from the data`;
-
-  const response = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`,
-      "OpenAI-Beta": "assistants=v2"
-    },
-    body: JSON.stringify({
-      role: "user",
-      content: messageContent,
-      attachments: [
-        {
-          file_id: fileId,
-          tools: [{ type: "code_interpreter" }]
-        }
-      ]
-    })
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Message failed (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json();
-  console.log(`   ✅ Message added`);
-  return data.id;
-}
-
-async function runAssistant(threadId, assistantId) {
-  console.log("🏃 Running assistant...");
-  
-  const apiKey = process.env.OPENAI_API_KEY;
-  
-  const response = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`,
-      "OpenAI-Beta": "assistants=v2"
-    },
-    body: JSON.stringify({
-      assistant_id: assistantId
-    })
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Run failed (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json();
-  console.log(`   ✅ Run started: ${data.id}`);
-  return data.id;
-}
-
-async function pollRunStatus(threadId, runId, maxAttempts = 60) {
-  console.log("⏳ Waiting for completion...");
-  
-  const apiKey = process.env.OPENAI_API_KEY;
-  
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    const response = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
-      method: "GET",
+  try {
+    const response = await fetch("https://api.openai.com/v1/files", {
+      method: "POST",
       headers: {
         "Authorization": `Bearer ${apiKey}`,
-        "OpenAI-Beta": "assistants=v2"
-      }
+        ...formData.getHeaders()
+      },
+      body: formData
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Status check failed (${response.status}): ${errorText}`);
+      console.error("OpenAI raw error:", errorText);
+      return res.status(response.status).json({
+        ok: false,
+        openai_error: errorText
+      });
+    }
+
+
+    const data = await response.json();
+    console.log(`   ✅ File uploaded: ${data.id}`);
+    console.log(`   📊 Size: ${(data.bytes / 1024).toFixed(2)} KB`);
+    
+    return {
+      file_id: data.id,
+      filename: data.filename,
+      bytes: data.bytes
+    };
+    
+  } catch (err) {
+    console.error("❌ Upload failed:", err.message);
+    throw err;
+  }
+}
+
+/**
+ * STEP 2: ANALYZE WITH RESPONSES API + CODE INTERPRETER
+ * GPT will write Python code dynamically based on user prompt!
+ */
+async function analyzeWithCodeInterpreter(fileId, userQuestion) {
+  console.log("🤖 Calling Responses API with Code Interpreter...");
+  
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY not found");
+  }
+
+  // Build the prompt
+  const systemInstructions = `You are an expert financial analyst and data scientist specializing in:
+- Multi-location P&L analysis
+- Year-over-Year (YoY) and Month-over-Month (MoM) analysis
+- Variance analysis (Budget vs Actual)
+- Industry benchmarking
+- Ledger and bank reconciliation
+
+**YOUR APPROACH:**
+1. Load and explore the data file using pandas
+2. Understand the structure (stores/locations, time periods, metrics)
+3. Write Python code to perform the requested analysis
+4. Generate accurate calculations based on the data
+5. Present findings clearly with tables and insights
+
+**IMPORTANT:**
+- Write clear, well-commented Python code
+- Use pandas for data manipulation
+- Calculate exact values from the actual data
+- Create summary tables when helpful
+- Provide actionable recommendations`;
+
+  const userPrompt = userQuestion || `Analyze this financial data file and provide:
+1. Executive Summary with key metrics
+2. Complete performance rankings by location/store
+3. Variance analysis comparing each location to averages
+4. Top and bottom performers with specific insights
+5. Trends and patterns in the data
+6. Actionable recommendations
+
+Please use Python to analyze the data and present your findings in a structured format.`;
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1",
+        input: [
+          {
+            role: "user",
+            content: userPrompt
+          }
+        ],
+        instructions: systemInstructions,
+        tools: [
+          {
+            type: "code_interpreter"
+          }
+        ],
+        tool_resources: {
+          code_interpreter: {
+            file_ids: [fileId]
+          }
+        },
+        temperature: 0.1,
+        store: false
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Responses API error (${response.status}): ${errorText}`);
     }
 
     const data = await response.json();
-    console.log(`   Status: ${data.status} (${i + 1}/${maxAttempts})`);
     
-    if (data.status === "completed") {
-      console.log(`   ✅ Completed!`);
-      return data;
+    if (data.error) {
+      throw new Error(`OpenAI error: ${data.error.message || JSON.stringify(data.error)}`);
     }
+
+    if (!data.output || data.output.length === 0) {
+      throw new Error("No output from Responses API");
+    }
+
+    // Extract text and code from output
+    let fullReply = "";
+    let codeExecuted = [];
+    let filesGenerated = [];
     
-    if (data.status === "failed" || data.status === "cancelled" || data.status === "expired") {
-      throw new Error(`Run ${data.status}: ${data.last_error?.message || 'Unknown error'}`);
-    }
-  }
-  
-  throw new Error("Timeout after 2 minutes");
-}
-
-async function getMessages(threadId) {
-  console.log("📥 Retrieving results...");
-  
-  const apiKey = process.env.OPENAI_API_KEY;
-  
-  const response = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
-    method: "GET",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "OpenAI-Beta": "assistants=v2"
-    }
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Message retrieval failed (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json();
-  const assistantMessages = data.data.filter(msg => msg.role === "assistant");
-  
-  if (assistantMessages.length === 0) {
-    throw new Error("No assistant response found");
-  }
-  
-  const latestMessage = assistantMessages[0];
-  let fullText = "";
-  
-  for (const content of latestMessage.content) {
-    if (content.type === "text") {
-      fullText += content.text.value + "\n";
-    }
-  }
-  
-  console.log(`   ✅ Retrieved response`);
-  return fullText.trim();
-}
-
-async function cleanupAssistant(assistantId) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  
-  try {
-    await fetch(`https://api.openai.com/v1/assistants/${assistantId}`, {
-      method: "DELETE",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "OpenAI-Beta": "assistants=v2"
+    for (const item of data.output) {
+      if (item.type === "message" && item.content) {
+        for (const contentItem of item.content) {
+          if (contentItem.type === "output_text" || contentItem.type === "text") {
+            fullReply += contentItem.text || "";
+          }
+        }
       }
-    });
-    console.log(`   ✅ Cleaned up assistant`);
+      
+      // Track code execution
+      if (item.type === "code_interpreter_call") {
+        codeExecuted.push({
+          code: item.code || "",
+          output: item.output || ""
+        });
+      }
+      
+      // Track generated files
+      if (item.annotations) {
+        for (const annotation of item.annotations) {
+          if (annotation.type === "container_file_citation") {
+            filesGenerated.push({
+              file_id: annotation.file_id,
+              filename: annotation.filename,
+              container_id: annotation.container_id
+            });
+          }
+        }
+      }
+    }
+
+    if (!fullReply) {
+      throw new Error("No text content found in output");
+    }
+    
+    console.log(`   ✅ Analysis complete!`);
+    console.log(`   📊 Model: ${data.model || 'gpt-4.1'}`);
+    console.log(`   📊 Response ID: ${data.id || 'N/A'}`);
+    console.log(`   💻 Python code executed: ${codeExecuted.length} blocks`);
+    console.log(`   📁 Files generated: ${filesGenerated.length}`);
+    
+    // Calculate token usage
+    const tokensUsed = data.usage?.total_tokens || 0;
+    const inputTokens = data.usage?.input_tokens || 0;
+    const outputTokens = data.usage?.output_tokens || 0;
+    
+    console.log(`   📊 Tokens: ${tokensUsed} (Input: ${inputTokens}, Output: ${outputTokens})`);
+    
+    // Calculate cost
+    const inputCost = (inputTokens / 1000000) * 2.50;
+    const outputCost = (outputTokens / 1000000) * 10.00;
+    const codeInterpreterCost = 0.03; // $0.03 per session
+    const totalCost = inputCost + outputCost + codeInterpreterCost;
+    
+    console.log(`   💰 Cost: $${totalCost.toFixed(4)} (includes $0.03 Code Interpreter session)`);
+    
+    return {
+      reply: fullReply,
+      codeExecuted: codeExecuted,
+      filesGenerated: filesGenerated,
+      usage: {
+        total_tokens: tokensUsed,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens
+      },
+      model: data.model,
+      response_id: data.id,
+      cost: {
+        input: inputCost,
+        output: outputCost,
+        code_interpreter: codeInterpreterCost,
+        total: totalCost
+      }
+    };
+    
   } catch (err) {
-    console.error(`   ⚠️ Cleanup failed:`, err.message);
+    console.error("❌ Responses API call failed:", err.message);
+    throw err;
   }
 }
 
+/**
+ * CONVERT MARKDOWN TO WORD DOCUMENT
+ */
 async function markdownToWord(markdownText) {
   const sections = [];
   const lines = markdownText.split('\n');
@@ -363,6 +348,7 @@ async function markdownToWord(markdownText) {
         spacing: { before: 60, after: 60 }
       }));
     } else if (line.startsWith('```')) {
+      // Skip code blocks
       continue;
     } else {
       const text = line.replace(/\*\*/g, '');
@@ -412,16 +398,18 @@ function createTableFromMarkdown(rows) {
   });
 }
 
+/**
+ * MAIN HANDLER
+ */
 export default async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   console.log("\n" + "=".repeat(80));
-  console.log("🚀 FINANCIAL ANALYSIS - ASSISTANTS API + CODE INTERPRETER");
+  console.log("🚀 ACCOUNTING AI - RESPONSES API + CODE INTERPRETER");
+  console.log("   GPT will write Python code dynamically based on your prompt!");
   console.log("=".repeat(80));
-
-  let assistantId = null;
 
   try {
     const body = await parseJsonBody(req);
@@ -429,77 +417,76 @@ export default async function handler(req, res) {
 
     if (!fileUrl) {
       return res.status(400).json({ 
-        error: "fileUrl is required"
+        error: "fileUrl is required",
+        message: "Please provide a fileUrl parameter with the Excel file link"
       });
     }
 
-    console.log(`\n📥 Step 1: Downloading file...`);
+    console.log(`📥 Step 1: Downloading file...`);
     const { buffer } = await downloadFileToBuffer(fileUrl);
     console.log(`   ✅ Downloaded (${(buffer.length / 1024).toFixed(2)} KB)`);
 
     console.log(`\n📤 Step 2: Uploading to OpenAI...`);
     const uploadedFile = await uploadFileToOpenAI(buffer, "financial_data.xlsx");
 
-    console.log(`\n🤖 Step 3: Creating Assistant...`);
-    assistantId = await createAssistant();
+    console.log(`\n🤖 Step 3: Running Code Interpreter analysis...`);
+    console.log(`   User Question: "${question || 'Default comprehensive analysis'}"`);
+    const result = await analyzeWithCodeInterpreter(uploadedFile.file_id, question);
 
-    console.log(`\n💬 Step 4: Creating Thread...`);
-    const threadId = await createThread();
+    console.log(`\n✅ Analysis complete!`);
+    console.log(`   📊 Python blocks executed: ${result.codeExecuted.length}`);
+    console.log(`   📁 Files generated: ${result.filesGenerated.length}`);
 
-    console.log(`\n📝 Step 5: Adding message...`);
-    await addMessage(threadId, uploadedFile.file_id, question);
-
-    console.log(`\n🏃 Step 6: Running assistant...`);
-    const runId = await runAssistant(threadId, assistantId);
-
-    console.log(`\n⏳ Step 7: Polling for completion...`);
-    const runResult = await pollRunStatus(threadId, runId);
-
-    console.log(`\n📥 Step 8: Getting results...`);
-    const reply = await getMessages(threadId);
-
-    console.log(`\n📝 Step 9: Generating Word document...`);
+    // Generate Word document
     let wordBase64 = null;
     try {
-      wordBase64 = await markdownToWord(reply);
+      console.log("\n📝 Generating Word document...");
+      wordBase64 = await markdownToWord(result.reply);
       console.log("   ✅ Word document ready");
     } catch (wordError) {
       console.error("   ⚠️ Word generation failed:", wordError.message);
     }
 
-    console.log(`\n🧹 Step 10: Cleanup...`);
-    await cleanupAssistant(assistantId);
-
-    console.log("\n" + "=".repeat(80) + "\n");
+    console.log("=".repeat(80) + "\n");
 
     return res.status(200).json({
       ok: true,
       type: "xlsx",
-      documentType: "FINANCIAL_ANALYSIS",
-      reply: reply,
+      documentType: "DYNAMIC_ANALYSIS",
+      category: "code_interpreter",
+      reply: result.reply,
       wordDownload: wordBase64,
       downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
       metadata: {
-        api: "assistants_api_v2",
-        model: "gpt-4o",
-        assistant_id: assistantId,
-        thread_id: threadId,
-        run_id: runId,
-        file_id: uploadedFile.file_id,
-        tokensUsed: runResult.usage?.total_tokens || 0
+        api: "responses_api_with_code_interpreter",
+        endpoint: "/v1/responses",
+        model: result.model || "gpt-4.1",
+        response_id: result.response_id,
+        uploaded_file_id: uploadedFile.file_id,
+        python_blocks_executed: result.codeExecuted.length,
+        files_generated: result.filesGenerated.length,
+        tokensUsed: result.usage?.total_tokens || 0,
+        inputTokens: result.usage?.input_tokens || 0,
+        outputTokens: result.usage?.output_tokens || 0,
+        estimatedCost: result.cost?.total || 0,
+        costBreakdown: result.cost
+      },
+      codeExecuted: result.codeExecuted.map(c => ({
+        code: c.code,
+        hasOutput: !!c.output
+      })),
+      debug: {
+        hasWord: !!wordBase64,
+        uploadedBytes: uploadedFile.bytes
       }
     });
 
   } catch (err) {
-    console.error("\n❌ ERROR:", err.message);
-    
-    if (assistantId) {
-      await cleanupAssistant(assistantId);
-    }
-    
+    console.error("❌ Error:", err);
     return res.status(500).json({ 
       ok: false,
-      error: err.message
+      error: String(err?.message || err),
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   }
 }
