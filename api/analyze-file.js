@@ -1,12 +1,6 @@
 import fetch from "node-fetch";
 import FormData from "form-data";
-import { Document, Paragraph, HeadingLevel, Packer } from "docx";
-
-/*
-========================================
-DEBUG VERSION WITH FULL LOGGING
-========================================
-*/
+import { Document, Paragraph, Packer } from "docx";
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -21,163 +15,108 @@ async function parseJsonBody(req) {
     req.on("end", () => {
       if (!body) return resolve({});
       try {
-        return resolve(JSON.parse(body));
+        resolve(JSON.parse(body));
       } catch {
-        return resolve({ raw: body });
+        resolve({});
       }
     });
     req.on("error", reject);
   });
 }
 
+/* ================= DOWNLOAD FILE ================= */
 async function downloadFileToBuffer(url) {
-  console.log("⬇️ Downloading from URL:", url);
+  console.log("⬇️ Downloading:", url);
 
   const r = await fetch(url);
-  console.log("⬇️ Download status:", r.status);
-
-  if (!r.ok) {
-    const t = await r.text();
-    console.log("❌ Download failed response:", t);
-    throw new Error("Failed to download file");
-  }
+  if (!r.ok) throw new Error("File download failed");
 
   const buffer = Buffer.from(await r.arrayBuffer());
-  console.log("✅ File downloaded size:", buffer.length);
-
-  return { buffer };
+  console.log("✅ Downloaded size:", buffer.length);
+  return buffer;
 }
 
-/* ============================= */
-async function uploadFileToOpenAI(buffer, filename = "data.xlsx") {
-  console.log("📤 Uploading file to OpenAI...");
-
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY missing");
+/* ================= UPLOAD FILE TO OPENAI ================= */
+async function uploadFileToOpenAI(buffer) {
+  console.log("📤 Uploading to OpenAI...");
 
   const formData = new FormData();
-  formData.append("file", buffer, filename);
+  formData.append("file", buffer, "financial.xlsx");
   formData.append("purpose", "user_data");
 
   const response = await fetch("https://api.openai.com/v1/files", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       ...formData.getHeaders(),
     },
     body: formData,
   });
 
   const text = await response.text();
-  console.log("📤 Upload RAW response:", text);
+  console.log("📤 Upload response:", text);
 
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error("Upload returned non JSON");
-  }
+  const data = JSON.parse(text);
+  if (!response.ok) throw new Error(data.error?.message);
 
-  if (!response.ok) {
-    console.log("❌ Upload error:", data);
-    throw new Error(data?.error?.message || "Upload failed");
-  }
-
-  console.log("✅ File uploaded successfully");
-  console.log("📁 FILE ID:", data.id);
-
+  console.log("✅ File ID:", data.id);
   return data.id;
 }
 
-/* ============================= */
-async function analyzeWithCodeInterpreter(fileId, userQuestion) {
-  console.log("🤖 Starting analysis with file:", fileId);
+/* ================= MAIN AI ANALYSIS ================= */
+async function runAnalysis(fileId, userQuestion) {
+  console.log("🤖 Running full AI analysis...");
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const prompt = userQuestion || `
+You are a CFO-level financial analyst.
 
-  const prompt =
-  userQuestion ||
-  `
-  You are a senior financial analyst and must COMPLETE the task using Python.
-  
-  IMPORTANT RULES:
-  - Immediately read the uploaded file using Python
-  - Clean and structure the data
-  - Perform full financial analysis
-  - Do NOT explain what you will do
-  - Do NOT ask for next steps
-  - Directly produce final answer
-  
-  REQUIRED OUTPUT:
-  1. Executive summary
-  2. EBITDA analysis
-  3. Top 5 performers (by EBITDA or profit)
-  4. Bottom 5 performers
-  5. Key problems in P&L
-  6. YOY comparison if multiple years
-  7. Actionable business suggestions
-  
-  Always execute Python first and return FINAL answer only.
-  `;
+You MUST fully analyze the uploaded Excel file using Python and return FINAL ANSWER only.
+
+STRICT RULES:
+- Execute Python immediately
+- Read ALL sheets
+- Extract ALL locations
+- Calculate EBITDA per location
+- Compare YoY
+- Rank top 5 & bottom 5
+- Give CEO-level summary
+- Include industry benchmarks
+- DO NOT explain steps
+- DO NOT stop midway
+- RETURN FINAL ANSWER ONLY
+`;
 
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
       model: "gpt-4.1",
-    
-      input: userQuestion || `
-    You are a CFO-level financial analyst.
-    
-    You MUST fully analyze the uploaded Excel file using Python and return FINAL ANSWER only.
-    
-    STRICT RULES:
-    - Do NOT explain steps
-    - Do NOT describe what you will do
-    - Do NOT stop midway
-    - Execute Python fully
-    - Extract ALL sheets and ALL rows
-    - Calculate EBITDA per location
-    - Compare YoY (2025 vs 2024)
-    - Rank top 5 and bottom 5 by EBITDA
-    - Provide consolidated performance
-    - Add industry benchmark commentary
-    
-    Return complete final CEO-level report.
-    `,
-    
+
+      input: prompt,
+
       tools: [
         {
           type: "code_interpreter",
           container: {
             type: "auto",
-            file_ids: [fileId]
-          }
-        }
+            file_ids: [fileId],
+          },
+        },
       ],
-    
-      tool_choice: "required",   // 🔥 forces tool execution
-      max_output_tokens: 4000    // 🔥 prevents stopping early
+
+      tool_choice: "required",
+      max_output_tokens: 4000
     }),
   });
 
   const text = await response.text();
-  console.log("🤖 OpenAI RAW response:", text);
+  console.log("🤖 RAW AI:", text);
 
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error("OpenAI returned non JSON");
-  }
-
-  if (!response.ok) {
-    console.log("❌ OpenAI error:", data);
-    throw new Error(data?.error?.message || "OpenAI error");
-  }
+  const data = JSON.parse(text);
+  if (!response.ok) throw new Error(data.error?.message);
 
   let reply = "";
 
@@ -189,11 +128,13 @@ async function analyzeWithCodeInterpreter(fileId, userQuestion) {
     }
   }
 
-  console.log("✅ AI reply generated");
+  if (!reply) throw new Error("No AI reply");
+
+  console.log("✅ AI completed");
   return reply;
 }
 
-/* ============================= */
+/* ================= WORD EXPORT ================= */
 async function markdownToWord(text) {
   const paragraphs = text.split("\n").map(
     (line) =>
@@ -210,48 +151,39 @@ async function markdownToWord(text) {
   return buffer.toString("base64");
 }
 
-/* ============================= */
+/* ================= MAIN HANDLER ================= */
 export default async function handler(req, res) {
   cors(res);
-
-  console.log("🔥🔥🔥 API HIT STARTED 🔥🔥🔥");
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
+  console.log("🔥 API HIT");
+
   try {
     const body = await parseJsonBody(req);
-    console.log("📥 FULL BODY RECEIVED:", body);
-
     const { fileUrl, question } = body;
 
-    if (!fileUrl) {
-      console.log("❌ No fileUrl received");
-      return res.status(400).json({ error: "fileUrl missing" });
-    }
+    if (!fileUrl) return res.status(400).json({ error: "fileUrl required" });
 
-    console.log("📥 File URL:", fileUrl);
-
-    const { buffer } = await downloadFileToBuffer(fileUrl);
-
+    const buffer = await downloadFileToBuffer(fileUrl);
     const fileId = await uploadFileToOpenAI(buffer);
+    const reply = await runAnalysis(fileId, question);
 
-    const reply = await analyzeWithCodeInterpreter(fileId, question);
-
-    let wordBase64 = null;
+    let word = null;
     try {
-      wordBase64 = await markdownToWord(reply);
+      const base64 = await markdownToWord(reply);
+      word = `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${base64}`;
     } catch {}
 
     return res.json({
       ok: true,
       reply,
-      wordFile: wordBase64
-        ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}`
-        : null,
+      wordDownload: word
     });
+
   } catch (err) {
-    console.error("❌ FINAL ERROR:", err);
+    console.error("❌ ERROR:", err);
     return res.status(500).json({
       ok: false,
       error: err.message,
