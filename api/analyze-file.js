@@ -63,28 +63,22 @@ async function uploadFileToOpenAI(buffer) {
 async function runAnalysis(fileId, userQuestion) {
   console.log("🤖 Running analysis...");
 
+  // Updated prompt to force execution and ensure no planning text
   const prompt = userQuestion || `
-You must use Python to analyze the uploaded Excel file.
+You must execute Python immediately to analyze the uploaded Excel file.
 
-CRITICAL:
-After completing analysis you MUST return result to chat.
+Critical:
+- First, read all sheets.
+- Then extract all locations and calculate EBITDA per location.
+- Perform YoY comparison.
+- Rank top 5 and bottom 5 based on EBITDA.
+- Provide consolidated summary.
+- Provide CEO-level insights, comparing against industry benchmarks.
+- DO NOT write any explanation or plan.
+- Store final report in a variable called 'final_report'.
+- Return ONLY final_report.
 
-In Python:
-- Store final report in variable called final_report
-- Last line must be: final_report
-- Do NOT only print()
-
-Analysis required:
-1. Read all sheets
-2. Extract locations
-3. EBITDA per location
-4. YOY comparison
-5. Top 5 & Bottom 5
-6. Consolidated summary
-7. CEO-level insights
-8. Industry benchmark
-
-Return only final_report.
+Please proceed without any step-by-step explanation.
 `;
 
   const response = await fetch("https://api.openai.com/v1/responses", {
@@ -96,7 +90,6 @@ Return only final_report.
     body: JSON.stringify({
       model: "gpt-4.1",
       input: prompt,
-
       tools: [
         {
           type: "code_interpreter",
@@ -106,9 +99,8 @@ Return only final_report.
           },
         },
       ],
-
-      tool_choice: { type: "code_interpreter" },
-      max_output_tokens: 5000
+      tool_choice: "auto", // Fix tool choice
+      max_output_tokens: 5000,
     }),
   });
 
@@ -120,6 +112,7 @@ Return only final_report.
 
   let reply = "";
 
+  // Extract final report from response
   for (const item of data.output || []) {
     if (item.type === "message") {
       for (const c of item.content || []) {
@@ -178,14 +171,14 @@ export default async function handler(req, res) {
     return res.json({
       ok: true,
       reply,
-      wordDownload: word
+      wordDownload: word,
     });
 
   } catch (err) {
     console.error("❌ ERROR:", err);
     return res.status(500).json({
       ok: false,
-      error: err.message
+      error: err.message,
     });
   }
 }
