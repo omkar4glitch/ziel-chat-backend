@@ -24,17 +24,19 @@ async function parseJsonBody(req) {
   });
 }
 
+/* DOWNLOAD FILE */
 async function downloadFileToBuffer(url) {
   console.log("⬇️ Downloading:", url);
   const r = await fetch(url);
   if (!r.ok) throw new Error("File download failed");
   const buffer = Buffer.from(await r.arrayBuffer());
-  console.log("✅ Downloaded size:", buffer.length);
+  console.log("✅ Downloaded:", buffer.length);
   return buffer;
 }
 
+/* UPLOAD FILE */
 async function uploadFileToOpenAI(buffer) {
-  console.log("📤 Uploading to OpenAI...");
+  console.log("📤 Uploading file...");
 
   const formData = new FormData();
   formData.append("file", buffer, "financial.xlsx");
@@ -49,41 +51,41 @@ async function uploadFileToOpenAI(buffer) {
     body: formData,
   });
 
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || "Upload failed");
+  const text = await response.text();
+  const data = JSON.parse(text);
+  if (!response.ok) throw new Error(data.error?.message);
 
-  console.log("✅ File ID:", data.id);
+  console.log("✅ File uploaded:", data.id);
   return data.id;
 }
 
-/* ================= STREAMING SOLUTION ================= */
-async function runAnalysisWithStreaming(fileId, userQuestion) {
-  console.log("🤖 Running analysis with STREAMING...");
+/* MAIN AI ANALYSIS */
+async function runAnalysis(fileId, userQuestion) {
+  console.log("🤖 Running analysis...");
 
-  const prompt = userQuestion || `You are an expert financial analyst.
+  const prompt = userQuestion || `
+You must use Python to analyze the uploaded Excel file.
 
-TASK: Analyze this Excel file completely and provide comprehensive P&L analysis.
+CRITICAL:
+After completing analysis you MUST return result to chat.
 
-IMPORTANT INSTRUCTIONS:
-1. Load ALL sheets in the file (e.g., 2024, 2025)
-2. Extract ALL locations/stores from the data
-3. Calculate key metrics for each location (Revenue, COGS, Gross Profit, Operating Expenses, EBITDA, Net Profit)
-4. Perform Year-over-Year analysis
-5. Rank ALL locations by EBITDA
-6. Identify Top 5 and Bottom 5 performers
+In Python:
+- Store final report in variable called final_report
+- Last line must be: final_report
+- Do NOT only print()
 
-CRITICAL: Use print() statements in your Python code to show your calculations as you work.
+Analysis required:
+1. Read all sheets
+2. Extract locations
+3. EBITDA per location
+4. YOY comparison
+5. Top 5 & Bottom 5
+6. Consolidated summary
+7. CEO-level insights
+8. Industry benchmark
 
-OUTPUT FORMAT:
-Provide a detailed CEO-level report including:
-- Executive Summary
-- Consolidated Performance (YoY)
-- Complete Location Rankings Table
-- Top 5 Performers (with specific metrics and drivers)
-- Bottom 5 Performers (with recommendations)
-- Industry benchmarks and insights
-
-Start by loading the file and exploring its structure.`;
+Return only final_report.
+`;
 
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -92,8 +94,9 @@ Start by loading the file and exploring its structure.`;
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "gpt-4o",  // gpt-4.1 might not be available yet, use gpt-4o
+      model: "gpt-4.1",
       input: prompt,
+
       tools: [
         {
           type: "code_interpreter",
@@ -103,79 +106,40 @@ Start by loading the file and exploring its structure.`;
           },
         },
       ],
-      stream: true,  // ENABLE STREAMING
-      store: false
+
+      tool_choice: { type: "code_interpreter" },
+      max_output_tokens: 5000
     }),
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`API error (${response.status}): ${errorText}`);
-  }
+  const raw = await response.text();
+  console.log("🤖 RAW:", raw);
 
-  // Process the stream
-  let fullReply = "";
-  let codeBlocks = [];
+  const data = JSON.parse(raw);
+  if (!response.ok) throw new Error(data.error?.message);
 
-  console.log("📡 Receiving streamed response...");
+  let reply = "";
 
-  // Read the stream line by line
-  const decoder = new TextDecoder();
-  const reader = response.body;
-
-  for await (const chunk of reader) {
-    const lines = decoder.decode(chunk).split('\n');
-    
-    for (const line of lines) {
-      if (!line.trim() || line.trim() === 'data: [DONE]') continue;
-      
-      if (line.startsWith('data: ')) {
-        try {
-          const jsonStr = line.slice(6); // Remove 'data: ' prefix
-          const event = JSON.parse(jsonStr);
-          
-          // Extract text content
-          if (event.type === 'response.output_text.delta') {
-            fullReply += event.delta || "";
-          }
-          
-          // Extract code execution
-          if (event.type === 'response.code_interpreter_call.completed') {
-            console.log("   ✅ Code block executed");
-            codeBlocks.push({
-              status: "completed"
-            });
-          }
-          
-          // Log progress
-          if (event.type === 'response.code_interpreter_call.interpreting') {
-            console.log("   ⏳ Code executing...");
-          }
-          
-        } catch (parseErr) {
-          // Skip invalid JSON lines
+  for (const item of data.output || []) {
+    if (item.type === "message") {
+      for (const c of item.content || []) {
+        if (c.type === "output_text" || c.type === "text") {
+          reply += c.text || "";
         }
       }
     }
   }
 
-  console.log("✅ Streaming complete!");
-  console.log(`   📊 Code blocks executed: ${codeBlocks.length}`);
-  console.log(`   📊 Total output: ${fullReply.length} characters`);
+  if (!reply) throw new Error("No final output returned");
+  console.log("✅ AI completed");
 
-  if (!fullReply.trim()) {
-    throw new Error("No output received from model");
-  }
-
-  return fullReply.trim();
+  return reply;
 }
 
+/* WORD EXPORT */
 async function markdownToWord(text) {
   const paragraphs = text.split("\n").map(
-    (line) =>
-      new Paragraph({
-        text: line.replace(/\*\*/g, "").replace(/```/g, ""),
-      })
+    (line) => new Paragraph({ text: line })
   );
 
   const doc = new Document({
@@ -186,15 +150,14 @@ async function markdownToWord(text) {
   return buffer.toString("base64");
 }
 
+/* MAIN HANDLER */
 export default async function handler(req, res) {
   cors(res);
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
-  console.log("\n" + "=".repeat(80));
-  console.log("🔥 RESPONSES API + CODE INTERPRETER (STREAMING)");
-  console.log("=".repeat(80));
+  console.log("🔥 API HIT");
 
   try {
     const body = await parseJsonBody(req);
@@ -204,33 +167,25 @@ export default async function handler(req, res) {
 
     const buffer = await downloadFileToBuffer(fileUrl);
     const fileId = await uploadFileToOpenAI(buffer);
-    const reply = await runAnalysisWithStreaming(fileId, question);
+    const reply = await runAnalysis(fileId, question);
 
     let word = null;
     try {
-      console.log("📝 Generating Word document...");
       const base64 = await markdownToWord(reply);
       word = `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${base64}`;
-      console.log("✅ Word ready");
     } catch {}
-
-    console.log("=".repeat(80) + "\n");
 
     return res.json({
       ok: true,
       reply,
-      wordDownload: word,
-      metadata: {
-        api: "responses_streaming",
-        replyLength: reply.length
-      }
+      wordDownload: word
     });
 
   } catch (err) {
     console.error("❌ ERROR:", err);
     return res.status(500).json({
       ok: false,
-      error: err.message,
+      error: err.message
     });
   }
 }
