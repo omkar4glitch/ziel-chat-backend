@@ -161,7 +161,8 @@ async function analyzeWithCodeInterpreter(fileId, userQuestion) {
     
       tool_choice: "required",   // 🔥 forces tool execution
       max_output_tokens: 4000    // 🔥 prevents stopping early
-    });
+    }),
+  });
 
   const text = await response.text();
   console.log("🤖 OpenAI RAW response:", text);
