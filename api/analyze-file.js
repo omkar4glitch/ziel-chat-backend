@@ -56,13 +56,58 @@ async function uploadFileToOpenAI(buffer) {
   return data.id;
 }
 
-// ... (same imports and helper functions as above)
+function extractResponseText(responseData) {
+  if (!responseData) return "";
+
+  if (typeof responseData.output_text === "string" && responseData.output_text.trim()) {
+    return responseData.output_text.trim();
+  }
+
+  let fullReply = "";
+  for (const item of responseData.output || []) {
+    if (item.type !== "message" || !Array.isArray(item.content)) continue;
+
+    for (const contentItem of item.content) {
+      if (contentItem.type !== "output_text" && contentItem.type !== "text") continue;
+
+      if (typeof contentItem.text === "string") {
+        fullReply += `${contentItem.text}\n`;
+      } else if (contentItem.text?.value) {
+        fullReply += `${contentItem.text.value}\n`;
+      }
+    }
+  }
+
+  return fullReply.trim();
+}
+
+async function requestFinalAnswerFromCompletedRun(responseId) {
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o",
+      previous_response_id: responseId,
+      input: "Now provide the complete final answer for the user in plain text.",
+      store: false,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error?.message || "Failed to fetch final answer");
+  return extractResponseText(data);
+}
 
 /* ================= BACKGROUND MODE SOLUTION ================= */
 async function runAnalysisWithBackgroundMode(fileId, userQuestion) {
   console.log("🤖 Starting analysis in BACKGROUND MODE...");
 
-  const prompt = userQuestion || `[Same prompt as above]`;
+  const prompt =
+    userQuestion ||
+    "Analyze the uploaded financial file and provide a complete location-wise and consolidated YoY summary till EBITDA.";
 
   // Step 1: Start background task
   const startResponse = await fetch("https://api.openai.com/v1/responses", {
@@ -83,8 +128,8 @@ async function runAnalysisWithBackgroundMode(fileId, userQuestion) {
           },
         },
       ],
-      background: true,  // BACKGROUND MODE
-      store: false
+      background: true,
+      store: false,
     }),
   });
 
@@ -96,8 +141,8 @@ async function runAnalysisWithBackgroundMode(fileId, userQuestion) {
 
   // Step 2: Poll for completion
   console.log("   ⏳ Polling for completion...");
-  
-  const maxAttempts = 60; // 2 minutes max
+
+  const maxAttempts = 150; // 5 minutes max
   const pollInterval = 2000; // 2 seconds
 
   for (let i = 0; i < maxAttempts; i++) {
@@ -110,21 +155,20 @@ async function runAnalysisWithBackgroundMode(fileId, userQuestion) {
     });
 
     const pollData = await pollResponse.json();
+    if (!pollResponse.ok) {
+      throw new Error(pollData.error?.message || "Failed while polling response");
+    }
+
     console.log(`   Status: ${pollData.status} (attempt ${i + 1}/${maxAttempts})`);
 
     if (pollData.status === "completed") {
       console.log("   ✅ Analysis complete!");
-      
-      // Extract output
-      let fullReply = "";
-      for (const item of pollData.output || []) {
-        if (item.type === "message" && item.content) {
-          for (const c of item.content) {
-            if (c.type === "output_text" || c.type === "text") {
-              fullReply += (c.text || "") + "\n";
-            }
-          }
-        }
+
+      let fullReply = extractResponseText(pollData);
+
+      if (!fullReply) {
+        console.log("   ℹ️ Completed run had no final text. Requesting final answer from prior run...");
+        fullReply = await requestFinalAnswerFromCompletedRun(responseId);
       }
 
       return fullReply.trim();
@@ -133,9 +177,13 @@ async function runAnalysisWithBackgroundMode(fileId, userQuestion) {
     if (pollData.status === "failed") {
       throw new Error(`Analysis failed: ${pollData.error?.message || "Unknown error"}`);
     }
+
+    if (["cancelled", "incomplete", "expired"].includes(pollData.status)) {
+      throw new Error(`Analysis ended with status: ${pollData.status}`);
+    }
   }
 
-  throw new Error("Analysis timed out after 2 minutes");
+  throw new Error("Analysis timed out after 5 minutes");
 }
 
 // Use this in the handler instead of runAnalysisWithStreaming
@@ -162,7 +210,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
   console.log("\n" + "=".repeat(80));
-  console.log("🔥 RESPONSES API + CODE INTERPRETER (STREAMING)");
+  console.log("🔥 RESPONSES API + CODE INTERPRETER (BACKGROUND)");
   console.log("=".repeat(80));
 
   try {
@@ -190,9 +238,9 @@ export default async function handler(req, res) {
       reply,
       wordDownload: word,
       metadata: {
-        api: "responses_streaming",
-        replyLength: reply.length
-      }
+        api: "responses_background",
+        replyLength: reply.length,
+      },
     });
 
   } catch (err) {
