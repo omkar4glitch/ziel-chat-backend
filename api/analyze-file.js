@@ -2,12 +2,14 @@ import fetch from "node-fetch";
 import FormData from "form-data";
 import { Document, Paragraph, Packer } from "docx";
 
+/* ================= CORS ================= */
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
+/* ================= JSON BODY PARSER ================= */
 async function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -26,20 +28,13 @@ async function parseJsonBody(req) {
 
 /* ================= DOWNLOAD FILE ================= */
 async function downloadFileToBuffer(url) {
-  console.log("⬇️ Downloading:", url);
-
   const r = await fetch(url);
   if (!r.ok) throw new Error("File download failed");
-
-  const buffer = Buffer.from(await r.arrayBuffer());
-  console.log("✅ Downloaded size:", buffer.length);
-  return buffer;
+  return Buffer.from(await r.arrayBuffer());
 }
 
 /* ================= UPLOAD FILE TO OPENAI ================= */
 async function uploadFileToOpenAI(buffer) {
-  console.log("📤 Uploading to OpenAI...");
-
   const formData = new FormData();
   formData.append("file", buffer, "financial.xlsx");
   formData.append("purpose", "user_data");
@@ -53,49 +48,30 @@ async function uploadFileToOpenAI(buffer) {
     body: formData,
   });
 
-  const text = await response.text();
-  console.log("📤 Upload response:", text);
-
-  const data = JSON.parse(text);
+  const data = await response.json();
   if (!response.ok) throw new Error(data.error?.message);
 
-  console.log("✅ File ID:", data.id);
   return data.id;
 }
 
-/* ================= MAIN AI ANALYSIS ================= */
+/* ================= RUN FULL AI ANALYSIS ================= */
 async function runAnalysis(fileId, userQuestion) {
-  console.log("🤖 Running full AI analysis...");
-
   const prompt = userQuestion || `
-You are a CFO financial analysis engine.
+You are a CFO-level financial analyst.
 
-CRITICAL: You must complete the entire task in ONE python execution.
-
-Execution rules:
-- Run python once only
-- Do ALL calculations inside python
-- Do NOT explore step-by-step
-- Do NOT inspect gradually
-- Do NOT explain process
-- Do NOT stop midway
-- After computing everything, PRINT final report
-
-Analysis required:
-1. Read ALL sheets (2024 & 2025)
-2. Extract all locations
-3. Calculate EBITDA per location
-4. YOY comparison
-5. Rank top 5 and bottom 5 by EBITDA
-6. Consolidated performance
-7. Industry benchmark commentary
-
-FINAL OUTPUT:
-Return complete CEO-level financial report only.
-No intermediate steps.
+You MUST:
+- Use Python immediately
+- Read ALL sheets
+- Process EVERY row
+- Compute EBITDA per location
+- Perform YoY comparison
+- Rank Top 5 & Bottom 5 by EBITDA
+- Give consolidated view
+- Provide CEO-level summary with industry benchmarks
+- Return FINAL ANSWER only
 `;
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  let response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -103,9 +79,7 @@ No intermediate steps.
     },
     body: JSON.stringify({
       model: "gpt-4.1",
-
       input: prompt,
-
       tools: [
         {
           type: "code_interpreter",
@@ -115,32 +89,55 @@ No intermediate steps.
           },
         },
       ],
-
-      tool_choice: "required",
-      reasoning: { effort: "high" },
-      max_output_tokens: 4000
+      tool_choice: "auto", // 🔥 IMPORTANT FIX
+      max_output_tokens: 4000,
     }),
   });
 
-  const text = await response.text();
-  console.log("🤖 RAW AI:", text);
-
-  const data = JSON.parse(text);
+  let data = await response.json();
   if (!response.ok) throw new Error(data.error?.message);
 
+  /* ================= TOOL LOOP ================= */
+  while (data.status === "requires_action") {
+    const toolCalls = data.required_action.submit_tool_outputs.tool_calls;
+
+    const toolOutputs = toolCalls.map((toolCall) => ({
+      tool_call_id: toolCall.id,
+      output: "", // Code interpreter handles internally
+    }));
+
+    response = await fetch(
+      `https://api.openai.com/v1/responses/${data.id}/submit_tool_outputs`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          tool_outputs: toolOutputs,
+        }),
+      }
+    );
+
+    data = await response.json();
+  }
+
+  /* ================= EXTRACT FINAL TEXT ================= */
   let reply = "";
 
   for (const item of data.output || []) {
     if (item.type === "message") {
       for (const c of item.content || []) {
-        if (c.type === "output_text") reply += c.text;
+        if (c.type === "output_text") {
+          reply += c.text;
+        }
       }
     }
   }
 
-  if (!reply) throw new Error("No AI reply");
+  if (!reply) throw new Error("AI returned empty response");
 
-  console.log("✅ AI completed");
   return reply;
 }
 
@@ -166,15 +163,15 @@ export default async function handler(req, res) {
   cors(res);
 
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
-
-  console.log("🔥 API HIT");
+  if (req.method !== "POST")
+    return res.status(405).json({ error: "POST only" });
 
   try {
     const body = await parseJsonBody(req);
     const { fileUrl, question } = body;
 
-    if (!fileUrl) return res.status(400).json({ error: "fileUrl required" });
+    if (!fileUrl)
+      return res.status(400).json({ error: "fileUrl required" });
 
     const buffer = await downloadFileToBuffer(fileUrl);
     const fileId = await uploadFileToOpenAI(buffer);
@@ -189,11 +186,9 @@ export default async function handler(req, res) {
     return res.json({
       ok: true,
       reply,
-      wordDownload: word
+      wordDownload: word,
     });
-
   } catch (err) {
-    console.error("❌ ERROR:", err);
     return res.status(500).json({
       ok: false,
       error: err.message,
