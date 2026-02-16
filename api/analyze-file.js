@@ -27,10 +27,8 @@ async function parseJsonBody(req) {
 /* ================= DOWNLOAD FILE ================= */
 async function downloadFileToBuffer(url) {
   console.log("⬇️ Downloading:", url);
-
   const r = await fetch(url);
   if (!r.ok) throw new Error("File download failed");
-
   const buffer = Buffer.from(await r.arrayBuffer());
   console.log("✅ Downloaded size:", buffer.length);
   return buffer;
@@ -53,89 +51,127 @@ async function uploadFileToOpenAI(buffer) {
     body: formData,
   });
 
-  const text = await response.text();
-  console.log("📤 Upload response:", text);
-
-  const data = JSON.parse(text);
-  if (!response.ok) throw new Error(data.error?.message);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error?.message || "Upload failed");
 
   console.log("✅ File ID:", data.id);
   return data.id;
 }
 
-/* ================= MAIN AI ANALYSIS ================= */
+/* ================= CORRECTED: MAIN AI ANALYSIS ================= */
 async function runAnalysis(fileId, userQuestion) {
-  console.log("🤖 Running full AI analysis...");
+  console.log("🤖 Running AI analysis with Code Interpreter...");
 
-  const prompt = `
-You must use Python to fully analyze the uploaded Excel file.
+  // CORRECTED PROMPT - Tells model to PRINT everything
+  const prompt = userQuestion || `You are an expert financial analyst.
 
-IMPORTANT:
-Run a single complete Python script that:
-- Loads all sheets
-- Cleans data
-- Extracts all locations
-- Calculates EBITDA per location
-- Performs YoY comparison
-- Ranks top 5 and bottom 5 by EBITDA
-- Creates consolidated summary
+TASK: Analyze the Excel file and provide comprehensive P&L analysis till EBITDA.
 
-After computing everything,
-PRINT the final detailed CEO-level financial analysis.
+IMPORTANT INSTRUCTIONS:
+1. Use Python with pandas to read the Excel file
+2. PRINT all intermediate results as you process
+3. Load BOTH sheets (2024 and 2025) if they exist
+4. Extract all location/store columns
+5. Calculate metrics for each location
+6. Perform Year-over-Year (YoY) analysis
+7. Rank all locations by EBITDA
+8. Identify Top 5 and Bottom 5 performers
 
-Do not explore step-by-step.
-Do not inspect structure gradually.
-Do not describe process.
-Only run one full Python analysis and print final answer.
-`;
+CRITICAL: You MUST use print() statements to show:
+- Data structure after loading
+- Column names found
+- Calculations being performed
+- Final results tables
 
+After all calculations, provide a detailed CEO-level summary including:
+- Executive Summary
+- Consolidated Performance (YoY)
+- Location-wise Performance Rankings
+- Top 5 Performers (with specific metrics)
+- Bottom 5 Performers (with improvement recommendations)
+- Industry benchmarks and trends
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4.1",
+START BY LOADING THE FILE AND PRINTING ITS STRUCTURE.`;
 
-      input: prompt,
-
-      tools: [
-        {
-          type: "code_interpreter",
-          container: {
-            type: "auto",
-            file_ids: [fileId],
+  try {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o",  // Changed from gpt-4.1 to gpt-4o (more reliable)
+        input: prompt,
+        tools: [
+          {
+            type: "code_interpreter",
+            container: {
+              type: "auto",
+              file_ids: [fileId],
+            },
           },
-        },
-      ],
+        ],
+        store: false
+        // REMOVED: tool_choice: "required" - let model decide
+        // REMOVED: reasoning: { effort: "high" } - gpt-4o doesn't need it
+        // REMOVED: max_output_tokens - not supported
+      }),
+    });
 
-      tool_choice: "required",
-      max_output_tokens: 4000
-    }),
-  });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API error (${response.status}): ${errorText}`);
+    }
 
-  const text = await response.text();
-  console.log("🤖 RAW AI:", text);
+    const data = await response.json();
+    
+    if (data.error) {
+      throw new Error(data.error?.message || "API returned error");
+    }
 
-  const data = JSON.parse(text);
-  if (!response.ok) throw new Error(data.error?.message);
+    // Extract ALL content including code outputs
+    let reply = "";
+    let codeBlocks = [];
 
-  let reply = "";
-
-  for (const item of data.output || []) {
-    if (item.type === "message") {
-      for (const c of item.content || []) {
-        if (c.type === "output_text") reply += c.text;
+    for (const item of data.output || []) {
+      // Extract message content
+      if (item.type === "message" && item.content) {
+        for (const c of item.content || []) {
+          if (c.type === "output_text" || c.type === "text") {
+            reply += (c.text || "") + "\n";
+          }
+        }
+      }
+      
+      // Extract code execution details
+      if (item.type === "code_interpreter_call") {
+        codeBlocks.push({
+          code: item.code || "",
+          output: item.output || ""
+        });
+        
+        // Add code output to reply if available
+        if (item.output) {
+          reply += "\n--- Code Output ---\n" + item.output + "\n";
+        }
       }
     }
+
+    if (!reply.trim()) {
+      throw new Error("No text content in AI response");
+    }
+
+    console.log("✅ AI completed");
+    console.log(`   📊 Code blocks executed: ${codeBlocks.length}`);
+    console.log(`   📊 Total output length: ${reply.length} characters`);
+
+    return reply.trim();
+
+  } catch (err) {
+    console.error("❌ Analysis failed:", err.message);
+    throw err;
   }
-
-  if (!reply) throw new Error("No AI reply");
-
-  console.log("✅ AI completed");
-  return reply;
 }
 
 /* ================= WORD EXPORT ================= */
@@ -143,7 +179,7 @@ async function markdownToWord(text) {
   const paragraphs = text.split("\n").map(
     (line) =>
       new Paragraph({
-        text: line.replace(/\*\*/g, ""),
+        text: line.replace(/\*\*/g, "").replace(/```/g, ""),
       })
   );
 
@@ -178,12 +214,18 @@ export default async function handler(req, res) {
     try {
       const base64 = await markdownToWord(reply);
       word = `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${base64}`;
-    } catch {}
+    } catch (wordErr) {
+      console.error("⚠️ Word generation failed:", wordErr.message);
+    }
 
     return res.json({
       ok: true,
       reply,
-      wordDownload: word
+      wordDownload: word,
+      debug: {
+        replyLength: reply.length,
+        hasAnalysis: reply.includes("EBITDA") || reply.includes("analysis")
+      }
     });
 
   } catch (err) {
