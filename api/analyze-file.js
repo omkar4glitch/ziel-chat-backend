@@ -68,22 +68,31 @@ async function runAnalysis(fileId, userQuestion) {
   console.log("🤖 Running full AI analysis...");
 
   const prompt = userQuestion || `
-You are a CFO-level financial analyst.
+You are a CFO financial analysis engine.
 
-You MUST fully analyze the uploaded Excel file using Python and return FINAL ANSWER only.
+CRITICAL: You must complete the entire task in ONE python execution.
 
-STRICT RULES:
-- Execute Python immediately
-- Read ALL sheets
-- Extract ALL locations
-- Calculate EBITDA per location
-- Compare YoY
-- Rank top 5 & bottom 5
-- Give CEO-level summary
-- Include industry benchmarks
-- DO NOT explain steps
-- DO NOT stop midway
-- RETURN FINAL ANSWER ONLY
+Execution rules:
+- Run python once only
+- Do ALL calculations inside python
+- Do NOT explore step-by-step
+- Do NOT inspect gradually
+- Do NOT explain process
+- Do NOT stop midway
+- After computing everything, PRINT final report
+
+Analysis required:
+1. Read ALL sheets (2024 & 2025)
+2. Extract all locations
+3. Calculate EBITDA per location
+4. YOY comparison
+5. Rank top 5 and bottom 5 by EBITDA
+6. Consolidated performance
+7. Industry benchmark commentary
+
+FINAL OUTPUT:
+Return complete CEO-level financial report only.
+No intermediate steps.
 `;
 
   const response = await fetch("https://api.openai.com/v1/responses", {
