@@ -96,8 +96,29 @@ async function analyzeWithCodeInterpreter(fileId, userQuestion) {
   const apiKey = process.env.OPENAI_API_KEY;
 
   const prompt =
-    userQuestion ||
-    `Analyze this financial file and give detailed accounting insights`;
+  userQuestion ||
+  `
+  You are a senior financial analyst and must COMPLETE the task using Python.
+  
+  IMPORTANT RULES:
+  - Immediately read the uploaded file using Python
+  - Clean and structure the data
+  - Perform full financial analysis
+  - Do NOT explain what you will do
+  - Do NOT ask for next steps
+  - Directly produce final answer
+  
+  REQUIRED OUTPUT:
+  1. Executive summary
+  2. EBITDA analysis
+  3. Top 5 performers (by EBITDA or profit)
+  4. Bottom 5 performers
+  5. Key problems in P&L
+  6. YOY comparison if multiple years
+  7. Actionable business suggestions
+  
+  Always execute Python first and return FINAL answer only.
+  `;
 
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
