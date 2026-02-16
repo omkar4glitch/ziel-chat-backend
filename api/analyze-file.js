@@ -1,253 +1,147 @@
 import fetch from "node-fetch";
-import FormData from "form-data";
-import { Document, Paragraph, Packer } from "docx";
+import * as XLSX from "xlsx";
+import { Document, Paragraph, Packer, HeadingLevel } from "docx";
 
+/* CORS */
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
+/* JSON BODY */
 async function parseJsonBody(req) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     let body = "";
-    req.on("data", (chunk) => (body += chunk));
+    req.on("data", (c) => (body += c));
     req.on("end", () => {
-      if (!body) return resolve({});
-      try {
-        resolve(JSON.parse(body));
-      } catch {
-        resolve({});
-      }
+      try { resolve(JSON.parse(body)); }
+      catch { resolve({}); }
     });
-    req.on("error", reject);
   });
 }
 
-async function downloadFileToBuffer(url) {
-  console.log("⬇️ Downloading:", url);
+/* DOWNLOAD FILE */
+async function downloadFile(url) {
   const r = await fetch(url);
-  if (!r.ok) throw new Error("File download failed");
-  const buffer = Buffer.from(await r.arrayBuffer());
-  console.log("✅ Downloaded size:", buffer.length);
-  return buffer;
+  if (!r.ok) throw new Error("Download failed");
+  return Buffer.from(await r.arrayBuffer());
 }
 
-async function uploadFileToOpenAI(buffer) {
-  console.log("📤 Uploading to OpenAI...");
+/* PARSE EXCEL */
+function parseExcel(buffer) {
+  const wb = XLSX.read(buffer, { type: "buffer" });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(sheet, { defval: 0 });
+}
 
-  const formData = new FormData();
-  formData.append("file", buffer, "financial.xlsx");
-  formData.append("purpose", "user_data");
+/* BASIC FINANCIAL EXTRACTION (GENERIC) */
+function calculateFinancials(rows) {
+  let revenue = 0;
+  let expenses = 0;
 
-  const response = await fetch("https://api.openai.com/v1/files", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      ...formData.getHeaders(),
-    },
-    body: formData,
+  rows.forEach(r => {
+    const first = Object.values(r)[0]?.toString().toLowerCase();
+    const nums = Object.values(r).filter(v => typeof v === "number");
+    const val = nums[0] || 0;
+
+    if (!first) return;
+
+    if (first.includes("sales") || first.includes("revenue") || first.includes("income"))
+      revenue += val;
+
+    if (first.includes("expense") || first.includes("rent") || first.includes("payroll") || first.includes("cogs"))
+      expenses += val;
   });
 
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || "Upload failed");
+  const ebitda = revenue - expenses;
+  const margin = revenue ? (ebitda / revenue) * 100 : 0;
 
-  console.log("✅ File ID:", data.id);
-  return data.id;
+  return { revenue, expenses, ebitda, ebitdaMargin: margin };
 }
 
-function extractResponseText(responseData) {
-  if (!responseData) return "";
+/* AI COMMENTARY */
+async function askAI(summary, question) {
 
-  if (typeof responseData.output_text === "string" && responseData.output_text.trim()) {
-    return responseData.output_text.trim();
-  }
+  const prompt = `
+You are a CFO.
 
-  let fullReply = "";
-  for (const item of responseData.output || []) {
-    if (item.type !== "message" || !Array.isArray(item.content)) continue;
+Financial summary:
+${JSON.stringify(summary, null, 2)}
 
-    for (const contentItem of item.content) {
-      if (contentItem.type !== "output_text" && contentItem.type !== "text") continue;
+User request:
+${question || "Provide full financial analysis"}
 
-      if (typeof contentItem.text === "string") {
-        fullReply += `${contentItem.text}\n`;
-      } else if (contentItem.text?.value) {
-        fullReply += `${contentItem.text.value}\n`;
-      }
-    }
-  }
+Give professional MIS analysis:
+- EBITDA review
+- Cost issues
+- Risks
+- Suggestions
+- Industry comparison
+`;
 
-  return fullReply.trim();
-}
-
-async function requestFinalAnswerFromCompletedRun(responseId) {
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const r = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
     },
     body: JSON.stringify({
-      model: "gpt-4o",
-      previous_response_id: responseId,
-      input: "Now provide the complete final answer for the user in plain text.",
-      store: false,
-    }),
-  });
-
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || "Failed to fetch final answer");
-  return extractResponseText(data);
-}
-
-/* ================= BACKGROUND MODE SOLUTION ================= */
-async function runAnalysisWithBackgroundMode(fileId, userQuestion) {
-  console.log("🤖 Starting analysis in BACKGROUND MODE...");
-
-  const prompt =
-    userQuestion ||
-    "Analyze the uploaded financial file and provide a complete location-wise and consolidated YoY summary till EBITDA.";
-
-  // Step 1: Start background task
-  const startResponse = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o",
+      model: "gpt-4o-mini",
       input: prompt,
-      tools: [
-        {
-          type: "code_interpreter",
-          container: {
-            type: "auto",
-            file_ids: [fileId],
-          },
-        },
-      ],
-      background: true,
-      store: false,
-    }),
+      max_output_tokens: 1500
+    })
   });
 
-  const startData = await startResponse.json();
-  if (!startResponse.ok) throw new Error(startData.error?.message || "Start failed");
-
-  const responseId = startData.id;
-  console.log(`   ✅ Background task started: ${responseId}`);
-
-  // Step 2: Poll for completion
-  console.log("   ⏳ Polling for completion...");
-
-  const maxAttempts = 150; // 5 minutes max
-  const pollInterval = 2000; // 2 seconds
-
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise(resolve => setTimeout(resolve, pollInterval));
-
-    const pollResponse = await fetch(`https://api.openai.com/v1/responses/${responseId}`, {
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      }
-    });
-
-    const pollData = await pollResponse.json();
-    if (!pollResponse.ok) {
-      throw new Error(pollData.error?.message || "Failed while polling response");
-    }
-
-    console.log(`   Status: ${pollData.status} (attempt ${i + 1}/${maxAttempts})`);
-
-    if (pollData.status === "completed") {
-      console.log("   ✅ Analysis complete!");
-
-      let fullReply = extractResponseText(pollData);
-
-      if (!fullReply) {
-        console.log("   ℹ️ Completed run had no final text. Requesting final answer from prior run...");
-        fullReply = await requestFinalAnswerFromCompletedRun(responseId);
-      }
-
-      return fullReply.trim();
-    }
-
-    if (pollData.status === "failed") {
-      throw new Error(`Analysis failed: ${pollData.error?.message || "Unknown error"}`);
-    }
-
-    if (["cancelled", "incomplete", "expired"].includes(pollData.status)) {
-      throw new Error(`Analysis ended with status: ${pollData.status}`);
-    }
-  }
-
-  throw new Error("Analysis timed out after 5 minutes");
+  const json = await r.json();
+  return json.output?.[0]?.content?.[0]?.text || "No AI response";
 }
 
-// Use this in the handler instead of runAnalysisWithStreaming
-async function markdownToWord(text) {
-  const paragraphs = text.split("\n").map(
-    (line) =>
-      new Paragraph({
-        text: line.replace(/\*\*/g, "").replace(/```/g, ""),
-      })
-  );
-
+/* WORD */
+async function makeWord(text) {
   const doc = new Document({
-    sections: [{ children: paragraphs }],
+    sections: [{
+      children: [
+        new Paragraph({
+          text: "Financial MIS Report",
+          heading: HeadingLevel.HEADING_1
+        }),
+        new Paragraph(text)
+      ]
+    }]
   });
 
-  const buffer = await Packer.toBuffer(doc);
-  return buffer.toString("base64");
+  const buf = await Packer.toBuffer(doc);
+  return buf.toString("base64");
 }
 
+/* MAIN */
 export default async function handler(req, res) {
   cors(res);
-
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
-
-  console.log("\n" + "=".repeat(80));
-  console.log("🔥 RESPONSES API + CODE INTERPRETER (BACKGROUND)");
-  console.log("=".repeat(80));
+  if (req.method === "OPTIONS") return res.end();
+  if (req.method !== "POST")
+    return res.status(405).json({ error: "POST only" });
 
   try {
-    const body = await parseJsonBody(req);
-    const { fileUrl, question } = body;
+    const { fileUrl, question } = await parseJsonBody(req);
+    if (!fileUrl) throw new Error("fileUrl required");
 
-    if (!fileUrl) return res.status(400).json({ error: "fileUrl required" });
+    const buffer = await downloadFile(fileUrl);
+    const rows = parseExcel(buffer);
+    const summary = calculateFinancials(rows);
+    const ai = await askAI(summary, question);
 
-    const buffer = await downloadFileToBuffer(fileUrl);
-    const fileId = await uploadFileToOpenAI(buffer);
-    const reply = await runAnalysisWithBackgroundMode(fileId, question);
+    const wordBase64 = await makeWord(ai);
 
-    let word = null;
-    try {
-      console.log("📝 Generating Word document...");
-      const base64 = await markdownToWord(reply);
-      word = `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${base64}`;
-      console.log("✅ Word ready");
-    } catch {}
-
-    console.log("=".repeat(80) + "\n");
-
-    return res.json({
+    res.json({
       ok: true,
-      reply,
-      wordDownload: word,
-      metadata: {
-        api: "responses_background",
-        replyLength: reply.length,
-      },
+      summary,
+      analysis: ai,
+      wordDownload:
+        `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}`
     });
 
-  } catch (err) {
-    console.error("❌ ERROR:", err);
-    return res.status(500).json({
-      ok: false,
-      error: err.message,
-    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 }
