@@ -173,7 +173,7 @@ export default async function handler(req, res) {
 
     const buffer = await downloadFileToBuffer(fileUrl);
     const fileId = await uploadFileToOpenAI(buffer);
-    const reply = await runAnalysisWithStreaming(fileId, question);
+    const reply = await runAnalysisWithBackgroundMode(fileId, question);
 
     let word = null;
     try {
