@@ -1,11 +1,10 @@
 import fetch from "node-fetch";
 import FormData from "form-data";
-import { Document, Paragraph, HeadingLevel, Packer, Table, TableRow, TableCell, WidthType } from "docx";
+import { Document, Paragraph, HeadingLevel, Packer } from "docx";
 
 /*
 ========================================
-OPENAI RESPONSES API + CODE INTERPRETER
-FULLY FIXED VERSION (2026 SAFE)
+DEBUG VERSION WITH FULL LOGGING
 ========================================
 */
 
@@ -24,7 +23,7 @@ async function parseJsonBody(req) {
       try {
         return resolve(JSON.parse(body));
       } catch {
-        return resolve({ userMessage: body });
+        return resolve({ raw: body });
       }
     });
     req.on("error", reject);
@@ -32,15 +31,24 @@ async function parseJsonBody(req) {
 }
 
 async function downloadFileToBuffer(url) {
+  console.log("⬇️ Downloading from URL:", url);
+
   const r = await fetch(url);
-  if (!r.ok) throw new Error("Failed to download file");
+  console.log("⬇️ Download status:", r.status);
+
+  if (!r.ok) {
+    const t = await r.text();
+    console.log("❌ Download failed response:", t);
+    throw new Error("Failed to download file");
+  }
+
   const buffer = Buffer.from(await r.arrayBuffer());
+  console.log("✅ File downloaded size:", buffer.length);
+
   return { buffer };
 }
 
-/* ================================
-UPLOAD FILE TO OPENAI (FIXED)
-================================ */
+/* ============================= */
 async function uploadFileToOpenAI(buffer, filename = "data.xlsx") {
   console.log("📤 Uploading file to OpenAI...");
 
@@ -49,8 +57,6 @@ async function uploadFileToOpenAI(buffer, filename = "data.xlsx") {
 
   const formData = new FormData();
   formData.append("file", buffer, filename);
-
-  // IMPORTANT: use user_data NOT assistants
   formData.append("purpose", "user_data");
 
   const response = await fetch("https://api.openai.com/v1/files", {
@@ -63,42 +69,35 @@ async function uploadFileToOpenAI(buffer, filename = "data.xlsx") {
   });
 
   const text = await response.text();
+  console.log("📤 Upload RAW response:", text);
 
   let data;
   try {
     data = JSON.parse(text);
   } catch {
-    console.error("❌ Upload raw response:", text);
-    throw new Error("File upload failed (non JSON)");
+    throw new Error("Upload returned non JSON");
   }
 
   if (!response.ok) {
+    console.log("❌ Upload error:", data);
     throw new Error(data?.error?.message || "Upload failed");
   }
 
-  console.log("✅ File uploaded:", data.id);
+  console.log("✅ File uploaded successfully");
+  console.log("📁 FILE ID:", data.id);
+
   return data.id;
 }
 
-/* ================================
-RESPONSES API + CODE INTERPRETER
-================================ */
+/* ============================= */
 async function analyzeWithCodeInterpreter(fileId, userQuestion) {
-  console.log("🤖 Running Code Interpreter...");
+  console.log("🤖 Starting analysis with file:", fileId);
 
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY missing");
 
   const prompt =
     userQuestion ||
-    `Analyze this financial file completely.
-Give:
-- Summary
-- KPI ratios
-- EBITDA analysis
-- Store performance
-- Trends
-- Suggestions`;
+    `Analyze this financial file and give detailed accounting insights`;
 
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -113,6 +112,7 @@ Give:
         {
           type: "code_interpreter",
           container: {
+            type: "auto",
             file_ids: [fileId],
           },
         },
@@ -121,17 +121,18 @@ Give:
   });
 
   const text = await response.text();
+  console.log("🤖 OpenAI RAW response:", text);
 
   let data;
   try {
     data = JSON.parse(text);
   } catch {
-    console.error("❌ RAW OPENAI RESPONSE:\n", text);
-    throw new Error("OpenAI returned non-JSON response");
+    throw new Error("OpenAI returned non JSON");
   }
 
   if (!response.ok) {
-    throw new Error(data?.error?.message || "OpenAI API error");
+    console.log("❌ OpenAI error:", data);
+    throw new Error(data?.error?.message || "OpenAI error");
   }
 
   let reply = "";
@@ -139,28 +140,21 @@ Give:
   for (const item of data.output || []) {
     if (item.type === "message") {
       for (const c of item.content || []) {
-        if (c.type === "output_text" || c.type === "text") {
-          reply += c.text;
-        }
+        if (c.type === "output_text") reply += c.text;
       }
     }
   }
 
-  if (!reply) throw new Error("No reply from model");
-
-  console.log("✅ Analysis complete");
+  console.log("✅ AI reply generated");
   return reply;
 }
 
-/* ================================
-MARKDOWN → WORD
-================================ */
+/* ============================= */
 async function markdownToWord(text) {
   const paragraphs = text.split("\n").map(
     (line) =>
       new Paragraph({
         text: line.replace(/\*\*/g, ""),
-        spacing: { after: 120 },
       })
   );
 
@@ -172,31 +166,32 @@ async function markdownToWord(text) {
   return buffer.toString("base64");
 }
 
-/* ================================
-MAIN API HANDLER
-================================ */
+/* ============================= */
 export default async function handler(req, res) {
   cors(res);
+
+  console.log("🔥🔥🔥 API HIT STARTED 🔥🔥🔥");
+
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
-  console.log("\n🚀 ACCOUNTING AI STARTED");
-
   try {
     const body = await parseJsonBody(req);
+    console.log("📥 FULL BODY RECEIVED:", body);
+
     const { fileUrl, question } = body;
 
     if (!fileUrl) {
-      return res.status(400).json({ error: "fileUrl required" });
+      console.log("❌ No fileUrl received");
+      return res.status(400).json({ error: "fileUrl missing" });
     }
 
-    console.log("📥 Downloading file...");
+    console.log("📥 File URL:", fileUrl);
+
     const { buffer } = await downloadFileToBuffer(fileUrl);
 
-    console.log("📤 Uploading...");
     const fileId = await uploadFileToOpenAI(buffer);
 
-    console.log("🤖 Analyzing...");
     const reply = await analyzeWithCodeInterpreter(fileId, question);
 
     let wordBase64 = null;
@@ -212,7 +207,7 @@ export default async function handler(req, res) {
         : null,
     });
   } catch (err) {
-    console.error("❌ ERROR:", err);
+    console.error("❌ FINAL ERROR:", err);
     return res.status(500).json({
       ok: false,
       error: err.message,
