@@ -117,6 +117,7 @@ No intermediate steps.
       ],
 
       tool_choice: "required",
+      reasoning: { effort: "high" },
       max_output_tokens: 4000
     }),
   });
