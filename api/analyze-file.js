@@ -128,18 +128,40 @@ async function analyzeWithCodeInterpreter(fileId, userQuestion) {
     },
     body: JSON.stringify({
       model: "gpt-4.1",
-      input: prompt,
+    
+      input: userQuestion || `
+    You are a CFO-level financial analyst.
+    
+    You MUST fully analyze the uploaded Excel file using Python and return FINAL ANSWER only.
+    
+    STRICT RULES:
+    - Do NOT explain steps
+    - Do NOT describe what you will do
+    - Do NOT stop midway
+    - Execute Python fully
+    - Extract ALL sheets and ALL rows
+    - Calculate EBITDA per location
+    - Compare YoY (2025 vs 2024)
+    - Rank top 5 and bottom 5 by EBITDA
+    - Provide consolidated performance
+    - Add industry benchmark commentary
+    
+    Return complete final CEO-level report.
+    `,
+    
       tools: [
         {
           type: "code_interpreter",
           container: {
             type: "auto",
-            file_ids: [fileId],
-          },
-        },
+            file_ids: [fileId]
+          }
+        }
       ],
-    }),
-  });
+    
+      tool_choice: "required",   // 🔥 forces tool execution
+      max_output_tokens: 4000    // 🔥 prevents stopping early
+    });
 
   const text = await response.text();
   console.log("🤖 OpenAI RAW response:", text);
