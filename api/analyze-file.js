@@ -65,59 +65,69 @@ async function uploadFileToOpenAI(buffer) {
 
 /* ================= MAIN AI ANALYSIS ================= */
 async function runAnalysis(fileId, userQuestion) {
-  console.log("🤖 Running full AI analysis...");
+  console.log("🤖 Step 1 starting analysis...");
 
-  const prompt = userQuestion || `
-You are a CFO-level financial analyst.
+  const apiKey = process.env.OPENAI_API_KEY;
 
-You MUST fully analyze the uploaded Excel file using Python and return FINAL ANSWER only.
-`;
-
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+  // STEP 1: start analysis
+  const first = await fetch("https://api.openai.com/v1/responses", {
+    method:"POST",
+    headers:{
+      "Content-Type":"application/json",
+      Authorization:`Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: "gpt-4.1",
-
-      input: prompt,
-
-      tools: [
-        {
-          type: "code_interpreter",
-          container: {
-            type: "auto",
-            file_ids: [fileId],
-          },
-        },
-      ],
-
-      tool_choice: "required",
-      max_output_tokens: 4000
-    }),
+      model:"gpt-4.1",
+      input: userQuestion || "Analyze this financial file fully and prepare final CEO report.",
+      tools:[{
+        type:"code_interpreter",
+        container:{ type:"auto", file_ids:[fileId] }
+      }],
+      tool_choice:"required",
+      max_output_tokens:3000
+    })
   });
 
-  const text = await response.text();
-  console.log("🤖 RAW AI:", text);
+  const firstText = await first.text();
+  const firstData = JSON.parse(firstText);
 
-  const data = JSON.parse(text);
-  if (!response.ok) throw new Error(data.error?.message);
+  console.log("STEP1 DONE");
 
-  let reply = "";
+  const responseId = firstData.id;
 
-  for (const item of data.output || []) {
-    if (item.type === "message") {
-      for (const c of item.content || []) {
-        if (c.type === "output_text") reply += c.text;
+  // STEP 2: force final output
+  console.log("🤖 Step 2 forcing final answer...");
+
+  const second = await fetch("https://api.openai.com/v1/responses",{
+    method:"POST",
+    headers:{
+      "Content-Type":"application/json",
+      Authorization:`Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model:"gpt-4.1",
+      previous_response_id: responseId,
+      input:"Now provide the FINAL complete financial analysis report with top 5, bottom 5, EBITDA and CEO summary. Do not run more exploration. Return final answer."
+    })
+  });
+
+  const secondText = await second.text();
+  console.log("STEP2 RAW:", secondText);
+
+  const data = JSON.parse(secondText);
+
+  let reply="";
+  for(const item of data.output||[]){
+    if(item.type==="message"){
+      for(const c of item.content||[]){
+        if(c.type==="output_text") reply+=c.text;
       }
     }
   }
 
-  if (!reply) throw new Error("No AI reply");
+  if(!reply) throw new Error("No final reply");
 
-  console.log("✅ AI completed");
+  console.log("✅ FINAL REPORT READY");
   return reply;
 }
 
