@@ -14,8 +14,8 @@ async function parseJsonBody(req){
     req.on("data",c=>body+=c);
     req.on("end",()=>{
       if(!body) return resolve({});
-      try{resolve(JSON.parse(body));}
-      catch{resolve({});}
+      try{ resolve(JSON.parse(body)); }
+      catch{ resolve({}); }
     });
     req.on("error",reject);
   });
@@ -37,7 +37,9 @@ async function uploadFileToOpenAI(buffer){
 
   const form=new FormData();
   form.append("file",buffer,"input.xlsx");
-  form.append("purpose","user_data");
+
+  // ✅ FIXED PURPOSE
+  form.append("purpose","assistants");
 
   const r=await fetch("https://api.openai.com/v1/files",{
     method:"POST",
@@ -49,8 +51,10 @@ async function uploadFileToOpenAI(buffer){
   });
 
   const txt=await r.text();
-  const data=JSON.parse(txt);
-  if(!r.ok) throw new Error(data.error?.message);
+  let data={};
+  try{ data=JSON.parse(txt); } catch{}
+  if(!r.ok) throw new Error(data.error?.message || txt);
+
   console.log("✅ file uploaded",data.id);
   return data.id;
 }
@@ -114,11 +118,18 @@ RULES:
 - No fake data
 Return ONLY JSON.
 `,
-      tools:[{
-        type:"code_interpreter",
-        container:{type:"auto",file_ids:[fileId]}
-      }],
-      tool_choice:"required",
+      // ✅ FIXED TOOL STRUCTURE
+      tools: [{ type:"code_interpreter" }],
+      tool_choice: { type:"tool", name:"code_interpreter" },
+
+      // ✅ ATTACH FILE CORRECTLY
+      attachments: [
+        {
+          file_id: fileId,
+          tools: [{ type: "code_interpreter" }]
+        }
+      ],
+
       max_output_tokens:4000
     })
   });
@@ -204,7 +215,7 @@ Return detailed final report.
 /* WORD EXPORT */
 async function markdownToWord(text){
   const paragraphs=text.split("\n").map(l=>new Paragraph({text:l}));
-  const doc=new Document({sections:[{children:paragraphs}]});
+  const doc=new Document({sections:[{children:paragraphs}]} );
   const buf=await Packer.toBuffer(doc);
   return buf.toString("base64");
 }
