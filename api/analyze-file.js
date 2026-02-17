@@ -24,17 +24,19 @@ async function parseJsonBody(req) {
   });
 }
 
+/* DOWNLOAD FILE */
 async function downloadFileToBuffer(url) {
   console.log("⬇️ Downloading:", url);
   const r = await fetch(url);
   if (!r.ok) throw new Error("File download failed");
   const buffer = Buffer.from(await r.arrayBuffer());
-  console.log("✅ Downloaded size:", buffer.length);
+  console.log("✅ Downloaded:", buffer.length);
   return buffer;
 }
 
+/* UPLOAD FILE */
 async function uploadFileToOpenAI(buffer) {
-  console.log("📤 Uploading to OpenAI...");
+  console.log("📤 Uploading file...");
 
   const formData = new FormData();
   formData.append("file", buffer, "financial.xlsx");
@@ -49,39 +51,24 @@ async function uploadFileToOpenAI(buffer) {
     body: formData,
   });
 
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || "Upload failed");
+  const text = await response.text();
+  const data = JSON.parse(text);
+  if (!response.ok) throw new Error(data.error?.message);
 
-  console.log("✅ File ID:", data.id);
+  console.log("✅ File uploaded:", data.id);
   return data.id;
 }
 
-function extractResponseText(responseData) {
-  if (!responseData) return "";
+/* MAIN AI ANALYSIS */
+async function runAnalysis(fileId, userQuestion) {
+  console.log("🤖 Running analysis...");
 
-  if (typeof responseData.output_text === "string" && responseData.output_text.trim()) {
-    return responseData.output_text.trim();
-  }
+  const prompt = userQuestion || `
+You must use Python to analyze the uploaded Excel file.
 
-  let fullReply = "";
-  for (const item of responseData.output || []) {
-    if (item.type !== "message" || !Array.isArray(item.content)) continue;
+CRITICAL:
+After completing analysis you MUST return result to chat.;
 
-    for (const contentItem of item.content) {
-      if (contentItem.type !== "output_text" && contentItem.type !== "text") continue;
-
-      if (typeof contentItem.text === "string") {
-        fullReply += `${contentItem.text}\n`;
-      } else if (contentItem.text?.value) {
-        fullReply += `${contentItem.text.value}\n`;
-      }
-    }
-  }
-
-  return fullReply.trim();
-}
-
-async function requestFinalAnswerFromCompletedRun(responseId) {
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -89,36 +76,9 @@ async function requestFinalAnswerFromCompletedRun(responseId) {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "gpt-4o",
-      previous_response_id: responseId,
-      input: "Now provide the complete final answer for the user in plain text.",
-      store: false,
-    }),
-  });
-
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || "Failed to fetch final answer");
-  return extractResponseText(data);
-}
-
-/* ================= BACKGROUND MODE SOLUTION ================= */
-async function runAnalysisWithBackgroundMode(fileId, userQuestion) {
-  console.log("🤖 Starting analysis in BACKGROUND MODE...");
-
-  const prompt =
-    userQuestion ||
-    "Analyze the uploaded financial file and provide a complete location-wise and consolidated YoY summary till EBITDA.";
-
-  // Step 1: Start background task
-  const startResponse = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o",
+      model: "gpt-4.1",
       input: prompt,
+
       tools: [
         {
           type: "code_interpreter",
@@ -128,71 +88,40 @@ async function runAnalysisWithBackgroundMode(fileId, userQuestion) {
           },
         },
       ],
-      background: true,
-      store: false,
+
+      tool_choice: { type: "code_interpreter" },
+      max_output_tokens: 5000
     }),
   });
 
-  const startData = await startResponse.json();
-  if (!startResponse.ok) throw new Error(startData.error?.message || "Start failed");
+  const raw = await response.text();
+  console.log("🤖 RAW:", raw);
 
-  const responseId = startData.id;
-  console.log(`   ✅ Background task started: ${responseId}`);
+  const data = JSON.parse(raw);
+  if (!response.ok) throw new Error(data.error?.message);
 
-  // Step 2: Poll for completion
-  console.log("   ⏳ Polling for completion...");
+  let reply = "";
 
-  const maxAttempts = 150; // 5 minutes max
-  const pollInterval = 2000; // 2 seconds
-
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise(resolve => setTimeout(resolve, pollInterval));
-
-    const pollResponse = await fetch(`https://api.openai.com/v1/responses/${responseId}`, {
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+  for (const item of data.output || []) {
+    if (item.type === "message") {
+      for (const c of item.content || []) {
+        if (c.type === "output_text" || c.type === "text") {
+          reply += c.text || "";
+        }
       }
-    });
-
-    const pollData = await pollResponse.json();
-    if (!pollResponse.ok) {
-      throw new Error(pollData.error?.message || "Failed while polling response");
-    }
-
-    console.log(`   Status: ${pollData.status} (attempt ${i + 1}/${maxAttempts})`);
-
-    if (pollData.status === "completed") {
-      console.log("   ✅ Analysis complete!");
-
-      let fullReply = extractResponseText(pollData);
-
-      if (!fullReply) {
-        console.log("   ℹ️ Completed run had no final text. Requesting final answer from prior run...");
-        fullReply = await requestFinalAnswerFromCompletedRun(responseId);
-      }
-
-      return fullReply.trim();
-    }
-
-    if (pollData.status === "failed") {
-      throw new Error(`Analysis failed: ${pollData.error?.message || "Unknown error"}`);
-    }
-
-    if (["cancelled", "incomplete", "expired"].includes(pollData.status)) {
-      throw new Error(`Analysis ended with status: ${pollData.status}`);
     }
   }
 
-  throw new Error("Analysis timed out after 5 minutes");
+  if (!reply) throw new Error("No final output returned");
+  console.log("✅ AI completed");
+
+  return reply;
 }
 
-// Use this in the handler instead of runAnalysisWithStreaming
+/* WORD EXPORT */
 async function markdownToWord(text) {
   const paragraphs = text.split("\n").map(
-    (line) =>
-      new Paragraph({
-        text: line.replace(/\*\*/g, "").replace(/```/g, ""),
-      })
+    (line) => new Paragraph({ text: line })
   );
 
   const doc = new Document({
@@ -203,15 +132,14 @@ async function markdownToWord(text) {
   return buffer.toString("base64");
 }
 
+/* MAIN HANDLER */
 export default async function handler(req, res) {
   cors(res);
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
-  console.log("\n" + "=".repeat(80));
-  console.log("🔥 RESPONSES API + CODE INTERPRETER (BACKGROUND)");
-  console.log("=".repeat(80));
+  console.log("🔥 API HIT");
 
   try {
     const body = await parseJsonBody(req);
@@ -221,33 +149,25 @@ export default async function handler(req, res) {
 
     const buffer = await downloadFileToBuffer(fileUrl);
     const fileId = await uploadFileToOpenAI(buffer);
-    const reply = await runAnalysisWithBackgroundMode(fileId, question);
+    const reply = await runAnalysis(fileId, question);
 
     let word = null;
     try {
-      console.log("📝 Generating Word document...");
       const base64 = await markdownToWord(reply);
       word = `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${base64}`;
-      console.log("✅ Word ready");
     } catch {}
-
-    console.log("=".repeat(80) + "\n");
 
     return res.json({
       ok: true,
       reply,
-      wordDownload: word,
-      metadata: {
-        api: "responses_background",
-        replyLength: reply.length,
-      },
+      wordDownload: word
     });
 
   } catch (err) {
     console.error("❌ ERROR:", err);
     return res.status(500).json({
       ok: false,
-      error: err.message,
+      error: err.message
     });
   }
 }
