@@ -64,7 +64,7 @@ async function uploadFileToOpenAI(buffer) {
 }
 
 /* ================= MAIN AI ANALYSIS ================= */
-async function runAnalysis(fileId, question) {
+async function runAnalysis(fileId, userQuestion) {
 
   const apiKey = process.env.OPENAI_API_KEY;
 
@@ -79,7 +79,7 @@ async function runAnalysis(fileId, question) {
     },
     body: JSON.stringify({
       model:"gpt-4.1",
-      input: question,   // 👈 USER PROMPT FROM FRONTEND
+      input: userQuestion,   // 👈 USER PROMPT FROM FRONTEND
       tools:[{
         type:"code_interpreter",
         container:{ type:"auto", file_ids:[fileId] }
@@ -95,18 +95,6 @@ async function runAnalysis(fileId, question) {
   const responseId = firstData.id;
 
   // STEP 2 → continue SAME session and force completion
-  console.log("🤖 STEP 2: Forcing final output");
-
-  const second = await fetch("https://api.openai.com/v1/responses",{
-    method:"POST",
-    headers:{
-      "Content-Type":"application/json",
-      Authorization:`Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model:"gpt-4.1",
-      previous_response_id: responseId,
-      input: `
 input: `
 Continue analysis using the uploaded file.
 
@@ -125,7 +113,8 @@ Now compute:
 - Consolidated totals
 
 Return final report using ONLY real file data.
-`    })
+`
+    })
   });
 
   const secondData = JSON.parse(await second.text());
