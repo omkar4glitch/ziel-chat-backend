@@ -14,8 +14,8 @@ async function parseJsonBody(req){
     req.on("data",c=>body+=c);
     req.on("end",()=>{
       if(!body) return resolve({});
-      try{ resolve(JSON.parse(body)); }
-      catch{ resolve({}); }
+      try{resolve(JSON.parse(body));}
+      catch{resolve({});}
     });
     req.on("error",reject);
   });
@@ -37,7 +37,7 @@ async function uploadFileToOpenAI(buffer){
 
   const form=new FormData();
   form.append("file",buffer,"input.xlsx");
-  form.append("purpose","assistants");
+  form.append("purpose","user_data");
 
   const r=await fetch("https://api.openai.com/v1/files",{
     method:"POST",
@@ -49,72 +49,8 @@ async function uploadFileToOpenAI(buffer){
   });
 
   const txt=await r.text();
-  let data={};
-  try{ data=JSON.parse(txt); } catch{}
-
-  if(!r.ok) throw new Error(data.error?.message || txt);
-
-  console.log("✅ file uploaded",data.id);
-  return data.id;
-}
-
-/* MAIN AI */
-import fetch from "node-fetch";
-import FormData from "form-data";
-import { Document, Paragraph, Packer } from "docx";
-
-function cors(res){
-  res.setHeader("Access-Control-Allow-Origin","*");
-  res.setHeader("Access-Control-Allow-Methods","POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers","Content-Type, Authorization");
-}
-
-async function parseJsonBody(req){
-  return new Promise((resolve,reject)=>{
-    let body="";
-    req.on("data",c=>body+=c);
-    req.on("end",()=>{
-      if(!body) return resolve({});
-      try{ resolve(JSON.parse(body)); }
-      catch{ resolve({}); }
-    });
-    req.on("error",reject);
-  });
-}
-
-/* DOWNLOAD FILE */
-async function downloadFileToBuffer(url){
-  console.log("⬇️ downloading:",url);
-  const r=await fetch(url);
-  if(!r.ok) throw new Error("file download failed");
-  const buffer=Buffer.from(await r.arrayBuffer());
-  console.log("✅ downloaded",buffer.length);
-  return buffer;
-}
-
-/* UPLOAD FILE */
-async function uploadFileToOpenAI(buffer){
-  console.log("📤 uploading file");
-
-  const form=new FormData();
-  form.append("file",buffer,"input.xlsx");
-  form.append("purpose","assistants");
-
-  const r=await fetch("https://api.openai.com/v1/files",{
-    method:"POST",
-    headers:{
-      Authorization:`Bearer ${process.env.OPENAI_API_KEY}`,
-      ...form.getHeaders()
-    },
-    body:form
-  });
-
-  const txt=await r.text();
-  let data={};
-  try{ data=JSON.parse(txt); } catch{}
-
-  if(!r.ok) throw new Error(data.error?.message || txt);
-
+  const data=JSON.parse(txt);
+  if(!r.ok) throw new Error(data.error?.message);
   console.log("✅ file uploaded",data.id);
   return data.id;
 }
@@ -178,54 +114,42 @@ RULES:
 - No fake data
 Return ONLY JSON.
 `,
-      tools: [{ type:"code_interpreter" }],
-      tool_choice: { type:"tool", name:"code_interpreter" },
-      attachments: [
-        {
-          file_id: fileId,
-          tools: [{ type: "code_interpreter" }]
-        }
-      ],
+      tools:[{
+        type:"code_interpreter",
+        container:{type:"auto",file_ids:[fileId]}
+      }],
+      tool_choice:"required",
       max_output_tokens:4000
     })
   });
 
-  const step1Text = await step1.text();
-  let step1Data = {};
-  try { step1Data = JSON.parse(step1Text); }
-  catch { throw new Error("Invalid JSON from OpenAI STEP 1"); }
+  const step1Data=JSON.parse(await step1.text());
+  console.log("✅ extraction complete");
 
-  console.log("✅ extraction response received");
+let extracted="";
 
-  /* ROBUST EXTRACTION PARSER */
-  let extracted = "";
+for(const item of step1Data.output||[]){
 
-  if (step1Data.output) {
-    for (const item of step1Data.output) {
-
-      if (item.type === "message" && item.content) {
-        for (const c of item.content) {
-          if (c.type === "output_text" || c.type === "text") {
-            extracted += c.text || "";
-          }
-        }
-      }
-
-      if (item.type === "output_text") {
-        extracted += item.text || "";
+  // normal assistant message
+  if(item.type==="message"){
+    for(const c of item.content||[]){
+      if(c.type==="output_text" || c.type==="text"){
+        extracted += c.text || "";
       }
     }
   }
 
-  if (!extracted && step1Data.output_text) {
-    extracted = step1Data.output_text;
+  // code interpreter output (IMPORTANT)
+  if(item.type==="code_interpreter_call" && item.outputs){
+    for(const o of item.outputs){
+      if(o.type==="logs" || o.type==="output_text"){
+        extracted += o.content || "";
+      }
+    }
   }
+}
 
-  if (!extracted) {
-    console.log("❌ FULL STEP1 RESPONSE:");
-    console.log(JSON.stringify(step1Data,null,2));
-    throw new Error("Extraction failed");
-  }
+  if(!extracted) throw new Error("Extraction failed");
 
   console.log("📊 extracted length:",extracted.length);
 
@@ -274,27 +198,15 @@ Return detailed final report.
     })
   });
 
-  const step2Text = await step2.text();
-  let step2Data = {};
-  try { step2Data = JSON.parse(step2Text); }
-  catch { throw new Error("Invalid JSON from OpenAI STEP 2"); }
+  const step2Data=JSON.parse(await step2.text());
 
   let reply="";
-
-  if (step2Data.output) {
-    for (const item of step2Data.output) {
-      if (item.type==="message" && item.content){
-        for (const c of item.content){
-          if(c.type==="output_text" || c.type==="text"){
-            reply+=c.text || "";
-          }
-        }
+  for(const item of step2Data.output||[]){
+    if(item.type==="message"){
+      for(const c of item.content||[]){
+        if(c.type==="output_text") reply+=c.text;
       }
     }
-  }
-
-  if (!reply && step2Data.output_text) {
-    reply = step2Data.output_text;
   }
 
   if(!reply) throw new Error("Analysis failed");
@@ -306,7 +218,7 @@ Return detailed final report.
 /* WORD EXPORT */
 async function markdownToWord(text){
   const paragraphs=text.split("\n").map(l=>new Paragraph({text:l}));
-  const doc=new Document({sections:[{children:paragraphs}]} );
+  const doc=new Document({sections:[{children:paragraphs}]});
   const buf=await Packer.toBuffer(doc);
   return buf.toString("base64");
 }
@@ -339,7 +251,7 @@ export default async function handler(req,res){
     return res.json({ok:true,reply,wordDownload:word});
 
   }catch(err){
-    console.error("🔥 ERROR:",err);
+    console.error(err);
     return res.status(500).json({ok:false,error:err.message});
   }
 }
