@@ -101,10 +101,6 @@ Custom MIS
 Bank statements
 Any Excel/PDF
 
-OUTPUT STRICT JSON ARRAY:
-[
- { "location":"...", "metric":"...", "value":number, "year":"...", "category":"revenue/expense/asset/etc" }
-]
 
 RULES:
 - Detect structure automatically
@@ -119,7 +115,7 @@ Return ONLY JSON.
         container:{type:"auto",file_ids:[fileId]}
       }],
       tool_choice:"required",
-      max_output_tokens:4000
+      max_output_tokens:4500
     })
   });
 
