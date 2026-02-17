@@ -67,7 +67,25 @@ async function runAnalysis(fileId, userQuestion) {
 You must use Python to analyze the uploaded Excel file.
 
 CRITICAL:
-After completing analysis you MUST return result to chat.;
+After completing analysis you MUST return result to chat.
+
+In Python:
+- Store final report in variable called final_report
+- Last line must be: final_report
+- Do NOT only print()
+
+Analysis required:
+1. Read all sheets
+2. Extract locations
+3. EBITDA per location
+4. YOY comparison
+5. Top 5 & Bottom 5
+6. Consolidated summary
+7. CEO-level insights
+8. Industry benchmark
+
+Return only final_report.
+`;
 
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
