@@ -24,19 +24,21 @@ async function parseJsonBody(req) {
   });
 }
 
-/* DOWNLOAD FILE */
+/* ================= DOWNLOAD FILE ================= */
 async function downloadFileToBuffer(url) {
   console.log("⬇️ Downloading:", url);
+
   const r = await fetch(url);
   if (!r.ok) throw new Error("File download failed");
+
   const buffer = Buffer.from(await r.arrayBuffer());
-  console.log("✅ Downloaded:", buffer.length);
+  console.log("✅ Downloaded size:", buffer.length);
   return buffer;
 }
 
-/* UPLOAD FILE */
+/* ================= UPLOAD FILE TO OPENAI ================= */
 async function uploadFileToOpenAI(buffer) {
-  console.log("📤 Uploading file...");
+  console.log("📤 Uploading to OpenAI...");
 
   const formData = new FormData();
   formData.append("file", buffer, "financial.xlsx");
@@ -52,40 +54,41 @@ async function uploadFileToOpenAI(buffer) {
   });
 
   const text = await response.text();
+  console.log("📤 Upload response:", text);
+
   const data = JSON.parse(text);
   if (!response.ok) throw new Error(data.error?.message);
 
-  console.log("✅ File uploaded:", data.id);
+  console.log("✅ File ID:", data.id);
   return data.id;
 }
 
-/* MAIN AI ANALYSIS */
+/* ================= MAIN AI ANALYSIS ================= */
 async function runAnalysis(fileId, userQuestion) {
-  console.log("🤖 Running analysis...");
+  console.log("🤖 Running full AI analysis...");
 
-  const prompt = userQuestion || `
-You must use Python to analyze the uploaded Excel file.
+  const prompt = `
+You must use Python to fully analyze the uploaded Excel file.
 
-CRITICAL:
-After completing analysis you MUST return result to chat.
+IMPORTANT:
+Run a single complete Python script that:
+- Loads all sheets
+- Cleans data
+- Extracts all locations
+- Calculates EBITDA per location
+- Performs YoY comparison
+- Ranks top 5 and bottom 5 by EBITDA
+- Creates consolidated summary
 
-In Python:
-- Store final report in variable called final_report
-- Last line must be: final_report
-- Do NOT only print()
+After computing everything,
+PRINT the final detailed CEO-level financial analysis.
 
-Analysis required:
-1. Read all sheets
-2. Extract locations
-3. EBITDA per location
-4. YOY comparison
-5. Top 5 & Bottom 5
-6. Consolidated summary
-7. CEO-level insights
-8. Industry benchmark
-
-Return only final_report.
+Do not explore step-by-step.
+Do not inspect structure gradually.
+Do not describe process.
+Only run one full Python analysis and print final answer.
 `;
+
 
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -95,6 +98,7 @@ Return only final_report.
     },
     body: JSON.stringify({
       model: "gpt-4.1",
+
       input: prompt,
 
       tools: [
@@ -107,15 +111,15 @@ Return only final_report.
         },
       ],
 
-      tool_choice: { type: "code_interpreter" },
-      max_output_tokens: 5000
+      tool_choice: "required",
+      max_output_tokens: 4000
     }),
   });
 
-  const raw = await response.text();
-  console.log("🤖 RAW:", raw);
+  const text = await response.text();
+  console.log("🤖 RAW AI:", text);
 
-  const data = JSON.parse(raw);
+  const data = JSON.parse(text);
   if (!response.ok) throw new Error(data.error?.message);
 
   let reply = "";
@@ -123,23 +127,24 @@ Return only final_report.
   for (const item of data.output || []) {
     if (item.type === "message") {
       for (const c of item.content || []) {
-        if (c.type === "output_text" || c.type === "text") {
-          reply += c.text || "";
-        }
+        if (c.type === "output_text") reply += c.text;
       }
     }
   }
 
-  if (!reply) throw new Error("No final output returned");
-  console.log("✅ AI completed");
+  if (!reply) throw new Error("No AI reply");
 
+  console.log("✅ AI completed");
   return reply;
 }
 
-/* WORD EXPORT */
+/* ================= WORD EXPORT ================= */
 async function markdownToWord(text) {
   const paragraphs = text.split("\n").map(
-    (line) => new Paragraph({ text: line })
+    (line) =>
+      new Paragraph({
+        text: line.replace(/\*\*/g, ""),
+      })
   );
 
   const doc = new Document({
@@ -150,7 +155,7 @@ async function markdownToWord(text) {
   return buffer.toString("base64");
 }
 
-/* MAIN HANDLER */
+/* ================= MAIN HANDLER ================= */
 export default async function handler(req, res) {
   cors(res);
 
@@ -185,7 +190,7 @@ export default async function handler(req, res) {
     console.error("❌ ERROR:", err);
     return res.status(500).json({
       ok: false,
-      error: err.message
+      error: err.message,
     });
   }
 }
