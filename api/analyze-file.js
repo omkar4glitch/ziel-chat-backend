@@ -64,7 +64,7 @@ async function uploadFileToOpenAI(buffer) {
 }
 
 /* ================= MAIN AI ANALYSIS ================= */
-async function runAnalysis(fileId, userQuestion) {
+async function runAnalysis(fileId, question) {
 
   const apiKey = process.env.OPENAI_API_KEY;
 
@@ -79,7 +79,7 @@ async function runAnalysis(fileId, userQuestion) {
     },
     body: JSON.stringify({
       model:"gpt-4.1",
-      input: userQuestion,   // 👈 USER PROMPT FROM FRONTEND
+      input: question,   // 👈 USER PROMPT FROM FRONTEND
       tools:[{
         type:"code_interpreter",
         container:{ type:"auto", file_ids:[fileId] }
@@ -107,19 +107,25 @@ async function runAnalysis(fileId, userQuestion) {
       model:"gpt-4.1",
       previous_response_id: responseId,
       input: `
-Continue the analysis using the uploaded file and COMPLETE the task.
+input: `
+Continue analysis using the uploaded file.
 
-Return FINAL detailed financial analysis report as requested by user.
-Include:
-- EBITDA
+CRITICAL RULES:
+- Use ONLY numbers extracted from the Excel file
+- DO NOT create sample or assumed numbers
+- DO NOT estimate
+- DO NOT use generic examples
+- If any number cannot be extracted → say "DATA NOT FOUND"
+- All calculations must come from file only
+
+Now compute:
+- EBITDA per location
 - YoY comparison
-- Top 5 & Bottom 5 performers
-- CEO summary
-- Location wise performance
+- Top 5 & bottom 5
+- Consolidated totals
 
-Return final answer only.
-`
-    })
+Return final report using ONLY real file data.
+`    })
   });
 
   const secondData = JSON.parse(await second.text());
