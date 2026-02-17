@@ -31,7 +31,7 @@ async function downloadFileToBuffer(url){
   return buffer;
 }
 
-/* UPLOAD FILE TO OPENAI */
+/* UPLOAD FILE */
 async function uploadFileToOpenAI(buffer){
   console.log("📤 uploading file");
 
@@ -55,14 +55,14 @@ async function uploadFileToOpenAI(buffer){
   return data.id;
 }
 
-/* MAIN ANALYSIS */
+/* MAIN AI */
 async function runAnalysis(fileId,userPrompt){
 
   const apiKey=process.env.OPENAI_API_KEY;
 
-  console.log("🤖 PHASE 1: universal extraction");
+  console.log("🤖 STEP 1: smart extraction based on user prompt");
 
-  // STEP 1 → EXTRACT STRUCTURED DATA FROM ANY FILE
+  /* STEP 1 → SMART EXTRACTION */
   const step1=await fetch("https://api.openai.com/v1/responses",{
     method:"POST",
     headers:{
@@ -72,18 +72,46 @@ async function runAnalysis(fileId,userPrompt){
     body:JSON.stringify({
       model:"gpt-4.1",
       input:`
-You are a universal accounting data extraction engine.
+User requirement:
+${userPrompt}
 
-From the uploaded file extract ALL financial data into structured JSON.
+You are a universal accounting data extraction AI.
 
+From the uploaded file extract ALL data required to answer user query.
+
+Also ALWAYS extract core financial fields if present:
+Revenue
+COGS
+Gross Profit
+Expenses
+EBITDA
+Net Profit
+Assets
+Liabilities
+Cash
+Store/location names
+Dates/years
+
+WORK FOR ANY FORMAT:
+Tally
+Quickbooks
+Zoho
+SAP
+Custom MIS
+Bank statements
+Any Excel/PDF
+
+OUTPUT STRICT JSON ARRAY:
+[
+ { "location":"...", "metric":"...", "value":number, "year":"...", "category":"revenue/expense/asset/etc" }
+]
 
 RULES:
-- Work for ANY format (matrix,MIS, vertical, Tally, Quickbooks, SAP, etc)
-- Detect locations automatically
-- Detect years automatically
-- Ignore percentage columns
-- Use only amount values
+- Detect structure automatically
+- Ignore % columns
+- Use only actual numeric values
 - No assumptions
+- No fake data
 Return ONLY JSON.
 `,
       tools:[{
@@ -91,12 +119,12 @@ Return ONLY JSON.
         container:{type:"auto",file_ids:[fileId]}
       }],
       tool_choice:"required",
-      max_output_tokens:3500
+      max_output_tokens:4000
     })
   });
 
   const step1Data=JSON.parse(await step1.text());
-  console.log("✅ extraction done");
+  console.log("✅ extraction complete");
 
   let extracted="";
   for(const item of step1Data.output||[]){
@@ -109,10 +137,10 @@ Return ONLY JSON.
 
   if(!extracted) throw new Error("Extraction failed");
 
-  console.log("📊 extracted JSON length:",extracted.length);
+  console.log("📊 extracted length:",extracted.length);
 
-  // STEP 2 → REAL FINANCIAL ANALYSIS
-  console.log("🤖 PHASE 2: financial analysis");
+  /* STEP 2 → ANALYSIS */
+  console.log("🤖 STEP 2: financial analysis");
 
   const step2=await fetch("https://api.openai.com/v1/responses",{
     method:"POST",
@@ -123,23 +151,34 @@ Return ONLY JSON.
     body:JSON.stringify({
       model:"gpt-4.1",
       input:`
-User question:
+USER QUESTION:
 ${userPrompt}
 
-Use this extracted structured data:
+STRUCTURED DATA:
 ${extracted}
 
-Now perform professional financial analysis:
+You are a senior CA & financial analyst.
 
-- EBITDA per location
-- YoY comparison
-- Top 5 & bottom 5 performers
-- Consolidated totals
+Using ONLY above extracted data:
+Perform full professional analysis.
+
+Include:
+- Answer user's exact question
+- EBITDA & profit analysis
+- YoY if available
+- Ratios if possible
+- Top & bottom performers
+- Trends
+- Risks
 - CEO summary
-- Industry benchmark comparison
+- Industry comparison if possible
 
-Use ONLY provided data.
-Return final detailed report.
+IMPORTANT:
+Use ONLY extracted numbers.
+Do NOT assume data.
+If data missing say "Not available in file".
+
+Return detailed final report.
 `,
       max_output_tokens:4000
     })
@@ -156,7 +195,7 @@ Return final detailed report.
     }
   }
 
-  if(!reply) throw new Error("Final analysis failed");
+  if(!reply) throw new Error("Analysis failed");
 
   console.log("✅ FINAL ANALYSIS READY");
   return reply;
@@ -183,6 +222,7 @@ export default async function handler(req,res){
     const {fileUrl,question}=body;
 
     if(!fileUrl) return res.status(400).json({error:"fileUrl required"});
+    if(!question) return res.status(400).json({error:"question required"});
 
     const buffer=await downloadFileToBuffer(fileUrl);
     const fileId=await uploadFileToOpenAI(buffer);
