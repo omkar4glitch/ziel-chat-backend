@@ -76,20 +76,14 @@ You are a universal accounting data extraction engine.
 
 From the uploaded file extract ALL financial data into structured JSON.
 
-OUTPUT FORMAT STRICT:
-[
- { "location":"store name", "metric":"Revenue/COGS/EBITDA/etc", "value":number, "year":2024 },
- { "location":"store name", "metric":"Revenue/COGS/EBITDA/etc", "value":number, "year":2025 }
-]
 
 RULES:
-- Work for ANY format (matrix, vertical, Tally, Quickbooks, SAP, etc)
+- Work for ANY format (matrix,MIS, vertical, Tally, Quickbooks, SAP, etc)
 - Detect locations automatically
 - Detect years automatically
 - Ignore percentage columns
 - Use only amount values
 - No assumptions
-- If missing write null
 Return ONLY JSON.
 `,
       tools:[{
