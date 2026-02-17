@@ -95,8 +95,19 @@ async function runAnalysis(fileId, userQuestion) {
   const responseId = firstData.id;
 
   // STEP 2 → continue SAME session and force completion
-input: `
-Continue analysis using the uploaded file.
+  console.log("🤖 STEP 2: Forcing final output");
+
+  const second = await fetch("https://api.openai.com/v1/responses",{
+    method:"POST",
+    headers:{
+      "Content-Type":"application/json",
+      Authorization:`Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model:"gpt-4.1",
+      previous_response_id: responseId,
+      input: `
+Continue the analysis using the uploaded file and COMPLETE the task.
 
 CRITICAL RULES:
 - Use ONLY numbers extracted from the Excel file
@@ -112,7 +123,7 @@ Now compute:
 - Top 5 & bottom 5
 - Consolidated totals
 
-Return final report using ONLY real file data.
+Return final report using ONLY real file data..
 `
     })
   });
