@@ -65,12 +65,13 @@ async function uploadFileToOpenAI(buffer) {
 
 /* ================= MAIN AI ANALYSIS ================= */
 async function runAnalysis(fileId, userQuestion) {
-  console.log("🤖 Step 1 starting analysis...");
 
   const apiKey = process.env.OPENAI_API_KEY;
 
-  // STEP 1: start analysis
-  const first = await fetch("https://api.openai.com/v1/responses", {
+  console.log("🤖 STEP 1: Start analysis with user prompt");
+
+  // STEP 1 → send USER PROMPT (not hardcoded)
+  const first = await fetch("https://api.openai.com/v1/responses",{
     method:"POST",
     headers:{
       "Content-Type":"application/json",
@@ -78,25 +79,23 @@ async function runAnalysis(fileId, userQuestion) {
     },
     body: JSON.stringify({
       model:"gpt-4.1",
-      input: userQuestion || "Analyze this financial file fully and prepare final CEO report.",
+      input: userQuestion,   // 👈 USER PROMPT FROM FRONTEND
       tools:[{
         type:"code_interpreter",
         container:{ type:"auto", file_ids:[fileId] }
       }],
       tool_choice:"required",
-      max_output_tokens:3000
+      max_output_tokens:2500
     })
   });
 
-  const firstText = await first.text();
-  const firstData = JSON.parse(firstText);
-
+  const firstData = JSON.parse(await first.text());
   console.log("STEP1 DONE");
 
   const responseId = firstData.id;
 
-  // STEP 2: force final output
-  console.log("🤖 Step 2 forcing final answer...");
+  // STEP 2 → continue SAME session and force completion
+  console.log("🤖 STEP 2: Forcing final output");
 
   const second = await fetch("https://api.openai.com/v1/responses",{
     method:"POST",
@@ -107,17 +106,28 @@ async function runAnalysis(fileId, userQuestion) {
     body: JSON.stringify({
       model:"gpt-4.1",
       previous_response_id: responseId,
-      input:"Now provide the FINAL complete financial analysis report with top 5, bottom 5, EBITDA and CEO summary. Do not run more exploration. Return final answer."
+      input: `
+Continue the analysis using the uploaded file and COMPLETE the task.
+
+Return FINAL detailed financial analysis report as requested by user.
+Include:
+- EBITDA
+- YoY comparison
+- Top 5 & Bottom 5 performers
+- CEO summary
+- Location wise performance
+
+Return final answer only.
+`
     })
   });
 
-  const secondText = await second.text();
-  console.log("STEP2 RAW:", secondText);
-
-  const data = JSON.parse(secondText);
+  const secondData = JSON.parse(await second.text());
+  console.log("STEP2 DONE");
 
   let reply="";
-  for(const item of data.output||[]){
+
+  for(const item of secondData.output||[]){
     if(item.type==="message"){
       for(const c of item.content||[]){
         if(c.type==="output_text") reply+=c.text;
@@ -125,7 +135,7 @@ async function runAnalysis(fileId, userQuestion) {
     }
   }
 
-  if(!reply) throw new Error("No final reply");
+  if(!reply) throw new Error("No final reply generated");
 
   console.log("✅ FINAL REPORT READY");
   return reply;
