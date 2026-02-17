@@ -67,28 +67,11 @@ async function uploadFileToOpenAI(buffer) {
 async function runAnalysis(fileId, userQuestion) {
   console.log("🤖 Running full AI analysis...");
 
-  const prompt = `
-You must use Python to fully analyze the uploaded Excel file.
+  const prompt = userQuestion || `
+You are a CFO-level financial analyst.
 
-IMPORTANT:
-Run a single complete Python script that:
-- Loads all sheets
-- Cleans data
-- Extracts all locations
-- Calculates EBITDA per location
-- Performs YoY comparison
-- Ranks top 5 and bottom 5 by EBITDA
-- Creates consolidated summary
-
-After computing everything,
-PRINT the final detailed CEO-level financial analysis.
-
-Do not explore step-by-step.
-Do not inspect structure gradually.
-Do not describe process.
-Only run one full Python analysis and print final answer.
+You MUST fully analyze the uploaded Excel file using Python and return FINAL ANSWER only.
 `;
-
 
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
