@@ -79,7 +79,7 @@ You are a senior CA & financial analyst.
 
 IMPORTANT INSTRUCTIONS:
 - Read uploaded file fully
-- Use python to extract ALL data
+- Use python to extract ALL locations & all years
 - Do NOT summarize partially
 - Do NOT stop after few locations
 - Process complete file internally
@@ -94,7 +94,7 @@ Only prepare final professional financial analysis report.
         container:{type:"auto",file_ids:[fileId]}
       }],
       tool_choice:"required",
-      max_output_tokens:3000
+      max_output_tokens:2000
     })
   });
 
@@ -114,7 +114,7 @@ Only prepare final professional financial analysis report.
       model:"gpt-4.1",
       previous_response_id: responseId,
       input:`
-Now generate FINAL COMPLETE report WITH THE USER REQUEST  AS FOLLOW - ${userPrompt}.
+Now generate FINAL COMPLETE report.
 
 CRITICAL:
 - Use FULL dataset from file
