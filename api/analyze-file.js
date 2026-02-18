@@ -75,12 +75,37 @@ async function runAnalysis(fileId,userPrompt){
 User requirement:
 ${userPrompt}
 
-You are a universal accounting data extraction AI,Read the above user Prompt and see what he want and extract that data from the file and some key or important datas from the file,extract core financial fields if present.
+You are a universal accounting data extraction AI.
+
+From the uploaded file extract ALL data required to answer user query.
+
+Also ALWAYS extract core financial fields if present:
+Revenue
+COGS
+Gross Profit
+Expenses
+EBITDA
+Net Profit
+Assets
+Liabilities
+Cash
+Store/location names
+Dates/years
+
+WORK FOR ANY FORMAT:
+Tally
+Quickbooks
+Zoho
+SAP
+Custom MIS
+Bank statements
+Any Excel/PDF
+
 
 RULES:
 - Detect structure automatically
 - Ignore % columns
-- Use only actual numeric values from the file
+- Use only actual numeric values
 - No assumptions
 - No fake data
 Return ONLY JSON.
