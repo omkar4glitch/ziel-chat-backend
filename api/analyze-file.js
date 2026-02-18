@@ -93,10 +93,6 @@ Store/location names
 Dates/years
 
 WORK FOR ANY FORMAT:
-Tally
-Quickbooks
-Zoho
-SAP
 Custom MIS
 Bank statements
 Any Excel/PDF
