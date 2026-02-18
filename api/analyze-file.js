@@ -94,7 +94,7 @@ Only prepare final professional financial analysis report.
         container:{type:"auto",file_ids:[fileId]}
       }],
       tool_choice:"required",
-      max_output_tokens:2000
+      max_output_tokens:3000
     })
   });
 
