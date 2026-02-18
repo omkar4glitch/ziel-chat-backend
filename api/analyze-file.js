@@ -58,146 +58,85 @@ async function uploadFileToOpenAI(buffer){
 /* MAIN AI */
 async function runAnalysis(fileId,userPrompt){
 
-  const apiKey=process.env.OPENAI_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY;
 
-  console.log("🤖 STEP 1: smart extraction based on user prompt");
+  console.log("🤖 STEP 1: Start full analysis session");
 
-  /* STEP 1 → SMART EXTRACTION */
-  const step1=await fetch("https://api.openai.com/v1/responses",{
+  // STEP 1 → start python analysis
+  const step1 = await fetch("https://api.openai.com/v1/responses",{
     method:"POST",
     headers:{
       "Content-Type":"application/json",
       Authorization:`Bearer ${apiKey}`
     },
-    body:JSON.stringify({
+    body: JSON.stringify({
       model:"gpt-4.1",
       input:`
-User requirement:
+USER REQUEST:
 ${userPrompt}
 
-You are a universal accounting data extraction AI.
+You are a senior CA & financial analyst.
 
-From the uploaded file extract ALL data required to answer user query.
+IMPORTANT INSTRUCTIONS:
+- Read uploaded file fully
+- Use python to extract ALL locations & all years
+- Do NOT summarize partially
+- Do NOT stop after few locations
+- Process complete file internally
 
-Also ALWAYS extract core financial fields if present:
-Revenue
-COGS
-Gross Profit
-Expenses
-EBITDA
-Net Profit
-Assets
-Liabilities
-Cash
-Store/location names
-Dates/years
+When extraction and calculations are fully complete,
+DO NOT print raw dataset.
 
-WORK FOR ANY FORMAT:
-Tally
-Quickbooks
-Zoho
-SAP
-Custom MIS
-Bank statements
-Any Excel/PDF
-
-RULES:
-- Detect structure automatically
-- Ignore % columns
-- Use only actual numeric values
-- No assumptions
-- No fake data
-Return ONLY JSON.
+Only prepare final professional financial analysis report.
 `,
       tools:[{
         type:"code_interpreter",
         container:{type:"auto",file_ids:[fileId]}
       }],
       tool_choice:"required",
-      max_output_tokens:4000
+      max_output_tokens:3000
     })
   });
 
-  const step1Data=JSON.parse(await step1.text());
-  console.log("✅ extraction complete");
+  const firstData = JSON.parse(await step1.text());
+  const responseId = firstData.id;
 
-let extracted="";
+  console.log("🤖 STEP 2: Force final output");
 
-for(const item of step1Data.output||[]){
-
-  // normal assistant message
-  if(item.type==="message"){
-    for(const c of item.content||[]){
-      if(c.type==="output_text" || c.type==="text"){
-        extracted += c.text || "";
-      }
-    }
-  }
-
-  // code interpreter output (IMPORTANT)
-  if(item.type==="code_interpreter_call" && item.outputs){
-    for(const o of item.outputs){
-      if(o.type==="logs" || o.type==="output_text"){
-        extracted += o.content || "";
-      }
-    }
-  }
-}
-
-
-  if(!extracted) throw new Error("Extraction failed");
-
-  console.log("📊 extracted length:",extracted.length);
-
-  /* STEP 2 → ANALYSIS */
-  console.log("🤖 STEP 2: financial analysis");
-
-  const step2=await fetch("https://api.openai.com/v1/responses",{
+  // STEP 2 → force final report
+  const step2 = await fetch("https://api.openai.com/v1/responses",{
     method:"POST",
     headers:{
       "Content-Type":"application/json",
       Authorization:`Bearer ${apiKey}`
     },
-    body:JSON.stringify({
+    body: JSON.stringify({
       model:"gpt-4.1",
+      previous_response_id: responseId,
       input:`
-USER QUESTION:
-${userPrompt}
+Now generate FINAL COMPLETE report.
 
-STRUCTURED DATA:
-${extracted}
+CRITICAL:
+- Use FULL dataset from file
+- Include ALL locations
+- Include consolidated totals
+- Include YoY
+- Include top 5 & bottom 5
+- Include CEO summary
+- Include insights
 
-You are a senior CA & financial analyst.
-
-Using ONLY above extracted data:
-Perform full professional analysis.
-
-Include:
-- Answer user's exact question
-- EBITDA & profit analysis
-- YoY if available
-- Ratios if possible
-- Top & bottom performers
-- Trends
-- Risks
-- CEO summary
-- Industry comparison if possible
-
-IMPORTANT:
-Use ONLY extracted numbers.
-Do NOT assume data.
-If data missing say "Not available in file".
-
-Return detailed final report.
+Do NOT truncate.
+Do NOT summarize partially.
+Return full final analysis only.
 `,
       max_output_tokens:4000
     })
   });
 
-  const step2Data=JSON.parse(await step2.text());
+  const secondData = JSON.parse(await step2.text());
 
   let reply="";
-  for(const item of step2Data.output||[]){
+  for(const item of secondData.output||[]){
     if(item.type==="message"){
       for(const c of item.content||[]){
         if(c.type==="output_text") reply+=c.text;
@@ -205,9 +144,9 @@ Return detailed final report.
     }
   }
 
-  if(!reply) throw new Error("Analysis failed");
+  if(!reply) throw new Error("Final analysis failed");
 
-  console.log("✅ FINAL ANALYSIS READY");
+  console.log("✅ FULL ANALYSIS READY");
   return reply;
 }
 
