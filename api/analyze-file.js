@@ -2,202 +2,132 @@ import fetch from "node-fetch";
 import FormData from "form-data";
 import { Document, Paragraph, Packer } from "docx";
 
-function cors(res){
-  res.setHeader("Access-Control-Allow-Origin","*");
-  res.setHeader("Access-Control-Allow-Methods","POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers","Content-Type, Authorization");
+function cors(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-async function parseJsonBody(req){
-  return new Promise((resolve,reject)=>{
-    let body="";
-    req.on("data",c=>body+=c);
-    req.on("end",()=>{
-      if(!body) return resolve({});
-      try{resolve(JSON.parse(body));}
-      catch{resolve({});}
+async function parseJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      if (!body) return resolve({});
+      try {
+        resolve(JSON.parse(body));
+      } catch {
+        resolve({});
+      }
     });
-    req.on("error",reject);
+    req.on("error", reject);
   });
 }
 
-/* DOWNLOAD FILE */
-async function downloadFileToBuffer(url){
-  console.log("⬇️ downloading:",url);
-  const r=await fetch(url);
-  if(!r.ok) throw new Error("file download failed");
-  const buffer=Buffer.from(await r.arrayBuffer());
-  console.log("✅ downloaded",buffer.length);
+/* ================= DOWNLOAD FILE ================= */
+async function downloadFileToBuffer(url) {
+  console.log("⬇️ Downloading:", url);
+
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("File download failed");
+
+  const buffer = Buffer.from(await r.arrayBuffer());
+  console.log("✅ Downloaded size:", buffer.length);
   return buffer;
 }
 
-/* UPLOAD FILE */
-async function uploadFileToOpenAI(buffer){
-  console.log("📤 uploading file");
+/* ================= UPLOAD FILE TO OPENAI ================= */
+async function uploadFileToOpenAI(buffer) {
+  console.log("📤 Uploading to OpenAI...");
 
-  const form=new FormData();
-  form.append("file",buffer,"input.xlsx");
-  form.append("purpose","user_data");
+  const formData = new FormData();
+  formData.append("file", buffer, "financial.xlsx");
+  formData.append("purpose", "user_data");
 
-  const r=await fetch("https://api.openai.com/v1/files",{
-    method:"POST",
-    headers:{
-      Authorization:`Bearer ${process.env.OPENAI_API_KEY}`,
-      ...form.getHeaders()
+  const response = await fetch("https://api.openai.com/v1/files", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      ...formData.getHeaders(),
     },
-    body:form
+    body: formData,
   });
 
-  const txt=await r.text();
-  const data=JSON.parse(txt);
-  if(!r.ok) throw new Error(data.error?.message);
-  console.log("✅ file uploaded",data.id);
+  const text = await response.text();
+  console.log("📤 Upload response:", text);
+
+  const data = JSON.parse(text);
+  if (!response.ok) throw new Error(data.error?.message);
+
+  console.log("✅ File ID:", data.id);
   return data.id;
 }
 
-/* MAIN AI */
-async function runAnalysis(fileId,userPrompt){
+/* ================= MAIN AI ANALYSIS ================= */
+async function runAnalysis(fileId, userQuestion) {
 
-  const apiKey=process.env.OPENAI_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY;
 
-  console.log("🤖 STEP 1: smart extraction based on user prompt");
+  console.log("🤖 STEP 1: Start analysis with user prompt");
 
-  /* STEP 1 → SMART EXTRACTION */
-  const step1=await fetch("https://api.openai.com/v1/responses",{
+  // STEP 1 → send USER PROMPT (not hardcoded)
+  const first = await fetch("https://api.openai.com/v1/responses",{
     method:"POST",
     headers:{
       "Content-Type":"application/json",
       Authorization:`Bearer ${apiKey}`
     },
-    body:JSON.stringify({
+    body: JSON.stringify({
       model:"gpt-4.1",
-      input:`
-User requirement:
-${userPrompt}
-
-You are a universal accounting data extraction AI.
-
-From the uploaded file extract ALL data required to answer user query.
-
-Also ALWAYS extract core financial fields if present:
-Revenue
-COGS
-Gross Profit
-Expenses
-EBITDA
-Net Profit
-Assets
-Liabilities
-Cash
-Store/location names
-Dates/years
-
-WORK FOR ANY FORMAT:
-Tally
-Quickbooks
-Zoho
-SAP
-Custom MIS
-Bank statements
-Any Excel/PDF
-
-
-RULES:
-- Detect structure automatically
-- Ignore % columns
-- Use only actual numeric values
-- No assumptions
-- No fake data
-Return ONLY JSON.
-`,
+      input: userQuestion,   // 👈 USER PROMPT FROM FRONTEND
       tools:[{
         type:"code_interpreter",
-        container:{type:"auto",file_ids:[fileId]}
+        container:{ type:"auto", file_ids:[fileId] }
       }],
       tool_choice:"required",
-      max_output_tokens:4500
+      max_output_tokens:2500
     })
   });
 
-  const step1Data=JSON.parse(await step1.text());
-  console.log("✅ extraction complete");
+  const firstData = JSON.parse(await first.text());
+  console.log("STEP1 DONE");
 
-let extracted="";
+  const responseId = firstData.id;
 
-for(const item of step1Data.output||[]){
+  // STEP 2 → continue SAME session and force completion
+  console.log("🤖 STEP 2: Forcing final output");
 
-  // normal assistant message
-  if(item.type==="message"){
-    for(const c of item.content||[]){
-      if(c.type==="output_text" || c.type==="text"){
-        extracted += c.text || "";
-      }
-    }
-  }
-
-  // code interpreter output (IMPORTANT)
-  if(item.type==="code_interpreter_call" && item.outputs){
-    for(const o of item.outputs){
-      if(o.type==="logs" || o.type==="output_text"){
-        extracted += o.content || "";
-      }
-    }
-  }
-}
-
-  if(!extracted) throw new Error("Extraction failed");
-
-  console.log("📊 extracted length:",extracted.length);
-
-  /* STEP 2 → ANALYSIS */
-  console.log("🤖 STEP 2: financial analysis");
-
-  const step2=await fetch("https://api.openai.com/v1/responses",{
+  const second = await fetch("https://api.openai.com/v1/responses",{
     method:"POST",
     headers:{
       "Content-Type":"application/json",
       Authorization:`Bearer ${apiKey}`
     },
-    body:JSON.stringify({
+    body: JSON.stringify({
       model:"gpt-4.1",
-      input:`
-USER QUESTION:
-${userPrompt}
+      previous_response_id: responseId,
+      input: `
+Continue the analysis using the uploaded file and COMPLETE the task.
 
-STRUCTURED DATA:
-${extracted}
-
-You are a senior CA & financial analyst.
-
-Using ONLY above extracted data:
-Perform full professional analysis.
-
+Return FINAL detailed financial analysis report as requested by user.
 Include:
-- Answer user's exact question
-- EBITDA & profit analysis
-- YoY if available
-- Ratios if possible
-- Top & bottom performers
-- Trends
-- Risks
+- EBITDA
+- YoY comparison
+- Top 5 & Bottom 5 performers
 - CEO summary
-- Industry comparison if possible
+- Location wise performance
 
-IMPORTANT:
-Use ONLY extracted numbers.
-Do NOT assume data.
-If data missing say "Not available in file".
-
-Return detailed final report.
-`,
-      max_output_tokens:4000
+Return final answer only.
+`
     })
   });
 
-  const step2Data=JSON.parse(await step2.text());
+  const secondData = JSON.parse(await second.text());
+  console.log("STEP2 DONE");
 
   let reply="";
-  for(const item of step2Data.output||[]){
+
+  for(const item of secondData.output||[]){
     if(item.type==="message"){
       for(const c of item.content||[]){
         if(c.type==="output_text") reply+=c.text;
@@ -205,49 +135,65 @@ Return detailed final report.
     }
   }
 
-  if(!reply) throw new Error("Analysis failed");
+  if(!reply) throw new Error("No final reply generated");
 
-  console.log("✅ FINAL ANALYSIS READY");
+  console.log("✅ FINAL REPORT READY");
   return reply;
 }
 
-/* WORD EXPORT */
-async function markdownToWord(text){
-  const paragraphs=text.split("\n").map(l=>new Paragraph({text:l}));
-  const doc=new Document({sections:[{children:paragraphs}]});
-  const buf=await Packer.toBuffer(doc);
-  return buf.toString("base64");
+/* ================= WORD EXPORT ================= */
+async function markdownToWord(text) {
+  const paragraphs = text.split("\n").map(
+    (line) =>
+      new Paragraph({
+        text: line.replace(/\*\*/g, ""),
+      })
+  );
+
+  const doc = new Document({
+    sections: [{ children: paragraphs }],
+  });
+
+  const buffer = await Packer.toBuffer(doc);
+  return buffer.toString("base64");
 }
 
-/* MAIN HANDLER */
-export default async function handler(req,res){
+/* ================= MAIN HANDLER ================= */
+export default async function handler(req, res) {
   cors(res);
-  if(req.method==="OPTIONS") return res.status(200).end();
-  if(req.method!=="POST") return res.status(405).json({error:"POST only"});
+
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
   console.log("🔥 API HIT");
 
-  try{
-    const body=await parseJsonBody(req);
-    const {fileUrl,question}=body;
+  try {
+    const body = await parseJsonBody(req);
+    const { fileUrl, question } = body;
 
-    if(!fileUrl) return res.status(400).json({error:"fileUrl required"});
-    if(!question) return res.status(400).json({error:"question required"});
+    if (!fileUrl) return res.status(400).json({ error: "fileUrl required" });
 
-    const buffer=await downloadFileToBuffer(fileUrl);
-    const fileId=await uploadFileToOpenAI(buffer);
-    const reply=await runAnalysis(fileId,question);
+    const buffer = await downloadFileToBuffer(fileUrl);
+    const fileId = await uploadFileToOpenAI(buffer);
+    const reply = await runAnalysis(fileId, question);
 
-    let word=null;
-    try{
-      const b64=await markdownToWord(reply);
-      word=`data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${b64}`;
-    }catch{}
+    let word = null;
+    try {
+      const base64 = await markdownToWord(reply);
+      word = `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${base64}`;
+    } catch {}
 
-    return res.json({ok:true,reply,wordDownload:word});
+    return res.json({
+      ok: true,
+      reply,
+      wordDownload: word
+    });
 
-  }catch(err){
-    console.error(err);
-    return res.status(500).json({ok:false,error:err.message});
+  } catch (err) {
+    console.error("❌ ERROR:", err);
+    return res.status(500).json({
+      ok: false,
+      error: err.message,
+    });
   }
 }
