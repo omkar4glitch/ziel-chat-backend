@@ -158,44 +158,95 @@ async function extractData(fileId, userPrompt) {
     body: JSON.stringify({
       model: "gpt-4.1",
       input: `
-You are a universal accounting data extraction engine.
+You are a universal accounting data extraction engine. Use the code interpreter to read the uploaded file and extract all financial data.
 
 The user wants to answer this question:
 "${userPrompt}"
 
-YOUR TASK — follow these steps in order:
+══════════════════════════════════════════════════
+CRITICAL CODE INTERPRETER RULES — READ FIRST:
+══════════════════════════════════════════════════
+• ALWAYS use print() for every output. Never rely on expression evaluation.
+  ✅ CORRECT:  print(df.head())
+  ❌ WRONG:    df.head()        ← produces NO output, breaks everything
 
-STEP 1 — Detect file format automatically (Tally, QuickBooks, Zoho, SAP, custom MIS, bank statement, plain Excel, etc.)
-STEP 2 — Print ALL sheet/tab names found in the file.
-STEP 3 — For each sheet, print column headers and first 3 data rows so you understand the layout.
-STEP 4 — Extract every field needed to answer the user question. ALWAYS extract these if present:
-  • Revenue / Sales / Turnover  (by period AND by store/segment if available)
-  • COGS / Cost of Sales / Purchase
-  • Gross Profit  =  Revenue − COGS
-  • Operating Expenses  (itemised if possible: salaries, rent, utilities, marketing, etc.)
-  • EBITDA  =  Gross Profit − Operating Expenses
-  • Depreciation & Amortisation
-  • EBIT / Operating Profit
-  • Interest / Finance Charges
-  • Net Profit / PAT / PBT
-  • Total Assets, Current Assets, Fixed Assets, Investments
-  • Total Liabilities, Current Liabilities, Long-Term Debt
-  • Equity / Net Worth
-  • Cash & Cash Equivalents
-  • Any KPI columns relevant to the user question
-  • Store / Branch / Segment names
-  • Time periods — months, quarters, financial years (preserve exact labels from file)
+• ALWAYS read with header=None first to see raw layout before parsing.
+• NEVER assume row 0 is the header — many accounting files have multi-row
+  headers, merged cells, or title rows above the actual data.
+• ALWAYS scan all rows (not just head(3)) — P&L line items span many rows.
+══════════════════════════════════════════════════
 
-STEP 5 — Output ONLY the following JSON. No prose. No markdown around it:
+Write and run Python code in this exact sequence:
+
+─── PHASE 1: DISCOVER STRUCTURE ───────────────────
+import pandas as pd
+import json
+import openpyxl
+from pathlib import Path
+
+# Find the uploaded file
+import glob
+files = glob.glob('/mnt/data/*')
+print("FILES FOUND:", files)
+file_path = files[0]
+
+# Read sheet names
+xl = pd.ExcelFile(file_path)
+print("SHEETS:", xl.sheet_names)
+
+# For EACH sheet — read raw (header=None) and print first 10 rows
+for sheet in xl.sheet_names:
+    df_raw = pd.read_excel(file_path, sheet_name=sheet, header=None)
+    print(f"\\n=== SHEET: {sheet} | Shape: {df_raw.shape} ===")
+    print(df_raw.head(10).to_string())   # ← MUST use print()
+
+─── PHASE 2: IDENTIFY LAYOUT ───────────────────────
+Based on what you see printed above:
+• Find which row contains column headers (store names / periods)
+• Find which column contains row labels (P&L line items)
+• Note any merged cells or title rows to skip
+
+─── PHASE 3: EXTRACT ALL DATA ──────────────────────
+Write code to:
+1. Re-read each sheet with correct header row:
+   df = pd.read_excel(file_path, sheet_name=sheet, header=N)
+   where N is the actual header row number you discovered.
+
+2. For EVERY sheet, extract a dict: { location_name: { line_item: value } }
+   Print progress as you go:
+   print(f"Extracting {sheet}...")
+   print(json.dumps(extracted_dict, indent=2, default=str))
+
+3. Key line items to find (match by partial string, case-insensitive):
+   - Net Sales / Revenue / Total Sales
+   - Cost of Goods Sold / COGS / Food Cost / Paper Cost
+   - Gross Profit
+   - Payroll / Labor / Salaries / Wages
+   - Rent / Occupancy
+   - Utilities
+   - Marketing / Advertising / Royalty
+   - General & Administrative / G&A
+   - Total Operating Expenses
+   - EBITDA / Operating Income
+   - Depreciation
+   - Interest
+   - Net Income / Net Profit
+
+4. After extracting all sheets, print a COMPLETE summary:
+   print("=== FINAL EXTRACTED DATA ===")
+   print(json.dumps(all_data, indent=2, default=str))
+
+─── PHASE 4: OUTPUT JSON ────────────────────────────
+After all extraction is printed, output ONLY this JSON (no code fences):
 
 {
   "file_format": "<detected format>",
-  "sheets_found": ["Sheet1", "Sheet2"],
-  "time_periods": ["FY2023", "FY2024"],
+  "sheets_found": ["2024", "2025"],
+  "time_periods": ["2024", "2025"],
   "segments": ["Store A", "Store B"],
-  "currency": "INR",
+  "currency": "USD",
   "financials": {
-    "FY2024": {
+    "2024": {
       "revenue": null,
       "cogs": null,
       "gross_profit": null,
@@ -204,9 +255,13 @@ STEP 5 — Output ONLY the following JSON. No prose. No markdown around it:
         "total": null,
         "salaries": null,
         "rent": null,
+        "utilities": null,
+        "marketing": null,
+        "royalties": null,
         "other": null
       },
       "ebitda": null,
+      "ebitda_margin_pct": null,
       "depreciation": null,
       "ebit": null,
       "interest": null,
@@ -214,31 +269,54 @@ STEP 5 — Output ONLY the following JSON. No prose. No markdown around it:
       "net_margin_pct": null,
       "total_assets": null,
       "current_assets": null,
-      "fixed_assets": null,
       "total_liabilities": null,
-      "current_liabilities": null,
-      "long_term_debt": null,
-      "equity": null,
       "cash": null
     }
   },
   "segments_data": {
     "Store A": {
-      "FY2024": { "revenue": null, "net_profit": null }
+      "2024": {
+        "revenue": null,
+        "cogs": null,
+        "gross_profit": null,
+        "gross_margin_pct": null,
+        "operating_expenses_total": null,
+        "ebitda": null,
+        "ebitda_margin_pct": null,
+        "payroll": null,
+        "rent": null,
+        "utilities": null,
+        "marketing": null,
+        "royalties": null
+      },
+      "2025": {
+        "revenue": null,
+        "cogs": null,
+        "gross_profit": null,
+        "gross_margin_pct": null,
+        "operating_expenses_total": null,
+        "ebitda": null,
+        "ebitda_margin_pct": null,
+        "payroll": null,
+        "rent": null,
+        "utilities": null,
+        "marketing": null,
+        "royalties": null
+      }
     }
   },
   "other_relevant_data": {},
-  "missing_fields": ["list any fields you could not find"],
-  "notes": "any warnings, ambiguities, or assumptions"
+  "missing_fields": [],
+  "notes": ""
 }
 
 STRICT RULES:
-• Use ONLY values present in the file — never assume, estimate, or hallucinate.
-• If a field is genuinely missing from the file, use null.
-• Ignore percentage-only columns — extract raw numbers only.
-• If multiple sheets contain the same field, reconcile intelligently.
-• Preserve exact time-period labels from the file.
-• Output the JSON as plain text (no code fences, no preamble).
+• Use ONLY values found in the file — never assume or hallucinate numbers.
+• Fill EVERY store and EVERY year you find into segments_data.
+• If a field is missing from the file, use null — do not skip the key.
+• Ignore %-only columns — raw numbers only.
+• Preserve store names exactly as they appear in the file.
+• The JSON must be complete — all 21 stores, both years.
 `,
       tools: [
         {
@@ -247,7 +325,7 @@ STRICT RULES:
         },
       ],
       tool_choice: "required",
-      max_output_tokens: 6000,
+      max_output_tokens: 16000,  // 21 stores × 2 years needs much more room
     }),
   });
 
@@ -344,7 +422,7 @@ STRICT RULES:
 • Use tables when comparing multiple periods or segments
 • If the extracted data has null values for a field, do not fabricate — skip or mark N/A
 `,
-      max_output_tokens: 6000,
+      max_output_tokens: 16000,
     }),
   });
 
