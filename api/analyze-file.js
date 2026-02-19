@@ -77,7 +77,7 @@ ${userPrompt}
 
 You are a universal accounting data extraction AI.
 
-From the uploaded file extract ALL data required to answer user query.
+from the above prompt read what user want and extract that data which is neccary for that analysis and also extract Core finacial data which will be needed for that analysis.
 
 Also ALWAYS extract core financial fields if present:
 Revenue
