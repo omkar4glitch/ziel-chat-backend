@@ -56,136 +56,99 @@ async function uploadFileToOpenAI(buffer){
 }
 
 /* MAIN AI */
-async function runAnalysis(fileId,userPrompt){
+async function runAnalysis(fileId, userPrompt) {
 
-  const apiKey=process.env.OPENAI_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY;
 
-  console.log("🤖 STEP 1: smart extraction based on user prompt");
+  console.log("🤖 SINGLE STEP: File load + financial analysis");
 
-  /* STEP 1 → SMART EXTRACTION */
-  const step1=await fetch("https://api.openai.com/v1/responses",{
-    method:"POST",
-    headers:{
-      "Content-Type":"application/json",
-      Authorization:`Bearer ${apiKey}`
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
     },
-    body:JSON.stringify({
-      model:"gpt-4.1",
-      input:`
-User requirement:
-${userPrompt}
-
-You are a universal accounting data extraction AI.
-
-From the uploaded file extract ALL data.
-
-RULES:
-- Detect structure automatically
-- Ignore % columns
-- Use only actual numeric values
-- No assumptions
-- No fake data
-Return ONLY JSON.
-`,
-      tools:[{
-        type:"code_interpreter",
-        container:{type:"auto",file_ids:[fileId]}
+    body: JSON.stringify({
+      model: "gpt-4.1",
+      temperature: 0,
+      tools: [{
+        type: "code_interpreter",
+        container: {
+          type: "auto",
+          file_ids: [fileId]
+        }
       }],
-      tool_choice:"required",
-      max_output_tokens:4000
-    })
-  });
-
-  const step1Data=JSON.parse(await step1.text());
-  console.log("✅ extraction complete");
-
-let extracted="";
-
-for(const item of step1Data.output||[]){
-
-  // normal assistant message
-  if(item.type==="message"){
-    for(const c of item.content||[]){
-      if(c.type==="output_text" || c.type==="text"){
-        extracted += c.text || "";
-      }
-    }
-  }
-
-  // code interpreter output (IMPORTANT)
-  if(item.type==="code_interpreter_call" && item.outputs){
-    for(const o of item.outputs){
-      if(o.type==="logs" || o.type==="output_text"){
-        extracted += o.content || "";
-      }
-    }
-  }
-}
-
-
-  if(!extracted) throw new Error("Extraction failed");
-
-  console.log("📊 extracted length:",extracted.length);
-
-  /* STEP 2 → ANALYSIS */
-  console.log("🤖 STEP 2: financial analysis");
-
-  const step2=await fetch("https://api.openai.com/v1/responses",{
-    method:"POST",
-    headers:{
-      "Content-Type":"application/json",
-      Authorization:`Bearer ${apiKey}`
-    },
-    body:JSON.stringify({
-      model:"gpt-4.1",
-      input:`
+      tool_choice: "required",
+      max_output_tokens: 6000,
+      input: `
 USER QUESTION:
 ${userPrompt}
 
-STRUCTURED DATA:
-${extracted}
+You are a Chartered Accountant and financial data analyst AI.
 
-You are a senior CA & financial analyst.
+STRICT EXECUTION PROTOCOL:
 
-Using ONLY above extracted data:
-Perform full professional analysis.
+1. Load the uploaded file using Python.
+2. Inspect its structure (columns, data types, missing values).
+3. Identify ONLY the fields required to answer the user’s question.
+4. Perform ALL calculations using Python.
+5. NEVER assume missing values.
+6. NEVER fabricate financial metrics.
+7. If required data is not present, clearly state:
+   "Not available in uploaded file".
+8. All ratios must be calculated explicitly in Python.
+9. Show formulas used for financial metrics.
+10. Round monetary values to 2 decimal places.
+11. Do NOT perform calculations in natural language.
+12. Use dataframe operations only.
 
-Include:
-- Answer user's exact question
-- EBITDA & profit analysis
-- YoY if available
-- Ratios if possible
-- Top & bottom performers
-- Trends
-- Risks
-- CEO summary
-- Industry comparison if possible
+ANALYSIS REQUIREMENTS:
+- Answer the user’s exact question first.
+- Then provide supporting calculations.
+- Then provide professional interpretation.
+- Clearly separate:
+   A) Direct Answer
+   B) Calculation Breakdown
+   C) Financial Interpretation
+   D) Risks / Observations (only if supported by data)
 
 IMPORTANT:
-Use ONLY extracted numbers.
-Do NOT assume data.
-If data missing say "Not available in file".
+Use ONLY data from the uploaded file.
+Do NOT use external knowledge.
+Do NOT compare with industry unless data exists in file.
 
-Return detailed final report.
-`,
-      max_output_tokens:4000
+Return a professional structured financial report.
+`
     })
   });
 
-  const step2Data=JSON.parse(await step2.text());
+  const data = JSON.parse(await response.text());
 
-  let reply="";
-  for(const item of step2Data.output||[]){
-    if(item.type==="message"){
-      for(const c of item.content||[]){
-        if(c.type==="output_text") reply+=c.text;
+  let reply = "";
+
+  for (const item of data.output || []) {
+
+    if (item.type === "message") {
+      for (const content of item.content || []) {
+        if (content.type === "output_text") {
+          reply += content.text;
+        }
       }
     }
+
+    if (item.type === "code_interpreter_call" && item.outputs) {
+      for (const o of item.outputs) {
+        if (o.type === "logs" || o.type === "output_text") {
+          reply += o.content || "";
+        }
+      }
+    }
+
   }
 
-  if(!reply) throw new Error("Analysis failed");
+  if (!reply) throw new Error("Analysis failed");
 
-  console.log("✅ FINAL ANALYSIS READY");
+  console.log("✅ FINANCIAL ANALYSIS COMPLETE");
   return reply;
 }
 
