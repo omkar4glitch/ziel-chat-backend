@@ -75,11 +75,9 @@ async function runAnalysis(fileId,userPrompt){
 User requirement:
 ${userPrompt}
 
-You are a accounting data extraction AI.
+You are a universal accounting data extraction AI.
 
-From the uploaded file extract ALL data required to answer user query.
-
-First understand the file structure and then extract all the data. then give the necassary data to answer the user query.
+From the uploaded file extract ALL data.
 
 RULES:
 - Detect structure automatically
