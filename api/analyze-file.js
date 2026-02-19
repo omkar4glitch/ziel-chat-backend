@@ -75,23 +75,9 @@ async function runAnalysis(fileId,userPrompt){
 User requirement:
 ${userPrompt}
 
-You are a universal accounting data extraction AI.
+You are a accounting data extraction AI.
 
 From the uploaded file extract ALL data required to answer user query.
-
-Also ALWAYS extract core financial fields if present:
-Revenue
-COGS
-Gross Profit
-Expenses
-EBITDA
-Net Profit
-Assets
-Liabilities
-Cash
-Store/location names
-Dates/years
-
 
 RULES:
 - Detect structure automatically
