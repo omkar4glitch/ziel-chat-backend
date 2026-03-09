@@ -439,10 +439,10 @@ function preAggregateForPL(sheets) {
         totalDebit: Math.round(s.totalDebit * 100) / 100,
         totalCredit: Math.round(s.totalCredit * 100) / 100,
         profitMargin: s.revenue !== 0 ? `${((s.netProfit / s.revenue) * 100).toFixed(1)}%` : "N/A",
-        // Top 10 categories only to save tokens
+        // Top 3 categories only — keeps payload small
         topCategories: Object.entries(s.categories)
           .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-          .slice(0, 10)
+          .slice(0, 3)
           .map(([cat, val]) => ({ category: cat, amount: Math.round(val * 100) / 100 })),
       }));
 
@@ -538,140 +538,205 @@ function preAggregateForPL(sheets) {
 // If there are more than 10 stores, process in chunks and combine.
 // ============================================================
 
-async function callOpenAI(messages, model = "gpt-4o", maxTokens = 16000) {
-  const r = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature: 0.1,
-      max_tokens: maxTokens,
-      top_p: 1.0,
-      frequency_penalty: 0.0,
-      presence_penalty: 0.0,
-    }),
-  });
+// ============================================================
+// TOKEN BUDGET CONSTANTS
+// Tier 1 OpenAI accounts: 30,000 TPM on gpt-4o
+// Strategy:
+//   - Chunk analysis  → gpt-4o-mini  (~800 input + 1000 output per chunk)
+//   - Final report    → gpt-4o       (≤ 10,000 input + 8,000 output)
+// This keeps every single API call safely under 15,000 tokens.
+// ============================================================
+const CHUNK_SIZE = 5;           // 5 stores per mini chunk call
+const MINI_MAX_TOKENS = 1500;   // output cap per chunk (gpt-4o-mini)
+const FINAL_MAX_TOKENS = 8000;  // output cap for final gpt-4o call
+const DELAY_BETWEEN_CALLS_MS = 2000; // 2 s pause between calls to avoid TPM spike
 
-  let data;
-  try {
-    data = await r.json();
-  } catch (err) {
-    const raw = await r.text().catch(() => "");
-    console.error("OpenAI returned non-JSON:", raw.slice(0, 1000));
-    return { reply: null, error: `Parse error: ${err.message}`, httpStatus: r.status };
-  }
+/** Sleep helper */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  if (data.error) {
-    console.error("OpenAI API Error:", data.error);
-    return { reply: null, error: data.error.message, httpStatus: r.status };
-  }
-
-  const finishReason = data?.choices?.[0]?.finish_reason;
-  console.log(`OpenAI finish_reason: ${finishReason} | tokens: ${JSON.stringify(data?.usage)}`);
-
-  let reply = data?.choices?.[0]?.message?.content || null;
-  if (reply) {
-    reply = reply.replace(/^```(?:markdown|json)\s*\n/gm, "").replace(/\n```\s*$/gm, "").trim();
-  }
-
-  return { reply, raw: data, httpStatus: r.status, finishReason, tokenUsage: data?.usage };
+/**
+ * Compress a store summary to the minimum fields the AI needs.
+ * Removes raw counts and intermediate fields that eat tokens.
+ */
+function compressStore(s) {
+  return {
+    store: s.store,
+    rev: s.revenue,
+    exp: s.expenses,
+    net: s.netProfit,
+    margin: s.profitMargin,
+    topCats: s.topCategories,   // already trimmed to 3
+  };
 }
 
 /**
- * ✅ FIX 2: Chunk stores into groups of 10 and analyze separately, then consolidate
+ * Generic OpenAI caller with retry on 429 (rate-limit).
+ */
+async function callOpenAI(messages, model = "gpt-4o", maxTokens = 8000, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: 0.1,
+        max_tokens: maxTokens,
+      }),
+    });
+
+    // Handle 429 rate-limit with exponential back-off
+    if (r.status === 429) {
+      const waitMs = attempt * 15000; // 15 s, 30 s, 45 s
+      console.warn(`⚠️  Rate limited (attempt ${attempt}). Waiting ${waitMs / 1000}s...`);
+      await sleep(waitMs);
+      continue;
+    }
+
+    let data;
+    try {
+      data = await r.json();
+    } catch (err) {
+      return { reply: null, error: `JSON parse error: ${err.message}`, httpStatus: r.status };
+    }
+
+    if (data.error) {
+      // If still a token limit error after retries, surface it clearly
+      if (data.error.code === "rate_limit_exceeded" && attempt < retries) {
+        console.warn(`⚠️  Token limit hit (attempt ${attempt}). Retrying in 20s...`);
+        await sleep(20000);
+        continue;
+      }
+      return { reply: null, error: data.error.message, httpStatus: r.status };
+    }
+
+    const finishReason = data?.choices?.[0]?.finish_reason;
+    console.log(`✅ ${model} | finish: ${finishReason} | tokens: ${JSON.stringify(data?.usage)}`);
+
+    let reply = data?.choices?.[0]?.message?.content || null;
+    if (reply) {
+      reply = reply.replace(/^```(?:markdown|json)\s*\n/gm, "").replace(/\n```\s*$/gm, "").trim();
+    }
+
+    return { reply, httpStatus: r.status, finishReason, tokenUsage: data?.usage };
+  }
+
+  return { reply: null, error: "Exceeded retry limit due to rate limiting." };
+}
+
+/**
+ * Main analysis orchestrator — TPM-safe for Tier 1 accounts.
+ *
+ * Flow:
+ *  1. Compress store data to minimal JSON
+ *  2. Send small chunks (5 stores) to gpt-4o-mini  → get per-store bullets
+ *  3. Build a compact summary table from chunk replies
+ *  4. Send ONE final call to gpt-4o with summary table + overall totals
  */
 async function analyzeWithChunking(aggregatedSheets, question) {
-  const CHUNK_SIZE = 10; // stores per API call
-  const allStoreChunkReplies = [];
-  let hasChunked = false;
+  const perStoreLines = []; // e.g. "| Store A | 500000 | 420000 | 80000 | 16% | ✅ |"
+  let overallTotals = null;
+  let hasStoreData = false;
 
+  // ── PHASE 1: Chunk calls to gpt-4o-mini ──────────────────────────────────
   for (const sheet of aggregatedSheets) {
-    if (sheet.aggregationType === "BY_STORE" && sheet.storeSummaries && sheet.storeSummaries.length > CHUNK_SIZE) {
-      hasChunked = true;
-      console.log(`Chunking ${sheet.storeSummaries.length} stores into groups of ${CHUNK_SIZE}...`);
+    if (sheet.aggregationType !== "BY_STORE" || !sheet.storeSummaries?.length) continue;
 
-      const chunks = [];
-      for (let i = 0; i < sheet.storeSummaries.length; i += CHUNK_SIZE) {
-        chunks.push(sheet.storeSummaries.slice(i, i + CHUNK_SIZE));
+    hasStoreData = true;
+    overallTotals = sheet.overall;
+    const stores = sheet.storeSummaries;
+
+    console.log(`Processing ${stores.length} stores in chunks of ${CHUNK_SIZE} via gpt-4o-mini...`);
+
+    const chunks = [];
+    for (let i = 0; i < stores.length; i += CHUNK_SIZE) {
+      chunks.push(stores.slice(i, i + CHUNK_SIZE));
+    }
+
+    for (let ci = 0; ci < chunks.length; ci++) {
+      const compressed = chunks[ci].map(compressStore);
+
+      // Approx token cost: ~200 per store × 5 = ~1000 input tokens — well within limits
+      const userMsg =
+        `Analyze these ${compressed.length} stores. ` +
+        `For each output EXACTLY one pipe-delimited row: ` +
+        `Store | Revenue | Expenses | NetProfit | Margin | Status(✅/❌/⚠️) | OneLineRisk\n\n` +
+        `Data:\n${JSON.stringify(compressed)}`;
+
+      const messages = [
+        {
+          role: "system",
+          content:
+            "You are a financial analyst. Output ONLY pipe-delimited data rows, no headers, no extra text.",
+        },
+        { role: "user", content: userMsg },
+      ];
+
+      console.log(`  Chunk ${ci + 1}/${chunks.length} → gpt-4o-mini...`);
+      const { reply, error } = await callOpenAI(messages, "gpt-4o-mini", MINI_MAX_TOKENS);
+
+      if (reply) {
+        // Each line from mini is a store row — collect them
+        reply.split("\n").forEach((line) => {
+          const trimmed = line.trim();
+          if (trimmed && trimmed.includes("|")) perStoreLines.push(trimmed);
+        });
       }
+      if (error) console.error(`  Chunk ${ci + 1} error: ${error}`);
 
-      for (let ci = 0; ci < chunks.length; ci++) {
-        const chunk = chunks[ci];
-        const chunkData = {
-          sheetName: sheet.sheetName,
-          chunkIndex: ci + 1,
-          totalChunks: chunks.length,
-          stores: chunk,
-          overallContext: sheet.overall,
-        };
-
-        const messages = [
-          {
-            role: "system",
-            content: `You are an expert financial analyst. Analyze this chunk of store P&L data (chunk ${ci + 1} of ${chunks.length}).
-For each store, calculate and report:
-- Revenue, Expenses, Net Profit, Profit Margin %
-- Top 3 expense categories
-- Performance vs overall average
-- Any red flags (losses, unusual margins)
-Output a clean markdown table + bullet-point findings per store.`,
-          },
-          {
-            role: "user",
-            content: `Here is store data chunk ${ci + 1}/${chunks.length}:\n\n\`\`\`json\n${JSON.stringify(chunkData, null, 2)}\n\`\`\`\n\n${question || ""}`,
-          },
-        ];
-
-        console.log(`Analyzing chunk ${ci + 1}/${chunks.length} (${chunk.length} stores)...`);
-        const { reply, error } = await callOpenAI(messages, "gpt-4o", 4000);
-        if (reply) allStoreChunkReplies.push(`### Stores ${ci * CHUNK_SIZE + 1}–${ci * CHUNK_SIZE + chunk.length}\n\n${reply}`);
-        if (error) console.error(`Chunk ${ci + 1} error: ${error}`);
-      }
+      // Pause between chunk calls to avoid TPM burst
+      if (ci < chunks.length - 1) await sleep(DELAY_BETWEEN_CALLS_MS);
     }
   }
 
-  // ── Final consolidation call ───────────────────────────────────────────────
-  const systemPrompt = getPLSystemPrompt();
-  let userContent;
+  // ── PHASE 2: Category-only sheets (no store column) ──────────────────────
+  const categorySheets = aggregatedSheets.filter((s) => s.aggregationType === "BY_CATEGORY");
 
-  if (hasChunked) {
-    // Consolidation: all chunk summaries + overall totals
-    const overallSummaries = aggregatedSheets.map((s) => ({
-      sheetName: s.sheetName,
-      documentType: s.documentType,
-      overall: s.overall,
-      totalRawRows: s.totalRawRows,
-    }));
+  // ── PHASE 3: Final gpt-4o call — input is now tiny ───────────────────────
+  // Input = store table rows (≈ 50 tokens/row × 22 rows = ~1100 tokens)
+  //       + overall totals (≈ 200 tokens)
+  //       + system prompt (≈ 600 tokens)
+  //       Total input ≈ 2000 tokens → output 8000 → total ≈ 10,000 << 30,000 limit ✅
 
-    userContent = `## OVERALL SUMMARIES (all sheets):\n\`\`\`json\n${JSON.stringify(overallSummaries, null, 2)}\n\`\`\`
+  const storeTableMarkdown =
+    "| Store | Revenue | Expenses | Net Profit | Margin | Status | Risk |\n" +
+    "|---|---|---|---|---|---|---|\n" +
+    perStoreLines.join("\n");
 
-## PER-STORE CHUNK ANALYSES (already done):
-${allStoreChunkReplies.join("\n\n---\n\n")}
+  const categoryContext =
+    categorySheets.length > 0
+      ? `\n\nCATEGORY BREAKDOWN:\n${JSON.stringify(
+          categorySheets.map((s) => ({ sheet: s.sheetName, overall: s.overall, top10: s.categorySummaries?.slice(0, 10) })),
+          null, 2
+        )}`
+      : "";
 
-Using the above chunk analyses and overall summaries, write the FINAL comprehensive MIS report with:
-1. Executive Summary
-2. Consolidated P&L Table (all stores ranked by Net Profit)
-3. Top 5 and Bottom 5 stores
-4. Revenue & Expense analysis
-5. Key observations and action items
+  const totalsContext = overallTotals
+    ? `\n\nOVERALL TOTALS:\n${JSON.stringify(overallTotals, null, 2)}`
+    : "";
 
-${question || ""}`;
-  } else {
-    // No chunking needed — send everything in one shot
-    userContent = `Here is the complete aggregated financial data:\n\n\`\`\`json\n${JSON.stringify(aggregatedSheets, null, 2)}\n\`\`\`\n\n${question || "Please provide a comprehensive MIS P&L commentary."}`;
-  }
+  const finalUserContent =
+    `## ALL-STORE P&L TABLE (pre-analyzed):\n${storeTableMarkdown}` +
+    totalsContext +
+    categoryContext +
+    `\n\n${question || "Write the full MIS P&L commentary using the data above."}`;
+
+  // If no store data at all, fall back to sending raw aggregated data
+  const fallbackContent = !hasStoreData
+    ? `Here is the financial data:\n\`\`\`json\n${JSON.stringify(aggregatedSheets, null, 2)}\n\`\`\`\n\n${question || "Write a comprehensive MIS commentary."}`
+    : null;
 
   const finalMessages = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userContent },
+    { role: "system", content: getPLSystemPrompt() },
+    { role: "user", content: fallbackContent || finalUserContent },
   ];
 
-  console.log("Sending final consolidation call to gpt-4o...");
-  return await callOpenAI(finalMessages, "gpt-4o", 16000);
+  console.log("📊 Sending final report call to gpt-4o...");
+  await sleep(DELAY_BETWEEN_CALLS_MS); // small pause before final call
+  return await callOpenAI(finalMessages, "gpt-4o", FINAL_MAX_TOKENS);
 }
 
 /**
