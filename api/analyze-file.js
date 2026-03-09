@@ -1,7 +1,8 @@
 import { analyzeFinancial } from "../financial-engine/financialController.js";
 
 export default async function handler(req, res) {
-
+  console.log("Incoming body:", req.body);
+  
   try {
 
     const body =
