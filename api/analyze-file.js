@@ -4,84 +4,42 @@ import * as XLSX from "xlsx";
 import { Document, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, HeadingLevel, Packer } from "docx";
 import JSZip from "jszip";
 
-/**
- * CORS helper
- */
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-/**
- * Tolerant body parser
- */
 async function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
       if (!body) return resolve({});
-      const contentType =
-        (req.headers && (req.headers["content-type"] || req.headers["Content-Type"])) || "";
-      if (contentType.includes("application/json")) {
-        try {
-          const parsed = JSON.parse(body);
-          return resolve(parsed);
-        } catch (err) {
-          return resolve({ userMessage: body });
-        }
-      }
-      try {
-        const parsed = JSON.parse(body);
-        return resolve(parsed);
-      } catch {
-        return resolve({ userMessage: body });
-      }
+      try { return resolve(JSON.parse(body)); } catch { return resolve({ userMessage: body }); }
     });
     req.on("error", reject);
   });
 }
 
-/**
- * Download remote file into Buffer
- */
 async function downloadFileToBuffer(url, maxBytes = 30 * 1024 * 1024, timeoutMs = 20000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let r;
-  try {
-    r = await fetch(url, { signal: controller.signal });
-  } catch (err) {
-    clearTimeout(timer);
-    throw new Error(`Download failed or timed out: ${err.message || err}`);
-  }
+  try { r = await fetch(url, { signal: controller.signal }); } catch (err) { clearTimeout(timer); throw new Error(`Download failed: ${err.message}`); }
   clearTimeout(timer);
-  if (!r.ok) throw new Error(`Failed to download file: ${r.status} ${r.statusText}`);
+  if (!r.ok) throw new Error(`Failed to download: ${r.status} ${r.statusText}`);
   const contentType = r.headers.get("content-type") || "";
-  const chunks = [];
-  let total = 0;
-  try {
-    for await (const chunk of r.body) {
-      total += chunk.length;
-      if (total > maxBytes) {
-        const allowed = maxBytes - (total - chunk.length);
-        if (allowed > 0) chunks.push(chunk.slice(0, allowed));
-        break;
-      } else {
-        chunks.push(chunk);
-      }
-    }
-  } catch (err) {
-    throw new Error(`Error reading download stream: ${err.message || err}`);
+  const chunks = []; let total = 0;
+  for await (const chunk of r.body) {
+    total += chunk.length;
+    if (total > maxBytes) { chunks.push(chunk.slice(0, maxBytes - (total - chunk.length))); break; }
+    chunks.push(chunk);
   }
   console.log(`Downloaded ${total} bytes, content-type: ${contentType}`);
-  return { buffer: Buffer.concat(chunks), contentType, bytesReceived: total };
+  return { buffer: Buffer.concat(chunks), contentType };
 }
 
-/**
- * Detect file type
- */
 function detectFileType(fileUrl, contentType, buffer) {
   const lowerUrl = (fileUrl || "").toLowerCase();
   const lowerType = (contentType || "").toLowerCase();
@@ -91,24 +49,20 @@ function detectFileType(fileUrl, contentType, buffer) {
       if (lowerUrl.includes(".pptx") || lowerType.includes("presentation")) return "pptx";
       return "xlsx";
     }
-    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) return "pdf";
-    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return "png";
-    if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "jpg";
-    if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) return "gif";
+    if (buffer[0] === 0x25 && buffer[1] === 0x50) return "pdf";
+    if (buffer[0] === 0x89 && buffer[1] === 0x50) return "png";
+    if (buffer[0] === 0xff && buffer[1] === 0xd8) return "jpg";
   }
-  if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) return "pdf";
+  if (lowerUrl.endsWith(".pdf") || lowerType.includes("pdf")) return "pdf";
   if (lowerUrl.endsWith(".docx") || lowerType.includes("wordprocessing")) return "docx";
   if (lowerUrl.endsWith(".pptx") || lowerType.includes("presentation")) return "pptx";
   if (lowerUrl.endsWith(".xlsx") || lowerUrl.endsWith(".xls") || lowerType.includes("spreadsheet") || lowerType.includes("excel")) return "xlsx";
   if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv")) return "csv";
-  if (lowerUrl.endsWith(".png") || lowerType.includes("image/png")) return "png";
-  if (lowerUrl.endsWith(".jpg") || lowerUrl.endsWith(".jpeg") || lowerType.includes("image/jpeg")) return "jpg";
+  if (lowerUrl.endsWith(".png")) return "png";
+  if (lowerUrl.endsWith(".jpg") || lowerUrl.endsWith(".jpeg")) return "jpg";
   return "csv";
 }
 
-/**
- * Convert buffer to UTF-8 text
- */
 function bufferToText(buffer) {
   if (!buffer) return "";
   let text = buffer.toString("utf8");
@@ -116,231 +70,85 @@ function bufferToText(buffer) {
   return text;
 }
 
-/**
- * Robust numeric parser for accounting amounts
- */
 function parseAmount(s) {
   if (s === null || s === undefined) return 0;
   let str = String(s).trim();
   if (!str) return 0;
   const parenMatch = str.match(/^\s*\((.*)\)\s*$/);
   if (parenMatch) str = "-" + parenMatch[1];
-  const crMatch = str.match(/\bCR\b/i);
-  const drMatch = str.match(/\bDR\b/i);
-  if (crMatch && !drMatch) { if (!str.includes("-")) str = "-" + str; }
-  else if (drMatch && !crMatch) { str = str.replace("-", ""); }
+  if (/\bCR\b/i.test(str) && !/\bDR\b/i.test(str) && !str.includes("-")) str = "-" + str;
   str = str.replace(/[^0-9.\-]/g, "");
   const parts = str.split(".");
   if (parts.length > 2) str = parts.shift() + "." + parts.join("");
   const n = parseFloat(str);
-  if (Number.isNaN(n)) return 0;
-  return n;
+  return isNaN(n) ? 0 : n;
 }
 
-/**
- * Format date to US format (MM/DD/YYYY)
- */
 function formatDateUS(dateStr) {
   if (!dateStr) return dateStr;
   const num = parseFloat(dateStr);
   if (!isNaN(num) && num > 40000 && num < 50000) {
     const date = new Date((num - 25569) * 86400 * 1000);
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    const year = date.getFullYear();
-    return `${month}/${day}/${year}`;
+    return `${String(date.getMonth()+1).padStart(2,"0")}/${String(date.getDate()).padStart(2,"0")}/${date.getFullYear()}`;
   }
   const date = new Date(dateStr);
-  if (!isNaN(date.getTime())) {
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    const year = date.getFullYear();
-    return `${month}/${day}/${year}`;
-  }
+  if (!isNaN(date.getTime())) return `${String(date.getMonth()+1).padStart(2,"0")}/${String(date.getDate()).padStart(2,"0")}/${date.getFullYear()}`;
   return dateStr;
 }
 
-/**
- * Extract XLSX with proper sheet separation
- */
 function extractXlsx(buffer) {
   try {
-    console.log("Starting XLSX extraction...");
-    const workbook = XLSX.read(buffer, {
-      type: "buffer",
-      cellDates: false,
-      cellNF: false,
-      cellText: true,
-      raw: false,
-      defval: "",
-    });
+    const workbook = XLSX.read(buffer, { type: "buffer", cellDates: false, cellText: true, raw: false, defval: "" });
     console.log(`XLSX has ${workbook.SheetNames.length} sheets:`, workbook.SheetNames);
-    if (workbook.SheetNames.length === 0) return { type: "xlsx", textContent: "", sheets: [] };
-
-    const sheets = [];
-    workbook.SheetNames.forEach((sheetName, index) => {
-      console.log(`Processing sheet ${index + 1}: "${sheetName}"`);
-      const sheet = workbook.Sheets[sheetName];
-      const jsonRows = XLSX.utils.sheet_to_json(sheet, { defval: "", blankrows: false, raw: false });
-      sheets.push({ name: sheetName, rows: jsonRows, rowCount: jsonRows.length });
+    const sheets = workbook.SheetNames.map((name) => {
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[name], { defval: "", blankrows: false, raw: false });
+      // Log actual column names so we can see what the file contains
+      if (rows.length > 0) console.log(`Sheet "${name}" columns:`, Object.keys(rows[0]));
+      return { name, rows, rowCount: rows.length };
     });
-
-    console.log(`Total sheets: ${sheets.length}, Total rows: ${sheets.reduce((sum, s) => sum + s.rowCount, 0)}`);
-    return { type: "xlsx", sheets: sheets, sheetCount: workbook.SheetNames.length };
+    console.log(`Total rows: ${sheets.reduce((s, sh) => s + sh.rowCount, 0)}`);
+    return { type: "xlsx", sheets };
   } catch (err) {
-    console.error("extractXlsx failed:", err?.message || err);
     return { type: "xlsx", sheets: [], error: String(err?.message || err) };
   }
 }
 
-/**
- * Extract PDF
- */
 async function extractPdf(buffer) {
   try {
     const data = await pdf(buffer);
-    const text = data && data.text ? data.text.trim() : "";
-    if (!text || text.length < 50) {
-      return {
-        type: "pdf", textContent: "", ocrNeeded: true,
-        error: "This PDF appears to be scanned (image-based). Please upload a PDF with selectable text.",
-      };
-    }
-    return { type: "pdf", textContent: text, ocrNeeded: false };
-  } catch (err) {
-    return { type: "pdf", textContent: "", error: String(err?.message || err) };
-  }
+    const text = data?.text?.trim() || "";
+    if (!text || text.length < 50) return { type: "pdf", textContent: "", ocrNeeded: true, error: "Scanned PDF — upload selectable-text PDF." };
+    return { type: "pdf", textContent: text };
+  } catch (err) { return { type: "pdf", textContent: "", error: String(err?.message || err) }; }
 }
 
-/**
- * Extract Word Document (.docx)
- */
 async function extractDocx(buffer) {
   try {
     const zip = await JSZip.loadAsync(buffer);
-    const documentXml = zip.files["word/document.xml"];
-    if (!documentXml) return { type: "docx", textContent: "", error: "Invalid Word document structure" };
-    const xmlContent = await documentXml.async("text");
-    const textRegex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
-    const textParts = [];
-    let match;
-    while ((match = textRegex.exec(xmlContent)) !== null) {
-      const text = match[1]
-        .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")
-        .replace(/&quot;/g, '"').replace(/&apos;/g, "'").trim();
-      if (text.length > 0) textParts.push(text);
-    }
-    if (textParts.length === 0) return { type: "docx", textContent: "", error: "No text found in Word document." };
-    return { type: "docx", textContent: textParts.join(" ") };
-  } catch (error) {
-    return { type: "docx", textContent: "", error: `Failed to read Word document: ${error.message}` };
-  }
+    const xml = await zip.files["word/document.xml"]?.async("text");
+    if (!xml) return { type: "docx", textContent: "", error: "Invalid docx" };
+    const parts = [];
+    let m;
+    const re = /<w:t[^>]*>([^<]+)<\/w:t>/g;
+    while ((m = re.exec(xml)) !== null) { const t = m[1].replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").trim(); if (t) parts.push(t); }
+    return { type: "docx", textContent: parts.join(" ") };
+  } catch (err) { return { type: "docx", textContent: "", error: err.message }; }
 }
 
-/**
- * Extract PowerPoint (.pptx)
- */
-async function extractPptx(buffer) {
-  try {
-    const bufferStr = buffer.toString("latin1");
-    const textPattern = /<a:t[^>]*>([^<]+)<\/a:t>/g;
-    let match;
-    let allText = [];
-    while ((match = textPattern.exec(bufferStr)) !== null) {
-      const cleaned = match[1]
-        .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")
-        .replace(/&quot;/g, '"').replace(/&apos;/g, "'").trim();
-      if (cleaned) allText.push(cleaned);
-    }
-    if (allText.length === 0) return { type: "pptx", textContent: "", error: "No text found in PowerPoint." };
-    const text = allText.join("\n").trim();
-    return { type: "pptx", textContent: text };
-  } catch (err) {
-    return { type: "pptx", textContent: "", error: String(err?.message || err) };
-  }
-}
+function extractCsv(buffer) { return { type: "csv", textContent: bufferToText(buffer) }; }
 
-/**
- * Extract CSV
- */
-function extractCsv(buffer) {
-  const text = bufferToText(buffer);
-  return { type: "csv", textContent: text };
-}
-
-/**
- * Parse CSV to array of objects
- */
 function parseCSV(csvText) {
   const lines = csvText.trim().split("\n");
   if (lines.length < 2) return [];
-  const parseCSVLine = (line) => {
-    const result = [];
-    let current = "";
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      const nextChar = line[i + 1];
-      if (char === '"') {
-        if (inQuotes && nextChar === '"') { current += '"'; i++; }
-        else { inQuotes = !inQuotes; }
-      } else if (char === "," && !inQuotes) { result.push(current.trim()); current = ""; }
-      else { current += char; }
-    }
-    result.push(current.trim());
-    return result;
-  };
-  const headers = parseCSVLine(lines[0]);
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line || line.trim() === "") continue;
-    const values = parseCSVLine(line);
-    const row = {};
-    headers.forEach((h, idx) => { row[h] = values[idx] !== undefined ? values[idx] : ""; });
-    rows.push(row);
-  }
-  return rows;
-}
-
-/**
- * Extract Image (helper message)
- */
-async function extractImage(buffer, fileType) {
-  const helpMessage = `📸 **Image File Detected (${fileType.toUpperCase()})**
-
-Please convert this image to a searchable PDF or extract the text manually, then re-upload.
-
-**Free OCR options:**
-- Google Drive: Upload → right-click → Open with Google Docs
-- onlineocr.net
-- PDF24 Tools
-
-**Image Info:** Type: ${fileType.toUpperCase()}, Size: ${(buffer.length / 1024).toFixed(2)} KB`;
-  return { type: fileType, textContent: helpMessage, isImage: true, requiresManualProcessing: true };
+  const parseRow = (line) => { const r=[]; let cur="", inQ=false; for(const c of line){if(c==='"'){inQ=!inQ}else if(c===","&&!inQ){r.push(cur.trim());cur=""}else{cur+=c}} r.push(cur.trim()); return r; };
+  const headers = parseRow(lines[0]);
+  return lines.slice(1).filter(l=>l.trim()).map(l=>{ const v=parseRow(l); const o={}; headers.forEach((h,i)=>o[h]=v[i]||""); return o; });
 }
 
 // ============================================================
-// ✅ FIX 1: SMART PRE-AGGREGATION FOR MULTI-STORE P&L
-// Instead of sending raw rows, aggregate data BEFORE sending to AI.
-// This dramatically reduces token usage and improves accuracy.
+// COLUMN DETECTION — now with fallback auto-detection
 // ============================================================
 
-/**
- * Detect document type from headers
- */
-function detectDocumentType(headers) {
-  const h = headers.map((x) => x.toLowerCase().trim());
-  if (h.some((x) => x.includes("debit")) && h.some((x) => x.includes("credit"))) return "GENERAL_LEDGER";
-  if (h.some((x) => x.includes("revenue") || x.includes("income") || x.includes("sales"))) return "PROFIT_LOSS";
-  if (h.some((x) => x.includes("asset") || x.includes("liability") || x.includes("equity"))) return "BALANCE_SHEET";
-  if (h.some((x) => x.includes("transaction") || x.includes("withdrawal") || x.includes("deposit"))) return "BANK_STATEMENT";
-  return "GENERAL";
-}
-
-/**
- * Find a column key matching any of the given patterns
- */
 function findCol(sampleRow, patterns) {
   for (const pat of patterns) {
     const found = Object.keys(sampleRow).find((k) => k.toLowerCase().includes(pat.toLowerCase()));
@@ -350,9 +158,91 @@ function findCol(sampleRow, patterns) {
 }
 
 /**
- * ✅ FIX 1: Pre-aggregate sheets into store-level summaries
- * Groups rows by store/branch column and computes totals per category.
- * This ensures ALL 22 stores are represented even with large datasets.
+ * Find columns that contain mostly numeric data (auto-detect when standard names fail).
+ */
+function findNumericCols(rows) {
+  if (!rows?.length) return [];
+  const sample = rows.slice(0, Math.min(10, rows.length));
+  return Object.keys(rows[0]).filter((key) => {
+    const nonZero = sample.map((r) => parseAmount(r[key])).filter((v) => v !== 0);
+    return nonZero.length >= Math.ceil(sample.length * 0.4);
+  });
+}
+
+/**
+ * Auto-detect the row-label column (first non-numeric column with mostly unique values).
+ * For P&L sheets: usually the first column with store/account names.
+ */
+function findLabelCol(rows, numericColsSet) {
+  if (!rows?.length) return null;
+  const candidates = Object.keys(rows[0]).filter((k) => !numericColsSet.has(k));
+  for (const col of candidates) {
+    const vals = rows.map((r) => String(r[col] || "").trim()).filter(Boolean);
+    const unique = new Set(vals);
+    // Good label column: mostly filled, reasonably unique
+    if (vals.length >= rows.length * 0.6 && unique.size >= Math.min(vals.length * 0.4, 3)) return col;
+  }
+  return candidates[0] || null;
+}
+
+// ============================================================
+// PRE-AGGREGATION
+// ============================================================
+
+function detectDocumentType(headers) {
+  const h = headers.map((x) => x.toLowerCase().trim());
+  if (h.some((x) => x.includes("debit")) && h.some((x) => x.includes("credit"))) return "GENERAL_LEDGER";
+  if (h.some((x) => x.includes("revenue") || x.includes("income") || x.includes("sales"))) return "PROFIT_LOSS";
+  if (h.some((x) => x.includes("asset") || x.includes("liability"))) return "BALANCE_SHEET";
+  return "PROFIT_LOSS"; // default assumption for financial files
+}
+
+/**
+ * Compress all rows into a column-oriented summary table.
+ *
+ * This handles the common P&L layout where:
+ *   - Rows = line items (Revenue, Rent, Salaries, …)
+ *   - Columns = stores / periods (Store1, Store2, Jan, Feb, …)
+ *
+ * Output is a compact object:
+ *   { labelCol, numericCols, rows: [{label, col1: val, col2: val, …}], columnTotals }
+ */
+function compressSheetToTable(sheet) {
+  const rows = sheet.rows || [];
+  if (rows.length === 0) return null;
+
+  const numericCols = findNumericCols(rows);
+  const numericColsSet = new Set(numericCols);
+  const labelCol = findLabelCol(rows, numericColsSet);
+
+  console.log(`Sheet "${sheet.name}" | labelCol=${labelCol} | numericCols=[${numericCols.join(", ")}]`);
+
+  // Build compact rows — only label + numeric columns
+  const compactRows = rows.map((row) => {
+    const out = { label: labelCol ? String(row[labelCol] || "").trim() : "" };
+    numericCols.forEach((col) => { out[col] = parseAmount(row[col]); });
+    return out;
+  }).filter((r) => r.label || numericCols.some((c) => r[c] !== 0));
+
+  // Column totals
+  const columnTotals = {};
+  numericCols.forEach((col) => {
+    columnTotals[col] = Math.round(compactRows.reduce((s, r) => s + (r[col] || 0), 0) * 100) / 100;
+  });
+
+  return {
+    sheetName: sheet.name,
+    labelCol: labelCol || "(none)",
+    numericCols,
+    rows: compactRows,
+    columnTotals,
+    rowCount: compactRows.length,
+  };
+}
+
+/**
+ * Main aggregation entry point.
+ * Returns both structured store summaries (if detected) AND the compressed table.
  */
 function preAggregateForPL(sheets) {
   const aggregated = [];
@@ -361,171 +251,90 @@ function preAggregateForPL(sheets) {
     const rows = sheet.rows || [];
     if (rows.length === 0) return;
 
-    const sample = rows[0];
-    const headers = Object.keys(sample);
+    const headers = Object.keys(rows[0]);
     const docType = detectDocumentType(headers);
 
-    // Identify key columns
-    const storeCol = findCol(sample, ["store", "branch", "location", "outlet", "unit", "shop", "site", "entity"]);
-    const categoryCol = findCol(sample, ["category", "account", "description", "head", "particular", "ledger", "gl", "line item", "item"]);
-    const amountCol = findCol(sample, ["amount", "net", "value", "total"]);
-    const revenueCol = findCol(sample, ["revenue", "sales", "income", "turnover"]);
-    const expenseCol = findCol(sample, ["expense", "cost", "expenditure", "opex"]);
-    const debitCol = findCol(sample, ["debit", "dr"]);
-    const creditCol = findCol(sample, ["credit", "cr"]);
-    const dateCol = findCol(sample, ["date", "period", "month", "year"]);
+    // Standard named-column detection
+    const storeCol    = findCol(rows[0], ["store", "branch", "location", "outlet", "unit", "shop", "site", "entity", "restaurant", "property"]);
+    const categoryCol = findCol(rows[0], ["category", "account", "description", "head", "particular", "ledger", "gl", "line item", "item", "particulars", "narration", "name"]);
+    const amountCol   = findCol(rows[0], ["amount", "net", "value", "total"]);
+    const revenueCol  = findCol(rows[0], ["revenue", "sales", "income", "turnover"]);
+    const expenseCol  = findCol(rows[0], ["expense", "cost", "expenditure", "opex"]);
+    const debitCol    = findCol(rows[0], ["debit", "dr"]);
+    const creditCol   = findCol(rows[0], ["credit", "cr"]);
+    const dateCol     = findCol(rows[0], ["date", "period", "month", "year"]);
 
-    console.log(`Sheet "${sheet.name}" | storeCol=${storeCol} | categoryCol=${categoryCol} | amountCol=${amountCol}`);
+    console.log(`Sheet "${sheet.name}" headers: [${headers.join(", ")}]`);
+    console.log(`  storeCol=${storeCol} | categoryCol=${categoryCol} | amountCol=${amountCol}`);
 
-    // ── Strategy A: Store column exists → group by store ──────────────────────
+    // Always build the compressed column table — this works for ANY layout
+    const compressedTable = compressSheetToTable(sheet);
+
     if (storeCol) {
+      // --- Strategy A: named store column ---
       const storeMap = {};
-
       rows.forEach((row) => {
         const store = String(row[storeCol] || "Unknown").trim();
-        if (!storeMap[store]) {
-          storeMap[store] = {
-            store,
-            revenue: 0,
-            expenses: 0,
-            netProfit: 0,
-            totalDebit: 0,
-            totalCredit: 0,
-            rowCount: 0,
-            categories: {},
-            dateRange: { min: null, max: null },
-          };
-        }
-
-        const entry = storeMap[store];
-        entry.rowCount++;
-
+        if (!storeMap[store]) storeMap[store] = { store, revenue: 0, expenses: 0, netProfit: 0, debit: 0, credit: 0, categories: {} };
+        const e = storeMap[store];
         const rev = revenueCol ? parseAmount(row[revenueCol]) : 0;
         const exp = expenseCol ? parseAmount(row[expenseCol]) : 0;
-        const amt = amountCol ? parseAmount(row[amountCol]) : 0;
-        const dbt = debitCol ? parseAmount(row[debitCol]) : 0;
-        const crd = creditCol ? parseAmount(row[creditCol]) : 0;
-
-        entry.revenue += rev;
-        entry.expenses += exp;
-        entry.totalDebit += dbt;
-        entry.totalCredit += crd;
-
-        // Net amount: use revenue - expense, or credit - debit, or amount
-        if (rev !== 0 || exp !== 0) entry.netProfit += rev - exp;
-        else if (crd !== 0 || dbt !== 0) entry.netProfit += crd - dbt;
-        else entry.netProfit += amt;
-
-        // Category breakdown per store
-        if (categoryCol && row[categoryCol]) {
-          const cat = String(row[categoryCol]).trim();
-          if (!entry.categories[cat]) entry.categories[cat] = 0;
-          entry.categories[cat] += amt || rev || crd || dbt || 0;
-        }
-
-        // Date range
-        if (dateCol && row[dateCol]) {
-          const d = formatDateUS(row[dateCol]);
-          if (!entry.dateRange.min || d < entry.dateRange.min) entry.dateRange.min = d;
-          if (!entry.dateRange.max || d > entry.dateRange.max) entry.dateRange.max = d;
-        }
+        const amt = amountCol  ? parseAmount(row[amountCol])  : 0;
+        const dbt = debitCol   ? parseAmount(row[debitCol])   : 0;
+        const crd = creditCol  ? parseAmount(row[creditCol])  : 0;
+        e.revenue += rev; e.expenses += exp; e.debit += dbt; e.credit += crd;
+        if (rev || exp) e.netProfit += rev - exp;
+        else if (dbt || crd) e.netProfit += crd - dbt;
+        else e.netProfit += amt;
+        if (categoryCol && row[categoryCol]) { const c = String(row[categoryCol]).trim(); e.categories[c] = (e.categories[c]||0) + (amt||rev||crd||dbt); }
       });
 
       const storeSummaries = Object.values(storeMap).map((s) => ({
-        ...s,
+        store: s.store,
         revenue: Math.round(s.revenue * 100) / 100,
         expenses: Math.round(s.expenses * 100) / 100,
         netProfit: Math.round(s.netProfit * 100) / 100,
-        totalDebit: Math.round(s.totalDebit * 100) / 100,
-        totalCredit: Math.round(s.totalCredit * 100) / 100,
-        profitMargin: s.revenue !== 0 ? `${((s.netProfit / s.revenue) * 100).toFixed(1)}%` : "N/A",
-        // Top 3 categories only — keeps payload small
-        topCategories: Object.entries(s.categories)
-          .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-          .slice(0, 3)
-          .map(([cat, val]) => ({ category: cat, amount: Math.round(val * 100) / 100 })),
-      }));
+        profitMargin: s.revenue ? `${((s.netProfit / s.revenue) * 100).toFixed(1)}%` : "N/A",
+        topCategories: Object.entries(s.categories).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1])).slice(0,3).map(([k,v])=>({cat:k,amt:Math.round(v*100)/100})),
+      })).sort((a, b) => b.netProfit - a.netProfit);
 
-      // Overall totals across all stores
-      const overall = {
-        totalStores: storeSummaries.length,
-        totalRevenue: Math.round(storeSummaries.reduce((s, x) => s + x.revenue, 0) * 100) / 100,
-        totalExpenses: Math.round(storeSummaries.reduce((s, x) => s + x.expenses, 0) * 100) / 100,
-        totalNetProfit: Math.round(storeSummaries.reduce((s, x) => s + x.netProfit, 0) * 100) / 100,
-        bestStore: storeSummaries.sort((a, b) => b.netProfit - a.netProfit)[0]?.store || "N/A",
-        worstStore: storeSummaries.sort((a, b) => a.netProfit - b.netProfit)[0]?.store || "N/A",
-      };
-      overall.overallProfitMargin =
-        overall.totalRevenue !== 0
-          ? `${((overall.totalNetProfit / overall.totalRevenue) * 100).toFixed(1)}%`
-          : "N/A";
+      const totalRev = storeSummaries.reduce((s,x)=>s+x.revenue,0);
+      const totalNet = storeSummaries.reduce((s,x)=>s+x.netProfit,0);
 
       aggregated.push({
-        sheetName: sheet.name,
-        documentType: docType,
-        aggregationType: "BY_STORE",
-        totalRawRows: rows.length,
-        storeSummaries: storeSummaries.sort((a, b) => b.netProfit - a.netProfit), // best to worst
-        overall,
-        columnsUsed: { storeCol, categoryCol, amountCol, revenueCol, expenseCol, debitCol, creditCol, dateCol },
-      });
-    }
-    // ── Strategy B: No store column → group by category ───────────────────────
-    else if (categoryCol) {
-      const catMap = {};
-      let totalDebit = 0, totalCredit = 0, grandTotal = 0;
-
-      rows.forEach((row) => {
-        const cat = String(row[categoryCol] || "Uncategorized").trim();
-        if (!catMap[cat]) catMap[cat] = { category: cat, debit: 0, credit: 0, amount: 0, count: 0 };
-        const entry = catMap[cat];
-        const dbt = debitCol ? parseAmount(row[debitCol]) : 0;
-        const crd = creditCol ? parseAmount(row[creditCol]) : 0;
-        const amt = amountCol ? parseAmount(row[amountCol]) : 0;
-        entry.debit += dbt;
-        entry.credit += crd;
-        entry.amount += amt || crd || dbt;
-        entry.count++;
-        totalDebit += dbt;
-        totalCredit += crd;
-        grandTotal += amt || crd - dbt;
-      });
-
-      const categorySummaries = Object.values(catMap).map((c) => ({
-        ...c,
-        debit: Math.round(c.debit * 100) / 100,
-        credit: Math.round(c.credit * 100) / 100,
-        amount: Math.round(c.amount * 100) / 100,
-      })).sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
-
-      aggregated.push({
-        sheetName: sheet.name,
-        documentType: docType,
-        aggregationType: "BY_CATEGORY",
-        totalRawRows: rows.length,
-        categorySummaries,
+        sheetName: sheet.name, documentType: docType, aggregationType: "BY_STORE",
+        storeSummaries,
         overall: {
-          totalDebit: Math.round(totalDebit * 100) / 100,
-          totalCredit: Math.round(totalCredit * 100) / 100,
-          grandTotal: Math.round(grandTotal * 100) / 100,
-          isBalanced: Math.abs(totalDebit - totalCredit) < 0.01,
-          difference: Math.round((totalDebit - totalCredit) * 100) / 100,
-          uniqueCategories: categorySummaries.length,
+          totalStores: storeSummaries.length,
+          totalRevenue: Math.round(totalRev*100)/100,
+          totalNetProfit: Math.round(totalNet*100)/100,
+          overallMargin: totalRev ? `${((totalNet/totalRev)*100).toFixed(1)}%` : "N/A",
         },
-        columnsUsed: { categoryCol, amountCol, debitCol, creditCol, dateCol },
+        compressedTable, // always include for context
       });
-    }
-    // ── Strategy C: Fallback — include ALL rows (no aggregation possible) ──────
-    else {
-      console.log(`Sheet "${sheet.name}": no store/category column found — sending all rows`);
+
+    } else if (compressedTable && compressedTable.numericCols.length > 0) {
+      // --- Strategy B: auto-detected column layout (covers your case!) ---
+      // The numeric columns ARE the stores/periods. Rows are line items.
+      console.log(`  → Using auto-detected column layout (numeric cols = stores/periods)`);
       aggregated.push({
-        sheetName: sheet.name,
-        documentType: docType,
-        aggregationType: "RAW",
-        totalRawRows: rows.length,
-        // ✅ Send ALL rows here since we couldn't aggregate
-        allRows: rows,
-        columnsUsed: { amountCol, debitCol, creditCol, dateCol },
+        sheetName: sheet.name, documentType: docType, aggregationType: "COLUMN_PER_STORE",
+        compressedTable,
+        // Pre-compute per-column (store) totals for quick reference
+        columnSummaries: compressedTable.numericCols.map((col) => ({
+          store: col,
+          total: compressedTable.columnTotals[col],
+        })).sort((a,b) => b.total - a.total),
+      });
+
+    } else {
+      // --- Strategy C: truly unknown — send first 30 rows only ---
+      console.log(`  → Fallback: sending first 30 rows`);
+      aggregated.push({
+        sheetName: sheet.name, documentType: docType, aggregationType: "RAW_SAMPLE",
+        totalRows: rows.length,
+        sampleRows: rows.slice(0, 30),
+        note: `Only first 30 of ${rows.length} rows shown to stay within token limits`,
       });
     }
   });
@@ -534,388 +343,210 @@ function preAggregateForPL(sheets) {
 }
 
 // ============================================================
-// ✅ FIX 2: CHUNKED AI CALLS FOR LARGE MULTI-STORE DATA
-// If there are more than 10 stores, process in chunks and combine.
+// OPENAI CALLS — gpt-4o-mini ONLY (200K TPM on Tier 1)
+// gpt-4o has only 30K TPM on Tier 1 → always rate-limits.
+// gpt-4o-mini: same quality for structured financial data,
+// 6x more token headroom.
 // ============================================================
 
-// ============================================================
-// TOKEN BUDGET CONSTANTS
-// Tier 1 OpenAI accounts: 30,000 TPM on gpt-4o
-// Strategy:
-//   - Chunk analysis  → gpt-4o-mini  (~800 input + 1000 output per chunk)
-//   - Final report    → gpt-4o       (≤ 10,000 input + 8,000 output)
-// This keeps every single API call safely under 15,000 tokens.
-// ============================================================
-const CHUNK_SIZE = 5;           // 5 stores per mini chunk call
-const MINI_MAX_TOKENS = 1500;   // output cap per chunk (gpt-4o-mini)
-const FINAL_MAX_TOKENS = 8000;  // output cap for final gpt-4o call
-const DELAY_BETWEEN_CALLS_MS = 2000; // 2 s pause between calls to avoid TPM spike
+const MODEL       = "gpt-4o-mini"; // 200K TPM Tier 1 — never hits rate limit
+const MAX_TOKENS  = 8000;          // output cap
+const DELAY_MS    = 1000;          // 1s pause between multi-chunk calls
 
-/** Sleep helper */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * Compress a store summary to the minimum fields the AI needs.
- * Removes raw counts and intermediate fields that eat tokens.
- */
-function compressStore(s) {
-  return {
-    store: s.store,
-    rev: s.revenue,
-    exp: s.expenses,
-    net: s.netProfit,
-    margin: s.profitMargin,
-    topCats: s.topCategories,   // already trimmed to 3
-  };
-}
-
-/**
- * Generic OpenAI caller with retry on 429 (rate-limit).
- */
-async function callOpenAI(messages, model = "gpt-4o", maxTokens = 8000, retries = 3) {
+async function callOpenAI(messages, maxTokens = MAX_TOKENS, retries = 2) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: 0.1,
-        max_tokens: maxTokens,
-      }),
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: JSON.stringify({ model: MODEL, messages, temperature: 0.1, max_tokens: maxTokens }),
     });
 
-    // Handle 429 rate-limit with exponential back-off
     if (r.status === 429) {
-      const waitMs = attempt * 15000; // 15 s, 30 s, 45 s
-      console.warn(`⚠️  Rate limited (attempt ${attempt}). Waiting ${waitMs / 1000}s...`);
-      await sleep(waitMs);
+      const wait = attempt * 20000;
+      console.warn(`Rate limited (attempt ${attempt}). Waiting ${wait/1000}s...`);
+      await sleep(wait);
       continue;
     }
 
     let data;
-    try {
-      data = await r.json();
-    } catch (err) {
-      return { reply: null, error: `JSON parse error: ${err.message}`, httpStatus: r.status };
-    }
+    try { data = await r.json(); } catch (err) { return { reply: null, error: `JSON parse error: ${err.message}` }; }
 
     if (data.error) {
-      // If still a token limit error after retries, surface it clearly
-      if (data.error.code === "rate_limit_exceeded" && attempt < retries) {
-        console.warn(`⚠️  Token limit hit (attempt ${attempt}). Retrying in 20s...`);
-        await sleep(20000);
-        continue;
-      }
-      return { reply: null, error: data.error.message, httpStatus: r.status };
+      if (attempt < retries) { await sleep(15000); continue; }
+      return { reply: null, error: data.error.message };
     }
 
     const finishReason = data?.choices?.[0]?.finish_reason;
-    console.log(`✅ ${model} | finish: ${finishReason} | tokens: ${JSON.stringify(data?.usage)}`);
+    console.log(`${MODEL} | finish:${finishReason} | tokens:${JSON.stringify(data?.usage)}`);
 
     let reply = data?.choices?.[0]?.message?.content || null;
-    if (reply) {
-      reply = reply.replace(/^```(?:markdown|json)\s*\n/gm, "").replace(/\n```\s*$/gm, "").trim();
-    }
-
-    return { reply, httpStatus: r.status, finishReason, tokenUsage: data?.usage };
+    if (reply) reply = reply.replace(/^```(?:markdown|json)?\s*\n/gm, "").replace(/\n```\s*$/gm, "").trim();
+    return { reply, finishReason, tokenUsage: data?.usage };
   }
-
-  return { reply: null, error: "Exceeded retry limit due to rate limiting." };
+  return { reply: null, error: "Exceeded retry limit." };
 }
 
 /**
- * Main analysis orchestrator — TPM-safe for Tier 1 accounts.
- *
- * Flow:
- *  1. Compress store data to minimal JSON
- *  2. Send small chunks (5 stores) to gpt-4o-mini  → get per-store bullets
- *  3. Build a compact summary table from chunk replies
- *  4. Send ONE final call to gpt-4o with summary table + overall totals
+ * Build the final prompt and call the AI.
+ * Input is already aggregated/compressed so token count is predictable.
  */
-async function analyzeWithChunking(aggregatedSheets, question) {
-  const perStoreLines = []; // e.g. "| Store A | 500000 | 420000 | 80000 | 16% | ✅ |"
-  let overallTotals = null;
-  let hasStoreData = false;
+async function analyzeData(aggregatedSheets, question) {
+  // Estimate compressed size — each sheet object should now be tiny
+  const payloadStr = JSON.stringify(aggregatedSheets, null, 2);
+  console.log(`Aggregated payload size: ${payloadStr.length} chars (~${Math.round(payloadStr.length/4)} tokens)`);
 
-  // ── PHASE 1: Chunk calls to gpt-4o-mini ──────────────────────────────────
-  for (const sheet of aggregatedSheets) {
-    if (sheet.aggregationType !== "BY_STORE" || !sheet.storeSummaries?.length) continue;
-
-    hasStoreData = true;
-    overallTotals = sheet.overall;
-    const stores = sheet.storeSummaries;
-
-    console.log(`Processing ${stores.length} stores in chunks of ${CHUNK_SIZE} via gpt-4o-mini...`);
-
-    const chunks = [];
-    for (let i = 0; i < stores.length; i += CHUNK_SIZE) {
-      chunks.push(stores.slice(i, i + CHUNK_SIZE));
+  // If somehow still too large (>40K chars), truncate each compressedTable to 50 rows
+  const safeSheets = aggregatedSheets.map((s) => {
+    if (!s.compressedTable) return s;
+    if (s.compressedTable.rows?.length > 50) {
+      return { ...s, compressedTable: { ...s.compressedTable, rows: s.compressedTable.rows.slice(0, 50), note: "Truncated to 50 rows for token limit" } };
     }
+    return s;
+  });
 
-    for (let ci = 0; ci < chunks.length; ci++) {
-      const compressed = chunks[ci].map(compressStore);
-
-      // Approx token cost: ~200 per store × 5 = ~1000 input tokens — well within limits
-      const userMsg =
-        `Analyze these ${compressed.length} stores. ` +
-        `For each output EXACTLY one pipe-delimited row: ` +
-        `Store | Revenue | Expenses | NetProfit | Margin | Status(✅/❌/⚠️) | OneLineRisk\n\n` +
-        `Data:\n${JSON.stringify(compressed)}`;
-
-      const messages = [
-        {
-          role: "system",
-          content:
-            "You are a financial analyst. Output ONLY pipe-delimited data rows, no headers, no extra text.",
-        },
-        { role: "user", content: userMsg },
-      ];
-
-      console.log(`  Chunk ${ci + 1}/${chunks.length} → gpt-4o-mini...`);
-      const { reply, error } = await callOpenAI(messages, "gpt-4o-mini", MINI_MAX_TOKENS);
-
-      if (reply) {
-        // Each line from mini is a store row — collect them
-        reply.split("\n").forEach((line) => {
-          const trimmed = line.trim();
-          if (trimmed && trimmed.includes("|")) perStoreLines.push(trimmed);
-        });
-      }
-      if (error) console.error(`  Chunk ${ci + 1} error: ${error}`);
-
-      // Pause between chunk calls to avoid TPM burst
-      if (ci < chunks.length - 1) await sleep(DELAY_BETWEEN_CALLS_MS);
-    }
-  }
-
-  // ── PHASE 2: Category-only sheets (no store column) ──────────────────────
-  const categorySheets = aggregatedSheets.filter((s) => s.aggregationType === "BY_CATEGORY");
-
-  // ── PHASE 3: Final gpt-4o call — input is now tiny ───────────────────────
-  // Input = store table rows (≈ 50 tokens/row × 22 rows = ~1100 tokens)
-  //       + overall totals (≈ 200 tokens)
-  //       + system prompt (≈ 600 tokens)
-  //       Total input ≈ 2000 tokens → output 8000 → total ≈ 10,000 << 30,000 limit ✅
-
-  const storeTableMarkdown =
-    "| Store | Revenue | Expenses | Net Profit | Margin | Status | Risk |\n" +
-    "|---|---|---|---|---|---|---|\n" +
-    perStoreLines.join("\n");
-
-  const categoryContext =
-    categorySheets.length > 0
-      ? `\n\nCATEGORY BREAKDOWN:\n${JSON.stringify(
-          categorySheets.map((s) => ({ sheet: s.sheetName, overall: s.overall, top10: s.categorySummaries?.slice(0, 10) })),
-          null, 2
-        )}`
-      : "";
-
-  const totalsContext = overallTotals
-    ? `\n\nOVERALL TOTALS:\n${JSON.stringify(overallTotals, null, 2)}`
-    : "";
-
-  const finalUserContent =
-    `## ALL-STORE P&L TABLE (pre-analyzed):\n${storeTableMarkdown}` +
-    totalsContext +
-    categoryContext +
-    `\n\n${question || "Write the full MIS P&L commentary using the data above."}`;
-
-  // If no store data at all, fall back to sending raw aggregated data
-  const fallbackContent = !hasStoreData
-    ? `Here is the financial data:\n\`\`\`json\n${JSON.stringify(aggregatedSheets, null, 2)}\n\`\`\`\n\n${question || "Write a comprehensive MIS commentary."}`
-    : null;
-
-  const finalMessages = [
+  const messages = [
     { role: "system", content: getPLSystemPrompt() },
-    { role: "user", content: fallbackContent || finalUserContent },
+    {
+      role: "user",
+      content:
+        `Here is the structured financial data (pre-aggregated):\n\n\`\`\`json\n${JSON.stringify(safeSheets, null, 2)}\n\`\`\`\n\n` +
+        (question || "Write a comprehensive MIS P&L commentary covering all stores/columns. Include executive summary, consolidated table, top/bottom performers, and recommendations."),
+    },
   ];
 
-  console.log("📊 Sending final report call to gpt-4o...");
-  await sleep(DELAY_BETWEEN_CALLS_MS); // small pause before final call
-  return await callOpenAI(finalMessages, "gpt-4o", FINAL_MAX_TOKENS);
+  console.log(`Calling ${MODEL}...`);
+  return await callOpenAI(messages, MAX_TOKENS);
 }
 
-/**
- * ✅ FIX 3: IMPROVED SYSTEM PROMPT specifically for multi-store P&L
- */
 function getPLSystemPrompt() {
-  return `You are a senior financial analyst specializing in multi-store retail / restaurant P&L analysis.
+  return `You are a senior financial analyst specializing in multi-store P&L analysis.
 
-## YOUR TASK
-Write a comprehensive MIS (Management Information System) P&L Commentary covering ALL stores provided.
+## DATA FORMAT NOTE
+You may receive data in two layouts:
+- **BY_STORE**: rows have explicit store names. Use storeSummaries array.
+- **COLUMN_PER_STORE**: each numeric column is a store/period. The compressedTable.rows are line items (Revenue, Rent, etc.) and compressedTable.numericCols are store/period names. columnSummaries shows total per store.
 
-## MANDATORY OUTPUT STRUCTURE
+## OUTPUT STRUCTURE (mandatory)
 
 ### 1. EXECUTIVE SUMMARY
-- Total Revenue across all stores
-- Total Expenses across all stores  
-- Total Net Profit / Loss
-- Overall Profit Margin %
+- Total Revenue, Total Expenses, Net Profit, Overall Margin %
 - Number of profitable vs loss-making stores
-- Top concern and top highlight
+- Key highlight and key concern
 
 ### 2. CONSOLIDATED P&L TABLE
-Create a markdown table with ALL stores:
-| Store | Revenue | Expenses | Net Profit | Margin % | Status |
-Where Status = ✅ Profit / ❌ Loss / ⚠️ Break-even
+| Store/Period | Revenue | Expenses | Net Profit | Margin % | Status |
+(Status: ✅ Profit / ❌ Loss / ⚠️ Break-even)
+Sort by Net Profit descending. Include ALL stores — do not skip any.
 
-### 3. TOP 5 PERFORMING STORES
-- For each: Revenue, Net Profit, Margin %, key strength
+### 3. TOP 3 PERFORMERS & BOTTOM 3 (with specific numbers)
 
-### 4. BOTTOM 5 STORES (Loss-making / Lowest Margin)
-- For each: Revenue, Net Profit, Margin %, key issue
+### 4. KEY LINE-ITEM ANALYSIS
+If row data is available (COLUMN_PER_STORE layout), analyze the biggest expense categories and their share of revenue per store.
 
-### 5. REVENUE ANALYSIS
-- Total revenue breakdown
-- Highest vs lowest revenue stores
-- Revenue concentration (top 3 stores = X% of total)
+### 5. YEAR-ON-YEAR COMPARISON (if 2024 and 2025 sheets present)
+Show growth/decline per store or category.
 
-### 6. EXPENSE ANALYSIS
-- Top expense categories overall
-- Stores with highest expense ratios
-- Unusual or outlier expenses
-
-### 7. PROFITABILITY ANALYSIS
-- Margin distribution (how many stores in each margin band)
-- Stores with margin > industry average vs below
-
-### 8. RED FLAGS & RISKS
+### 6. RED FLAGS
 - Loss-making stores (list all)
-- Stores with declining margins
-- Any data anomalies
+- Unusual cost ratios
+- Data anomalies
 
-### 9. RECOMMENDATIONS
-- Specific action items per underperforming store
-- Cost reduction opportunities
-- Revenue growth suggestions
+### 7. RECOMMENDATIONS (specific, numbered, actionable)
 
 ## RULES
-- Always use EXACT numbers from the data — never say "approximately"
-- If a value is 0 or missing, say "No data" — never fabricate
-- Format all currency with commas (e.g., 1,234,567)
-- Sort tables by Net Profit descending
-- Cover EVERY store — do not skip any`;
+- Use exact numbers — never say "approximately"
+- Format currency with commas: 1,234,567
+- If a value is 0 or missing say "No data"
+- Cover EVERY store/column in the table`;
 }
 
-/**
- * Structure data as JSON (simplified, uses preAggregateForPL internally)
- */
-function structureDataAsJSON(sheets) {
-  if (!sheets || sheets.length === 0) return { success: false, reason: "No data to structure" };
-  const aggregated = preAggregateForPL(sheets);
-  if (aggregated.length === 0) return { success: false, reason: "Aggregation produced no output" };
-  const docType = aggregated[0]?.documentType || "GENERAL";
-  return { success: true, documentType: docType, aggregated };
-}
+// ============================================================
+// WORD DOCUMENT GENERATION
+// ============================================================
 
-/**
- * Convert markdown to Word document
- */
-async function markdownToWord(markdownText) {
-  const sections = [];
-  const lines = markdownText.split("\n");
-  let tableData = [];
-  let inTable = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) {
-      if (inTable && tableData.length > 0) {
-        sections.push(buildWordTable(tableData));
-        sections.push(new Paragraph({ text: "" }));
-        tableData = [];
-        inTable = false;
-      } else if (sections.length > 0) {
-        sections.push(new Paragraph({ text: "" }));
-      }
-      continue;
-    }
-
-    if (line.startsWith("#")) {
-      const level = (line.match(/^#+/) || [""])[0].length;
-      const text = line.replace(/^#+\s*/, "").replace(/\*\*/g, "").replace(/\*/g, "");
-      sections.push(
-        new Paragraph({
-          text,
-          heading: level <= 2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
-          spacing: { before: 240, after: 120 },
-        })
-      );
-      continue;
-    }
-
-    if (line.includes("|")) {
-      const cells = line.split("|").map((c) => c.trim()).filter((c) => c !== "");
-      if (cells.every((c) => /^[-:]+$/.test(c))) { inTable = true; continue; }
-      tableData.push(cells.map((c) => c.replace(/\*\*/g, "").replace(/\*/g, "").replace(/`/g, "")));
-      continue;
-    } else if (tableData.length > 0) {
-      sections.push(buildWordTable(tableData));
-      sections.push(new Paragraph({ text: "" }));
-      tableData = [];
-      inTable = false;
-    }
-
-    if (line.startsWith("-") || line.startsWith("*")) {
-      const text = line.replace(/^[-*]\s+/, "");
-      const textRuns = buildTextRuns(text);
-      sections.push(new Paragraph({ children: textRuns, bullet: { level: 0 }, spacing: { before: 60, after: 60 } }));
-      continue;
-    }
-
-    const textRuns = buildTextRuns(line);
-    if (textRuns.length > 0) sections.push(new Paragraph({ children: textRuns, spacing: { before: 60, after: 60 } }));
-  }
-
-  if (tableData.length > 0) sections.push(buildWordTable(tableData));
-
-  const doc = new Document({ sections: [{ properties: {}, children: sections }] });
-  const buffer = await Packer.toBuffer(doc);
-  return buffer.toString("base64");
+function buildTextRuns(text) {
+  return text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean).map((p) =>
+    p.startsWith("**") && p.endsWith("**")
+      ? new TextRun({ text: p.replace(/\*\*/g, ""), bold: true })
+      : new TextRun({ text: p })
+  );
 }
 
 function buildWordTable(tableData) {
-  const rows = tableData.map((rowData, rowIdx) => {
-    const isHeader = rowIdx === 0;
-    return new TableRow({
-      children: rowData.map((cellText) =>
+  const rows = tableData.map((cells, idx) =>
+    new TableRow({
+      children: cells.map((cell) =>
         new TableCell({
-          children: [new Paragraph({ children: [new TextRun({ text: cellText, bold: isHeader, color: isHeader ? "FFFFFF" : "000000", size: 22 })], alignment: AlignmentType.LEFT })],
-          shading: { fill: isHeader ? "4472C4" : "FFFFFF" },
-          margins: { top: 100, bottom: 100, left: 100, right: 100 },
+          children: [new Paragraph({ children: [new TextRun({ text: cell, bold: idx===0, color: idx===0?"FFFFFF":"000000", size: 22 })], alignment: AlignmentType.LEFT })],
+          shading: { fill: idx===0 ? "4472C4" : "FFFFFF" },
+          margins: { top:100, bottom:100, left:100, right:100 },
         })
       ),
-    });
-  });
+    })
+  );
   return new Table({
     rows,
     width: { size: 100, type: WidthType.PERCENTAGE },
     borders: {
-      top: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
-      bottom: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
-      left: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
-      right: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
-      insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
-      insideVertical: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+      top:    { style: BorderStyle.SINGLE, size:1, color:"000000" },
+      bottom: { style: BorderStyle.SINGLE, size:1, color:"000000" },
+      left:   { style: BorderStyle.SINGLE, size:1, color:"000000" },
+      right:  { style: BorderStyle.SINGLE, size:1, color:"000000" },
+      insideHorizontal: { style: BorderStyle.SINGLE, size:1, color:"CCCCCC" },
+      insideVertical:   { style: BorderStyle.SINGLE, size:1, color:"CCCCCC" },
     },
   });
 }
 
-function buildTextRuns(text) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return parts.filter(Boolean).map((part) => {
-    if (part.startsWith("**") && part.endsWith("**")) return new TextRun({ text: part.replace(/\*\*/g, ""), bold: true });
-    return new TextRun({ text: part });
-  });
+async function markdownToWord(md) {
+  const sections = [];
+  const lines = md.split("\n");
+  let tableData = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (!line) {
+      if (tableData.length > 0) { sections.push(buildWordTable(tableData)); sections.push(new Paragraph({text:""})); tableData = []; }
+      else sections.push(new Paragraph({text:""}));
+      continue;
+    }
+
+    if (line.startsWith("#")) {
+      if (tableData.length > 0) { sections.push(buildWordTable(tableData)); tableData = []; }
+      const lvl = (line.match(/^#+/)||[""])[0].length;
+      sections.push(new Paragraph({ text: line.replace(/^#+\s*/,"").replace(/\*\*/g,""), heading: lvl<=2?HeadingLevel.HEADING_1:HeadingLevel.HEADING_2, spacing:{before:240,after:120} }));
+      continue;
+    }
+
+    if (line.includes("|")) {
+      const cells = line.split("|").map(c=>c.trim()).filter(c=>c!=="");
+      if (cells.every(c=>/^[-:]+$/.test(c))) continue; // separator row
+      tableData.push(cells.map(c=>c.replace(/\*\*/g,"").replace(/`/g,"")));
+      continue;
+    }
+
+    if (tableData.length > 0) { sections.push(buildWordTable(tableData)); sections.push(new Paragraph({text:""})); tableData = []; }
+
+    if (line.startsWith("-") || line.startsWith("*")) {
+      sections.push(new Paragraph({ children: buildTextRuns(line.replace(/^[-*]\s+/,"")), bullet:{level:0}, spacing:{before:60,after:60} }));
+    } else {
+      sections.push(new Paragraph({ children: buildTextRuns(line), spacing:{before:60,after:60} }));
+    }
+  }
+
+  if (tableData.length > 0) sections.push(buildWordTable(tableData));
+
+  const doc = new Document({ sections: [{ properties:{}, children: sections }] });
+  return (await Packer.toBuffer(doc)).toString("base64");
 }
 
-/**
- * MAIN handler
- */
+// ============================================================
+// MAIN HANDLER
+// ============================================================
+
 export default async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -931,86 +562,57 @@ export default async function handler(req, res) {
     console.log("📥 Downloading file...");
     const { buffer, contentType } = await downloadFileToBuffer(fileUrl);
     const detectedType = detectFileType(fileUrl, contentType, buffer);
-    console.log(`📄 File type detected: ${detectedType}`);
+    console.log(`📄 File type: ${detectedType}`);
 
     let extracted = { type: detectedType };
-
-    if (detectedType === "pdf") extracted = await extractPdf(buffer);
+    if (detectedType === "pdf")       extracted = await extractPdf(buffer);
     else if (detectedType === "docx") extracted = await extractDocx(buffer);
-    else if (detectedType === "pptx") extracted = await extractPptx(buffer);
     else if (detectedType === "xlsx") extracted = extractXlsx(buffer);
-    else if (["png", "jpg", "jpeg", "gif", "bmp", "webp"].includes(detectedType)) extracted = await extractImage(buffer, detectedType);
-    else {
+    else if (["png","jpg","jpeg","gif","bmp","webp"].includes(detectedType)) {
+      return res.status(200).json({ ok:true, type:detectedType, reply:"Please convert this image to PDF or text and re-upload.", category:"general" });
+    } else {
       extracted = extractCsv(buffer);
-      if (extracted.textContent) {
-        const rows = parseCSV(extracted.textContent);
-        extracted.sheets = [{ name: "Main Sheet", rows, rowCount: rows.length }];
-      }
+      if (extracted.textContent) extracted.sheets = [{ name:"Main Sheet", rows: parseCSV(extracted.textContent) }];
     }
 
-    if (extracted.error) {
-      return res.status(200).json({ ok: false, type: extracted.type, reply: `Failed to parse file: ${extracted.error}`, debug: { error: extracted.error } });
+    if (extracted.error || extracted.ocrNeeded) {
+      return res.status(200).json({ ok:false, type:extracted.type, reply: extracted.error || "File requires special processing." });
     }
 
-    if (extracted.ocrNeeded || extracted.requiresManualProcessing) {
-      return res.status(200).json({ ok: true, type: extracted.type, reply: extracted.textContent || "This file requires special processing.", category: "general" });
+    console.log("🔄 Pre-aggregating...");
+    const aggregated = preAggregateForPL(extracted.sheets || []);
+
+    if (aggregated.length === 0) {
+      return res.status(200).json({ ok:false, type:extracted.type, reply:"No data found in file." });
     }
 
-    // ✅ FIX 1: Structure + pre-aggregate data
-    console.log("🔄 Pre-aggregating data for AI...");
-    const structured = structureDataAsJSON(extracted.sheets || []);
+    const docType = aggregated[0]?.documentType || "PROFIT_LOSS";
+    const storeCount = aggregated.find(s=>s.storeSummaries)?.storeSummaries?.length ||
+                       aggregated.find(s=>s.compressedTable)?.compressedTable?.numericCols?.length || 0;
 
-    if (!structured.success) {
-      return res.status(200).json({ ok: false, type: extracted.type, reply: `Could not structure data: ${structured.reason}` });
-    }
+    console.log(`✅ Aggregated | type:${docType} | stores/cols:${storeCount} | model:${MODEL}`);
 
-    const storeCount = structured.aggregated.find((s) => s.storeSummaries)?.storeSummaries?.length || 0;
-    console.log(`✅ Aggregated | DocumentType: ${structured.documentType} | Stores: ${storeCount}`);
+    const { reply, error, finishReason, tokenUsage } = await analyzeData(aggregated, question);
 
-    // ✅ FIX 2: Use chunked analysis for large datasets
-    console.log("🤖 Sending to gpt-4o with chunking if needed...");
-    const { reply, error, finishReason, tokenUsage } = await analyzeWithChunking(structured.aggregated, question);
+    if (!reply) return res.status(200).json({ ok:false, type:extracted.type, reply: error || "No reply from model.", debug:{error} });
 
-    if (!reply) {
-      return res.status(200).json({ ok: false, type: extracted.type, reply: error || "(No reply from model)", debug: { error } });
-    }
+    console.log("✅ Analysis complete!");
 
-    console.log("✅ AI analysis complete!");
-
-    // Generate Word document
     let wordBase64 = null;
-    try {
-      console.log("📝 Generating Word document...");
-      wordBase64 = await markdownToWord(reply);
-      console.log("✅ Word document generated");
-    } catch (wordError) {
-      console.error("❌ Word generation error:", wordError);
-    }
+    try { wordBase64 = await markdownToWord(reply); } catch (e) { console.error("Word gen error:", e); }
 
     return res.status(200).json({
       ok: true,
       type: extracted.type,
-      documentType: structured.documentType,
-      category: structured.documentType.toLowerCase(),
+      documentType: docType,
       reply,
       wordDownload: wordBase64,
       downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
-      structuredData: {
-        documentType: structured.documentType,
-        sheetCount: structured.aggregated.length,
-        storeCount,
-      },
-      debug: {
-        documentType: structured.documentType,
-        storeCount,
-        finishReason,
-        tokenUsage,
-        hasWord: !!wordBase64,
-        model: "gpt-4o",
-      },
+      debug: { model: MODEL, docType, storeCount, finishReason, tokenUsage, hasWord: !!wordBase64 },
     });
+
   } catch (err) {
-    console.error("❌ analyze-file error:", err);
+    console.error("❌ handler error:", err);
     return res.status(500).json({ error: String(err?.message || err) });
   }
 }
