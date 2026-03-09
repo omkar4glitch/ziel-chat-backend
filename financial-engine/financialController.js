@@ -1,4 +1,4 @@
-import {parseExcelFromUrl} from "../services/excelParser.js";
+import {parseExcelFromUrl} from "./services/excelParser.js";
 import {parseQB} from "./parsers/qbParser.js";
 import {parseMIS} from "./parsers/misParser.js";
 import {parseR365} from "./parsers/r365Parser.js";
