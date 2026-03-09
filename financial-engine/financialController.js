@@ -8,49 +8,55 @@ import {fetchIndustryBenchmark} from "./ai/benchmarkAI.js";
 import {generateCommentary} from "./ai/commentaryAI.js";
 import {generateWordReport} from "./reports/wordReportGenerator.js";
 
-export async function analyzeFinancial(req,res){
+export async function analyzeFinancial(input) {
 
-try{
+  try {
 
-const {fileUrl,reportType,industry,userPrompt}=req.body;
+    const { fileUrl, reportType, industry, userPrompt } = input;
 
-const raw=await parseExcelFromUrl(fileUrl);
+    const rawData = await parseExcelFromUrl(fileUrl);
 
-let parsed;
+    let parsed;
 
-if(reportType==="QB") parsed=parseQB(raw);
-if(reportType==="MIS") parsed=parseMIS(raw);
-if(reportType==="R365") parsed=parseR365(raw);
+    if (reportType === "QB")
+      parsed = parseQB(rawData);
 
-const calculated=calculateFinancials(parsed);
+    if (reportType === "MIS")
+      parsed = parseMIS(rawData);
 
-const kpi=buildKPI(calculated);
+    if (reportType === "R365")
+      parsed = parseR365(rawData);
 
-const benchmark=await fetchIndustryBenchmark(industry);
+    const calculated = calculateFinancials(parsed);
 
-const commentary=await generateCommentary(
-calculated,
-benchmark,
-userPrompt
-);
+    const kpi = buildKPI(calculated);
 
-const wordFile=await generateWordReport(
-calculated,
-benchmark,
-commentary
-);
+    const benchmark = await fetchIndustryBenchmark(industry);
 
-res.json({
-success:true,
-summary:calculated,
-kpi,
-benchmark,
-commentary,
-wordFile
-});
+    const commentary = await generateCommentary(
+      calculated,
+      benchmark,
+      userPrompt
+    );
 
-}catch(e){
-console.log(e);
-res.status(500).json({error:"Financial AI failed"});
-}
+    const wordFile = await generateWordReport(
+      calculated,
+      benchmark,
+      commentary
+    );
+
+    return {
+      summary: calculated,
+      kpi,
+      benchmark,
+      commentary,
+      wordFile
+    };
+
+  } catch (error) {
+
+    console.error("Financial analysis failed:", error);
+
+    throw error;
+  }
 }
