@@ -19,5 +19,14 @@ messages:[{role:"user",content:prompt}],
 temperature:0
 });
 
-return JSON.parse(res.choices[0].message.content);
+const content = response.choices[0].message.content;
+
+// remove markdown if AI adds ```json
+const cleaned = content
+  .replace(/```json/g, "")
+  .replace(/```/g, "")
+  .trim();
+
+return JSON.parse(cleaned);
+
 }
