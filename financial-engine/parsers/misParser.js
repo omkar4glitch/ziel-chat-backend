@@ -43,7 +43,6 @@ export function parseMIS(rawSheets) {
 
         // Revenue
         if (
-          account.includes("revenue") ||
           account.includes("total income")
         ) {
           stores[store][year].revenue =
