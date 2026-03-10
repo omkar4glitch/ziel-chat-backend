@@ -23,8 +23,10 @@ export function detectStores(rows) {
         !value.toLowerCase().includes("benchmark")
       ) {
 
-        if (!stores.includes(value))
-          stores.push(value);
+        if(value && value.length > 3){
+           const storeName = value.trim()
+           stores.push(storeName)
+        }
       }
 
     });
