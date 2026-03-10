@@ -15,21 +15,23 @@ export function calculateFinancials(data){
   Object.keys(stores).forEach(store=>{
 
     const years = Object.keys(stores[store])
-
     if(years.length < 2) return
 
     const currentYear = Math.max(...years)
-    const lastYear = Math.min(...years)
+    const previousYear = Math.min(...years)
 
     const current = stores[store][currentYear]
-    const previous = stores[store][lastYear]
+    const previous = stores[store][previousYear]
 
     const revenue = current.revenue || 0
 
     const expense =
       (current.cogs || 0) +
       (current.payroll || 0) +
-      (current.rent || 0)
+      (current.rent || 0) +
+      (current.utilities || 0) +
+      (current.repairs || 0) +
+      (current.franchise || 0)
 
     const ebitda = revenue - expense
 
@@ -45,6 +47,7 @@ export function calculateFinancials(data){
 
     result.stores[store] = {
       revenue,
+      revenueLY,
       expense,
       ebitda,
       yoyGrowth,
