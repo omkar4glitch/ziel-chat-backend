@@ -18,14 +18,17 @@ export function detectStores(rows) {
       if (
         value.length > 3 &&
         !value.toLowerCase().includes("amount") &&
-        !value.toLowerCase().includes("diff") &&
-        !value.toLowerCase().includes("particular")
+        !value.toLowerCase().includes("%") &&
+        !value.toLowerCase().includes("particular") &&
+        !value.toLowerCase().includes("benchmark")
       ) {
 
         if (!stores.includes(value))
           stores.push(value);
       }
+
     });
+
   }
 
   return stores;
