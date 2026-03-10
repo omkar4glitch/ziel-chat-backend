@@ -1,3 +1,5 @@
+import { detectStores } from "../utils/storeDetector.js";
+
 export function parseMIS(rawSheets) {
 
   const stores = {};
@@ -14,27 +16,28 @@ export function parseMIS(rawSheets) {
 
     const rows = sheet.data;
 
+    // 👇 ADD STORE DETECTION HERE
+    const storeNames = detectStores(rows);
+
     rows.forEach(row => {
 
       const accountRaw = Object.values(row)[0];
       if (!accountRaw) return;
 
       const account = accountRaw.toString().toLowerCase();
-
       const values = Object.values(row);
 
-      // detect store columns dynamically
-      for (let i = 1; i < values.length; i+=3) {
+      storeNames.forEach((store, index) => {
 
-        const store = `Store_${i}`;
+        const colIndex = (index * 3) + 1;   // MIS structure block
+
+        const amount = Number(values[colIndex] || 0);
 
         if (!stores[store])
           stores[store] = {};
 
         if (!stores[store][year])
           stores[store][year] = {};
-
-        const amount = Number(values[i] || 0);
 
         if (account.includes("revenue") ||
             account.includes("sales") ||
@@ -62,7 +65,8 @@ export function parseMIS(rawSheets) {
           stores[store][year].rent =
             (stores[store][year].rent || 0) + amount;
         }
-      }
+
+      });
 
     });
 
