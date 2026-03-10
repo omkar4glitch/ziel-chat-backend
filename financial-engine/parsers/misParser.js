@@ -12,21 +12,29 @@ export function parseMIS(rawSheets){
 
     const rows = sheet.data
 
-    let headerRowIndex = -1
+    let headerIndex = -1
 
-    // find header row containing "Particulars"
+    // locate header row
     rows.forEach((row,i)=>{
-      const values = Object.values(row).map(v=>String(v||"").toLowerCase())
 
-      if(values.includes("particulars")){
-        headerRowIndex = i
-      }
+      const values = Object.values(row)
+
+      values.forEach(v=>{
+        if(
+          String(v || "")
+          .toLowerCase()
+          .includes("particulars")
+        ){
+          headerIndex = i
+        }
+      })
+
     })
 
-    if(headerRowIndex === -1)
-      throw new Error("MIS header row not found")
+    if(headerIndex === -1)
+      throw new Error("MIS header not detected")
 
-    const headerRow = Object.values(rows[headerRowIndex])
+    const headerRow = Object.values(rows[headerIndex])
 
     const storeColumns = []
 
@@ -36,33 +44,37 @@ export function parseMIS(rawSheets){
 
       if(
         name &&
-        name.toLowerCase() !== "particulars" &&
-        !name.toLowerCase().includes("benchmark")
+        !name.toLowerCase().includes("particular") &&
+        !name.toLowerCase().includes("benchmark") &&
+        !name.toLowerCase().includes("amount") &&
+        !name.toLowerCase().includes("%")
       ){
+
         storeColumns.push({
           name,
           col:index
         })
+
       }
 
     })
 
-    // data rows start after header
-    for(let r = headerRowIndex + 1; r < rows.length; r++){
+    // parse rows
+    for(let r = headerIndex + 1; r < rows.length; r++){
 
       const row = rows[r]
       const values = Object.values(row)
 
       const accountRaw = values[0]
+
       if(!accountRaw) continue
 
       const account = accountRaw.toString().toLowerCase()
 
       storeColumns.forEach(store=>{
 
-        const amountCol = store.col
-        const amount = Number(
-          String(values[amountCol] || 0)
+        const value = Number(
+          String(values[store.col] || 0)
           .replace(/[$,]/g,"")
         )
 
@@ -73,23 +85,19 @@ export function parseMIS(rawSheets){
           stores[store.name][year] = {}
 
         if(account.includes("total income")){
-          stores[store.name][year].revenue =
-            (stores[store.name][year].revenue || 0) + amount
+          stores[store.name][year].revenue = value
         }
 
         if(account.includes("total cogs")){
-          stores[store.name][year].cogs =
-            (stores[store.name][year].cogs || 0) + amount
+          stores[store.name][year].cogs = value
         }
 
         if(account.includes("payroll")){
-          stores[store.name][year].payroll =
-            (stores[store.name][year].payroll || 0) + amount
+          stores[store.name][year].payroll = value
         }
 
         if(account.includes("rent")){
-          stores[store.name][year].rent =
-            (stores[store.name][year].rent || 0) + amount
+          stores[store.name][year].rent = value
         }
 
       })
