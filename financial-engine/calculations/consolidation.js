@@ -1,4 +1,4 @@
-export function rankStores(summary){
+export function buildKPI(summary){
 
   const list = Object.entries(summary.stores)
 
@@ -14,6 +14,7 @@ export function rankStores(summary){
     worstStore:{
       store:sorted[sorted.length-1][0],
       margin:sorted[sorted.length-1][1].ebitdaMargin
-    }
+    },
+    consolidated: summary.consolidated
   }
 }
