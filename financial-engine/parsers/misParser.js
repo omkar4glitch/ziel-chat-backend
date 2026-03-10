@@ -1,80 +1,105 @@
-import { detectStores } from "../utils/storeDetector.js";
+export function parseMIS(rawSheets){
 
-export function parseMIS(rawSheets) {
+  const stores = {}
+  const years = []
 
-  const stores = {};
-  const years = [];
+  rawSheets.forEach(sheet=>{
 
-  rawSheets.forEach(sheet => {
+    const year = Number(sheet.sheetName.replace(/\D/g,""))
+    if(!year) return
 
-    const year = Number(sheet.sheetName.replace(/[^0-9]/g,""));
-    if (!year) return;
+    years.push(year)
 
-    years.push(year);
+    const rows = sheet.data
 
-    const rows = sheet.data;
+    let headerRowIndex = -1
 
-    // detect store names from first rows
-    const storeNames = detectStores(rows);
+    // find header row containing "Particulars"
+    rows.forEach((row,i)=>{
+      const values = Object.values(row).map(v=>String(v||"").toLowerCase())
 
-    rows.forEach(row => {
+      if(values.includes("particulars")){
+        headerRowIndex = i
+      }
+    })
 
-      const accountRaw = Object.values(row)[0];
-      if (!accountRaw) return;
+    if(headerRowIndex === -1)
+      throw new Error("MIS header row not found")
 
-      const account = accountRaw.toString().toLowerCase();
+    const headerRow = Object.values(rows[headerRowIndex])
 
-      const values = Object.values(row);
+    const storeColumns = []
 
-      storeNames.forEach((store, index) => {
+    headerRow.forEach((cell,index)=>{
 
-        const colIndex = (index * 2) + 1;   // ✔ correct for Amount | %
+      const name = String(cell || "").trim()
 
+      if(
+        name &&
+        name.toLowerCase() !== "particulars" &&
+        !name.toLowerCase().includes("benchmark")
+      ){
+        storeColumns.push({
+          name,
+          col:index
+        })
+      }
+
+    })
+
+    // data rows start after header
+    for(let r = headerRowIndex + 1; r < rows.length; r++){
+
+      const row = rows[r]
+      const values = Object.values(row)
+
+      const accountRaw = values[0]
+      if(!accountRaw) continue
+
+      const account = accountRaw.toString().toLowerCase()
+
+      storeColumns.forEach(store=>{
+
+        const amountCol = store.col
         const amount = Number(
-          String(values[colIndex] || 0)
-            .replace(/[$,]/g,"")
-        );
+          String(values[amountCol] || 0)
+          .replace(/[$,]/g,"")
+        )
 
-        if (!stores[store])
-          stores[store] = {};
+        if(!stores[store.name])
+          stores[store.name] = {}
 
-        if (!stores[store][year])
-          stores[store][year] = {};
+        if(!stores[store.name][year])
+          stores[store.name][year] = {}
 
-        // Revenue
-        if (
-          account.includes("total income")
-        ) {
-          stores[store][year].revenue =
-            (stores[store][year].revenue || 0) + amount;
+        if(account.includes("total income")){
+          stores[store.name][year].revenue =
+            (stores[store.name][year].revenue || 0) + amount
         }
 
-        // COGS
-        if (account.includes("total cogs")) {
-          stores[store][year].cogs =
-            (stores[store][year].cogs || 0) + amount;
+        if(account.includes("total cogs")){
+          stores[store.name][year].cogs =
+            (stores[store.name][year].cogs || 0) + amount
         }
 
-        // Payroll
-        if (account.includes("payroll")) {
-          stores[store][year].payroll =
-            (stores[store][year].payroll || 0) + amount;
+        if(account.includes("payroll")){
+          stores[store.name][year].payroll =
+            (stores[store.name][year].payroll || 0) + amount
         }
 
-        // Rent
-        if (account.includes("rent")) {
-          stores[store][year].rent =
-            (stores[store][year].rent || 0) + amount;
+        if(account.includes("rent")){
+          stores[store.name][year].rent =
+            (stores[store.name][year].rent || 0) + amount
         }
 
-      });
+      })
 
-    });
+    }
 
-  });
+  })
 
   return {
     stores,
     years
-  };
+  }
 }
