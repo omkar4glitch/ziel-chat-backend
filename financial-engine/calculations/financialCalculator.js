@@ -1,100 +1,64 @@
-export function calculateFinancials(parsed) {
+export function calculateFinancials(data){
 
-  if (parsed.stores)
-    return calculateStoreModel(parsed);
-
-  if (parsed.periods)
-    return calculatePeriodModel(parsed);
-
-  throw new Error("Unknown parsed structure");
-}
-
-function calculateStoreModel(data) {
+  const stores = data.stores
 
   const result = {
-    stores: {},
-    consolidated: {}
-  };
+    stores:{},
+    consolidated:{
+      revenue:0,
+      expense:0,
+      ebitda:0,
+      ebitdaMargin:0
+    }
+  }
 
-  let totalRevenue = 0;
-  let totalExpense = 0;
+  Object.keys(stores).forEach(store=>{
 
-  const years = data.years?.sort((a,b)=>b-a) || [];
+    const years = Object.keys(stores[store])
 
-  const currentYear = years[0];
-  const prevYear = years[1];
+    if(years.length < 2) return
 
-  Object.keys(data.stores).forEach(store => {
+    const currentYear = Math.max(...years)
+    const lastYear = Math.min(...years)
 
-    const cur = data.stores[store][currentYear] || {};
-    const prev = data.stores[store][prevYear] || {};
+    const current = stores[store][currentYear]
+    const previous = stores[store][lastYear]
 
-    const revenue = cur.revenue || 0;
+    const revenue = current.revenue || 0
 
-    const totalExpenseStore =
-      (cur.cogs || 0) +
-      (cur.payroll || 0) +
-      (cur.rent || 0) +
-      (cur.expenses || 0);
+    const expense =
+      (current.cogs || 0) +
+      (current.payroll || 0) +
+      (current.rent || 0)
 
-    const ebitda = revenue - totalExpenseStore;
+    const ebitda = revenue - expense
 
-    const margin =
-      revenue > 0 ? (ebitda / revenue) * 100 : 0;
+    const revenueLY = previous.revenue || 0
 
-    const yoy =
-      prev?.revenue > 0
-        ? ((revenue - prev.revenue) / prev.revenue) * 100
-        : 0;
+    const yoyGrowth =
+      revenueLY === 0 ? 0 :
+      ((revenue - revenueLY) / revenueLY) * 100
+
+    const ebitdaMargin =
+      revenue === 0 ? 0 :
+      (ebitda / revenue) * 100
 
     result.stores[store] = {
       revenue,
-      expense: totalExpenseStore,
-      ebitda,
-      ebitdaMargin: margin,
-      yoyGrowth: yoy
-    };
-
-    totalRevenue += revenue;
-    totalExpense += totalExpenseStore;
-  });
-
-  const consolidatedEBITDA = totalRevenue - totalExpense;
-
-  result.consolidated = {
-    revenue: totalRevenue,
-    expense: totalExpense,
-    ebitda: consolidatedEBITDA,
-    ebitdaMargin:
-      totalRevenue > 0
-        ? (consolidatedEBITDA / totalRevenue) * 100
-        : 0
-  };
-
-  return result;
-}
-
-function calculatePeriodModel(data){
-
-  const result = { periods:{} };
-
-  Object.keys(data.periods).forEach(period =>{
-
-    const p = data.periods[period];
-
-    const revenue = p.revenue || 0;
-    const expense = p.expenses || 0;
-
-    const ebitda = revenue - expense;
-
-    result.periods[period] = {
-      revenue,
       expense,
       ebitda,
-      ebitdaMargin:
-        revenue>0 ? (ebitda/revenue)*100 : 0
-    };
-  });
+      yoyGrowth,
+      ebitdaMargin
+    }
 
-  return result;
+    result.consolidated.revenue += revenue
+    result.consolidated.expense += expense
+    result.consolidated.ebitda += ebitda
+
+  })
+
+  result.consolidated.ebitdaMargin =
+    (result.consolidated.ebitda / result.consolidated.revenue) * 100
+
+  return result
 }
