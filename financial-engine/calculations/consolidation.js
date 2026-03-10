@@ -1,22 +1,19 @@
-export function buildKPI(summary){
+export function rankStores(summary){
 
-  let worstStore = null;
-  let bestStore = null;
+  const list = Object.entries(summary.stores)
 
-  Object.keys(summary.stores || {}).forEach(store =>{
-
-    const m = summary.stores[store].ebitdaMargin;
-
-    if(!worstStore || m < worstStore.margin)
-      worstStore = {store, margin:m};
-
-    if(!bestStore || m > bestStore.margin)
-      bestStore = {store, margin:m};
-  });
+  const sorted = list.sort(
+    (a,b)=> b[1].ebitdaMargin - a[1].ebitdaMargin
+  )
 
   return {
-    worstStore,
-    bestStore,
-    consolidated: summary.consolidated
-  };
+    bestStore:{
+      store:sorted[0][0],
+      margin:sorted[0][1].ebitdaMargin
+    },
+    worstStore:{
+      store:sorted[sorted.length-1][0],
+      margin:sorted[sorted.length-1][1].ebitdaMargin
+    }
+  }
 }
