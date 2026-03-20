@@ -38,27 +38,19 @@ async function downloadFileToBuffer(url, maxBytes = 30 * 1024 * 1024, timeoutMs 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let r;
-  try {
-    r = await fetch(url, { signal: controller.signal });
-  } catch (err) {
-    clearTimeout(timer);
-    throw new Error(`Download failed or timed out: ${err.message || err}`);
-  }
+  try { r = await fetch(url, { signal: controller.signal }); }
+  catch (err) { clearTimeout(timer); throw new Error(`Download failed: ${err.message}`); }
   clearTimeout(timer);
-  if (!r.ok) throw new Error(`Failed to download file: ${r.status} ${r.statusText}`);
+  if (!r.ok) throw new Error(`Download HTTP error: ${r.status} ${r.statusText}`);
   const contentType = r.headers.get("content-type") || "";
   const chunks = [];
   let total = 0;
   for await (const chunk of r.body) {
     total += chunk.length;
-    if (total > maxBytes) {
-      const allowed = maxBytes - (total - chunk.length);
-      if (allowed > 0) chunks.push(chunk.slice(0, allowed));
-      break;
-    }
+    if (total > maxBytes) { chunks.push(chunk.slice(0, maxBytes - (total - chunk.length))); break; }
     chunks.push(chunk);
   }
-  return { buffer: Buffer.concat(chunks), contentType, bytesReceived: total };
+  return { buffer: Buffer.concat(chunks), contentType };
 }
 
 // ─────────────────────────────────────────────
@@ -66,250 +58,248 @@ async function downloadFileToBuffer(url, maxBytes = 30 * 1024 * 1024, timeoutMs 
 // ─────────────────────────────────────────────
 
 function detectFileType(fileUrl, contentType, buffer) {
-  const lowerUrl = (fileUrl || "").toLowerCase();
-  const lowerType = (contentType || "").toLowerCase();
+  const u = (fileUrl || "").toLowerCase();
+  const ct = (contentType || "").toLowerCase();
   if (buffer && buffer.length >= 4) {
     if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
-      if (lowerUrl.includes(".docx") || lowerType.includes("wordprocessing")) return "docx";
-      if (lowerUrl.includes(".pptx") || lowerType.includes("presentation")) return "pptx";
+      if (u.includes(".docx") || ct.includes("wordprocessing")) return "docx";
+      if (u.includes(".pptx") || ct.includes("presentation")) return "pptx";
       return "xlsx";
     }
     if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) return "pdf";
     if (buffer[0] === 0x89 && buffer[1] === 0x50) return "png";
     if (buffer[0] === 0xFF && buffer[1] === 0xD8) return "jpg";
-    if (buffer[0] === 0x47 && buffer[1] === 0x49) return "gif";
   }
-  if (lowerUrl.endsWith(".pdf") || lowerType.includes("application/pdf")) return "pdf";
-  if (lowerUrl.endsWith(".docx") || lowerType.includes("wordprocessing")) return "docx";
-  if (lowerUrl.endsWith(".pptx") || lowerType.includes("presentation")) return "pptx";
-  if (lowerUrl.endsWith(".xlsx") || lowerUrl.endsWith(".xls") || lowerType.includes("spreadsheet")) return "xlsx";
-  if (lowerUrl.endsWith(".csv") || lowerType.includes("text/csv")) return "csv";
-  if (lowerType.includes("text/plain") && isLikelyCsvBuffer(buffer)) return "csv";
-  if (lowerUrl.endsWith(".txt") || lowerType.includes("text/plain")) return "txt";
-  if (lowerUrl.endsWith(".png") || lowerType.includes("image/png")) return "png";
-  if (lowerUrl.endsWith(".jpg") || lowerType.includes("image/jpeg")) return "jpg";
+  if (u.endsWith(".pdf")  || ct.includes("application/pdf"))  return "pdf";
+  if (u.endsWith(".docx") || ct.includes("wordprocessing"))   return "docx";
+  if (u.endsWith(".pptx") || ct.includes("presentation"))     return "pptx";
+  if (u.endsWith(".xlsx") || u.endsWith(".xls") || ct.includes("spreadsheet")) return "xlsx";
+  if (u.endsWith(".csv")  || ct.includes("text/csv"))         return "csv";
+  if (u.endsWith(".txt")  || ct.includes("text/plain"))       return "txt";
+  if (u.endsWith(".png")  || ct.includes("image/png"))        return "png";
+  if (u.endsWith(".jpg")  || ct.includes("image/jpeg"))       return "jpg";
   return "txt";
-}
-
-function isLikelyCsvBuffer(buffer) {
-  if (!buffer || buffer.length === 0) return false;
-  const sample = bufferToText(buffer).slice(0, 24 * 1024).trim();
-  const lines = sample.split(/\r?\n/).map(l => l.trim()).filter(Boolean).slice(0, 10);
-  if (lines.length < 2) return false;
-  const delimiters = [",", "\t", ";", "|"];
-  return Boolean(delimiters.find(d => {
-    const counts = lines.map(l => l.split(d).length - 1);
-    const valid = counts.filter(c => c > 0);
-    return valid.length >= 2 && new Set(valid).size <= 2;
-  }));
 }
 
 // ─────────────────────────────────────────────
 //  FILE CONTENT EXTRACTION
 // ─────────────────────────────────────────────
 
-function bufferToText(buffer) {
-  if (!buffer) return "";
-  let text = buffer.toString("utf8");
-  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-  return text;
-}
-
-function extractCsv(buffer) {
-  return { type: "csv", textContent: bufferToText(buffer) };
-}
-
-function extractTextLike(buffer, type = "txt") {
-  return { type, textContent: bufferToText(buffer).trim() };
+function bufferToText(buf) {
+  if (!buf) return "";
+  let t = buf.toString("utf8");
+  if (t.charCodeAt(0) === 0xfeff) t = t.slice(1);
+  return t;
 }
 
 async function extractPdf(buffer) {
   try {
     const data = await pdf(buffer);
-    const text = (data && data.text) ? data.text.trim() : "";
-    if (!text || text.length < 50) {
-      return {
-        type: "pdf", textContent: "", ocrNeeded: true,
-        error: "This PDF appears to be scanned. Please upload the original image files or a PDF with selectable text."
-      };
-    }
+    const text = data?.text?.trim() || "";
+    if (!text || text.length < 50)
+      return { type: "pdf", textContent: "", ocrNeeded: true, error: "Scanned PDF — please upload a text-based PDF." };
     return { type: "pdf", textContent: text };
-  } catch (err) {
-    return { type: "pdf", textContent: "", error: String(err?.message || err) };
-  }
+  } catch (err) { return { type: "pdf", textContent: "", error: String(err?.message || err) }; }
 }
 
 async function extractDocx(buffer) {
   try {
     const zip = await JSZip.loadAsync(buffer);
-    const documentXml = zip.files["word/document.xml"];
-    if (!documentXml) return { type: "docx", textContent: "", error: "Invalid Word document structure" };
-    const xmlContent = await documentXml.async("text");
-    const textRegex = /<w:t[^>]*>([^<]+)<\/w:t>/g;
+    const xml = zip.files["word/document.xml"];
+    if (!xml) return { type: "docx", textContent: "", error: "Invalid Word document." };
+    const xmlText = await xml.async("text");
     const parts = [];
-    let match;
-    while ((match = textRegex.exec(xmlContent)) !== null) {
-      const text = match[1]
-        .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")
-        .replace(/&quot;/g, '"').replace(/&apos;/g, "'").trim();
-      if (text.length > 0) parts.push(text);
+    let m;
+    const re = /<w:t[^>]*>([^<]+)<\/w:t>/g;
+    while ((m = re.exec(xmlText)) !== null) {
+      const t = m[1].replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&amp;/g,"&").trim();
+      if (t) parts.push(t);
     }
-    if (parts.length === 0) return { type: "docx", textContent: "", error: "No text found in Word document." };
-    return { type: "docx", textContent: parts.join(" ") };
-  } catch (error) {
-    return { type: "docx", textContent: "", error: `Failed to read Word document: ${error.message}` };
-  }
+    return parts.length ? { type: "docx", textContent: parts.join(" ") }
+      : { type: "docx", textContent: "", error: "No text found." };
+  } catch (e) { return { type: "docx", textContent: "", error: e.message }; }
 }
 
 async function extractPptx(buffer) {
   try {
-    const bufferStr = buffer.toString("latin1");
-    const textPattern = /<a:t[^>]*>([^<]+)<\/a:t>/g;
-    const allText = [];
-    let match;
-    while ((match = textPattern.exec(bufferStr)) !== null) {
-      const cleaned = match[1]
-        .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").trim();
-      if (cleaned) allText.push(cleaned);
+    const s = buffer.toString("latin1");
+    const parts = [];
+    let m;
+    const re = /<a:t[^>]*>([^<]+)<\/a:t>/g;
+    while ((m = re.exec(s)) !== null) {
+      const t = m[1].replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").trim();
+      if (t) parts.push(t);
     }
-    if (allText.length === 0) return { type: "pptx", textContent: "", error: "No text found in PowerPoint." };
-    return { type: "pptx", textContent: allText.join("\n").trim() };
-  } catch (err) {
-    return { type: "pptx", textContent: "", error: String(err?.message || err) };
-  }
+    return parts.length ? { type: "pptx", textContent: parts.join("\n") }
+      : { type: "pptx", textContent: "", error: "No text found." };
+  } catch (e) { return { type: "pptx", textContent: "", error: e.message }; }
 }
 
-async function extractImage(buffer, fileType) {
-  const helpMessage = `📸 Image File Detected (${fileType.toUpperCase()})
-
-Please convert this image to a searchable PDF or extract text first:
-- Google Drive: Upload → Right-click → Open with Google Docs (free OCR)
-- Phone: Use Notes (iPhone) or Google Drive (Android) scan feature
-- Online: onlineocr.net or i2ocr.com
-
-Then re-upload the converted file.`;
-  return { type: fileType, textContent: helpMessage, isImage: true, requiresManualProcessing: true };
+async function extractImage(_buf, fileType) {
+  return {
+    type: fileType,
+    textContent: `Image detected (${fileType.toUpperCase()}). Please convert to a text-based PDF using Google Drive OCR, then re-upload.`,
+    isImage: true, requiresManualProcessing: true
+  };
 }
 
 /**
- * Extract XLSX — all sheets, preserving raw 2D arrays
+ * XLSX extraction — uses raw:true so Excel numeric cells arrive as JS Numbers.
+ * This is the key fix for negative numbers: Excel stores -1234 as the Number -1234,
+ * and raw:true passes it through directly without converting to a string like "1234"
+ * (which was the cause of missing negatives in the previous version).
  */
 function extractXlsx(buffer) {
   try {
-    const workbook = XLSX.read(buffer, {
-      type: "buffer", cellDates: false, cellText: true, raw: false, defval: ""
+    const wb = XLSX.read(buffer, {
+      type: "buffer",
+      cellDates: false,
+      raw: true,      // ← CRITICAL: preserves sign of numeric cells
+      defval: null
     });
-    if (workbook.SheetNames.length === 0) return { type: "xlsx", sheets: [] };
-    const sheets = workbook.SheetNames.map((sheetName) => {
-      const sheet = workbook.Sheets[sheetName];
-      const rawArray = XLSX.utils.sheet_to_json(sheet, {
-        header: 1, defval: "", blankrows: false, raw: false
-      });
-      const jsonRows = XLSX.utils.sheet_to_json(sheet, {
-        defval: "", blankrows: false, raw: false
-      });
-      console.log(`Sheet "${sheetName}": ${rawArray.length} rows × ${rawArray[0]?.length || 0} cols`);
-      return { name: sheetName, rows: jsonRows, rawArray, rowCount: jsonRows.length };
+    if (!wb.SheetNames.length) return { type: "xlsx", sheets: [] };
+    const sheets = wb.SheetNames.map(name => {
+      const ws = wb.Sheets[name];
+      const rawArray = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, blankrows: false, raw: true });
+      const jsonRows = XLSX.utils.sheet_to_json(ws, { defval: null, blankrows: false, raw: true });
+      console.log(`Sheet "${name}": ${rawArray.length}r × ${rawArray[0]?.length || 0}c`);
+      return { name, rows: jsonRows, rawArray, rowCount: jsonRows.length };
     });
     return { type: "xlsx", sheets };
-  } catch (err) {
-    return { type: "xlsx", sheets: [], error: String(err?.message || err) };
-  }
+  } catch (err) { return { type: "xlsx", sheets: [], error: String(err?.message || err) }; }
 }
+
+function extractCsv(buffer) { return { type: "csv", textContent: bufferToText(buffer) }; }
+function extractTextLike(buffer, type) { return { type, textContent: bufferToText(buffer).trim() }; }
 
 function parseCSV(csvText) {
   const lines = csvText.trim().split("\n");
   if (lines.length < 2) return [];
-  const parseCSVLine = (line) => {
-    const result = [];
-    let current = "";
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      if (char === '"') { inQuotes = !inQuotes; }
-      else if (char === "," && !inQuotes) { result.push(current.trim()); current = ""; }
-      else { current += char; }
+  const parseLine = line => {
+    const result = []; let cur = "", inQ = false;
+    for (const ch of line) {
+      if (ch === '"') inQ = !inQ;
+      else if (ch === ',' && !inQ) { result.push(cur.trim()); cur = ""; }
+      else cur += ch;
     }
-    result.push(current.trim());
-    return result;
+    result.push(cur.trim()); return result;
   };
-  const headers = parseCSVLine(lines[0]);
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    if (!lines[i].trim()) continue;
-    const values = parseCSVLine(lines[i]);
+  const headers = parseLine(lines[0]);
+  return lines.slice(1).filter(l => l.trim()).map(l => {
+    const vals = parseLine(l);
     const row = {};
-    headers.forEach((h, idx) => { row[h] = values[idx] !== undefined ? values[idx] : ""; });
-    rows.push(row);
-  }
-  return rows;
+    headers.forEach((h, i) => { row[h] = vals[i] ?? ""; });
+    return row;
+  });
 }
 
 // ─────────────────────────────────────────────
-//  NUMERIC HELPERS
+//  NEGATIVE-SAFE NUMERIC PARSING
+//
+//  Priority order:
+//  1. If raw:true gave us a JS Number → use it directly (sign preserved)
+//  2. Parentheses notation: (1,234) → -1234
+//  3. Currency prefix: $ -1,234 or -$1,234
+//  4. Trailing minus: 1234- → -1234
+//  5. CR suffix: 1234 CR → -1234
+//  6. Plain string with minus: -1234
+//  7. Blank / dash / N/A → null (not 0, to distinguish from actual zero)
 // ─────────────────────────────────────────────
 
-function parseAmount(s) {
-  if (s === null || s === undefined) return null;
-  let str = String(s).trim();
-  if (!str || str === "-" || str.toLowerCase() === "n/a" || str === "#REF!" || str === "#N/A") return null;
-  // Parentheses = negative e.g. (1,234)
-  const parenMatch = str.match(/^\s*\((.*)\)\s*$/);
-  if (parenMatch) str = "-" + parenMatch[1];
-  // CR = credit = negative in P&L context
-  if (/\bCR\b/i.test(str) && !/\bDR\b/i.test(str) && !str.startsWith("-")) str = "-" + str;
-  // Remove all non-numeric chars except dot and minus
-  str = str.replace(/[^0-9.\-]/g, "");
-  const parts = str.split(".");
-  if (parts.length > 2) str = parts.shift() + "." + parts.join("");
-  const n = parseFloat(str);
-  return Number.isNaN(n) ? null : n;
+function parseAmount(raw) {
+  // Case 1: Already a JS number (Excel raw:true mode) — trust it completely
+  if (typeof raw === "number") return isFinite(raw) ? raw : null;
+
+  if (raw === null || raw === undefined) return null;
+  let s = String(raw).trim();
+
+  // Empty / placeholder values
+  if (!s || s === "-" || s === "--" || s === "—" || s === "–"
+      || s.toLowerCase() === "n/a" || s === "#REF!" || s === "#N/A"
+      || s === "#VALUE!" || s === "#DIV/0!") return null;
+
+  // Remove currency symbols (keep any minus that may surround them)
+  // Handles: "$-1,234"  "-$1,234"  "$ (1,234)"  "₹ -1,234"
+  s = s.replace(/[$£₹€]\s*/g, "").replace(/\s*[$£₹€]/g, "").trim();
+
+  // Case 2: Parentheses = negative   (1,234.56)  or  ( 1 234 )
+  const paren = s.match(/^\(\s*([\d,.\s]+)\s*\)$/);
+  if (paren) s = "-" + paren[1];
+
+  // Case 3: Trailing minus   1234-   or   1,234.56-
+  if (/^[\d,.\s]+[-]$/.test(s)) s = "-" + s.slice(0, -1);
+
+  // Case 4: CR suffix = credit = negative in P&L
+  if (/\bCR\b/i.test(s) && !/\bDR\b/i.test(s)) {
+    s = s.replace(/\bCR\b/gi, "").trim();
+    if (!s.startsWith("-")) s = "-" + s;
+  }
+
+  // Remove thousands separators and spaces between digits
+  s = s.replace(/,/g, "").replace(/\s+/g, "");
+
+  // Collapse double-minus (can appear after currency strip)
+  if (s.startsWith("--")) s = s.slice(2);
+
+  // Remove anything that isn't digit, dot, or leading minus
+  const cleaned = s.replace(/(?!^)-/g, "").replace(/[^0-9.\-]/g, "");
+
+  // Guard multiple decimal points
+  const dotParts = cleaned.split(".");
+  const final = dotParts.length > 2 ? dotParts.shift() + "." + dotParts.join("") : cleaned;
+
+  const n = parseFloat(final);
+  return isNaN(n) ? null : n;
 }
 
 function roundTo2(n) {
-  if (!isFinite(n) || isNaN(n)) return null;
+  if (n === null || n === undefined || !isFinite(n)) return null;
   return Math.round(n * 100) / 100;
 }
 
-// FIX #2: US-style number formatting (commas every 3 digits, dot for decimal)
+// US-style: 1,234,567.89  |  Negatives: -1,234,567.89
 function formatNum(n) {
   if (n === undefined || n === null || !isFinite(n)) return "N/A";
-  return Number(n).toLocaleString("en-US");
+  return Number(n).toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
 function formatPct(n) {
   if (n === undefined || n === null || !isFinite(n)) return "N/A";
-  const sign = n > 0 ? "+" : "";
-  return `${sign}${roundTo2(n)}%`;
+  return `${n >= 0 ? "+" : ""}${roundTo2(n)}%`;
 }
 
-function safeDivide(numerator, denominator) {
-  if (!denominator || denominator === 0) return null;
-  return roundTo2((numerator / denominator) * 100);
+function safeDivide(num, den) {
+  if (!den || den === 0) return null;
+  return roundTo2((num / den) * 100);
 }
 
 // ─────────────────────────────────────────────
 //  KPI PATTERN MATCHING
 // ─────────────────────────────────────────────
 
-// Extended patterns — EBITDA variants added
 const KPI_PATTERNS = {
-  REVENUE:       ["total revenue", "net revenue", "total net revenue", "revenue", "net sales", "total sales", "total net sales", "sales", "turnover", "gross revenue"],
-  COGS:          ["cost of goods sold", "cost of sales", "cogs", "direct cost", "cost of revenue", "cost of material", "material cost"],
-  GROSS_PROFIT:  ["gross profit", "gross margin amount", "gross margin"],
-  STAFF_COST:    ["staff cost", "employee cost", "payroll", "salary", "wages", "personnel cost", "labour cost", "labor cost"],
-  RENT:          ["rent", "lease", "occupancy cost", "rent & occupancy"],
-  MARKETING:     ["marketing", "advertising", "promotion", "ad spend"],
-  OTHER_OPEX:    ["other operating expense", "other expense", "other opex", "miscellaneous expense", "general & admin", "general and admin", "g&a"],
-  TOTAL_OPEX:    ["total operating expense", "total opex", "operating expense", "total overhead", "total indirect cost", "total expense"],
-  // FIX #1 — explicit EBITDA patterns, also handle "ebidta" typo
-  EBITDA:        ["ebitda", "ebidta", "earnings before interest tax depreciation", "earnings before interest, tax", "ebitda (a-b)", "ebitda (a - b)", "profit before dep", "profit before depreciation"],
-  DEPRECIATION:  ["depreciation", "amortisation", "amortization", "d&a", "dep & amortisation", "depreciation & amortization"],
-  EBIT:          ["ebit", "operating profit", "profit from operations", "profit before interest"],
-  INTEREST:      ["interest", "finance cost", "finance charge", "interest expense", "borrowing cost"],
-  PBT:           ["profit before tax", "pbt", "pre-tax profit", "profit/(loss) before tax"],
-  TAX:           ["income tax", "tax expense", "provision for tax", "taxation"],
-  NET_PROFIT:    ["net profit", "pat", "profit after tax", "net income", "net earnings", "profit/(loss) after tax", "net profit/(loss)"]
+  REVENUE:      ["total revenue","net revenue","total net revenue","revenue","net sales","total sales",
+                 "total net sales","sales","turnover","gross revenue","total income","net income from sales"],
+  COGS:         ["cost of goods sold","cost of sales","cogs","direct cost","cost of revenue",
+                 "cost of material","material cost","food cost","beverage cost","cost of food"],
+  GROSS_PROFIT: ["gross profit","gross margin amount","gross margin","gross income"],
+  STAFF_COST:   ["staff cost","employee cost","payroll","salary","wages","personnel cost",
+                 "labour cost","labor cost","total labor","total labour","payroll expense"],
+  RENT:         ["rent","lease","occupancy cost","rent & occupancy","rent and occupancy","occupancy"],
+  MARKETING:    ["marketing","advertising","promotion","ad spend","marketing expense"],
+  OTHER_OPEX:   ["other operating expense","other expense","other opex","miscellaneous expense",
+                 "general & admin","general and admin","g&a","admin expense","overhead"],
+  TOTAL_OPEX:   ["total operating expense","total opex","operating expense","total overhead",
+                 "total indirect cost","total expense","total overheads","total fixed cost","total costs"],
+  EBITDA:       ["ebitda","ebidta","earnings before interest tax depreciation",
+                 "ebitda (a-b)","ebitda (a - b)","profit before dep","profit before depreciation","operating ebitda"],
+  DEPRECIATION: ["depreciation","amortisation","amortization","d&a","dep & amortisation","depreciation & amortization"],
+  EBIT:         ["ebit","operating profit","profit from operations","profit before interest"],
+  INTEREST:     ["interest","finance cost","finance charge","interest expense","borrowing cost"],
+  PBT:          ["profit before tax","pbt","pre-tax profit","profit/(loss) before tax","earnings before tax"],
+  TAX:          ["income tax","tax expense","provision for tax","taxation"],
+  NET_PROFIT:   ["net profit","pat","profit after tax","net income","net earnings",
+                 "profit/(loss) after tax","net profit/(loss)","net loss","profit / (loss)"]
 };
 
 function matchKPI(description) {
@@ -323,53 +313,186 @@ function matchKPI(description) {
 }
 
 // ─────────────────────────────────────────────
-//  CONSOLIDATED ROW DETECTION
-//  FIX #1: Detect and EXCLUDE consolidated/total rows from store list
+//  CONSOLIDATED COLUMN DETECTION
 // ─────────────────────────────────────────────
 
 const CONSOLIDATED_PATTERNS = [
-  "total", "consolidated", "grand total", "all stores", "overall", "company total",
-  "aggregate", "sum", "portfolio total", "net total", "total all"
+  "total","consolidated","grand total","all stores","overall","company total",
+  "aggregate","sum","portfolio","net total"
 ];
-
 function isConsolidatedColumn(name) {
   const n = String(name || "").toLowerCase().trim();
   return CONSOLIDATED_PATTERNS.some(p => n === p || n.startsWith(p) || n.includes(p));
 }
 
 // ─────────────────────────────────────────────
-//  MULTI-SHEET DETECTION
-//  FIX #6: Detect which sheet is CY and which is LY
+//  INLINE CY/LY DETECTION & PARSING
+//  Handles the screenshot layout:
+//    Row 0: | Particulars | Benchmark | [Consolidated] | | | Store A | | | Store B | |
+//    Row 1: |             |           |   2025 | 2024   | |   2025 | 2024 | |   2025 | 2024 |
+//    Row 2: |             |           | Amt | % | Amt | % |Diff%| Amt | % | Amt | % |Diff%|
+//    Row 3+: data
 // ─────────────────────────────────────────────
 
 /**
- * Guess if a sheet contains "current year" or "last year" data
- * based on sheet name keywords.
+ * Scan the first few rows looking for a row that contains 2+ distinct year-like values.
+ * Returns { isInline, cyYear, lyYear, yearRowIdx, yearOccurrences }
  */
-function classifySheets(sheets) {
-  const CY_KEYWORDS = ["current", "cy", "this year", "fy24", "fy25", "fy26", "2024", "2025", "2026", "actual"];
-  const LY_KEYWORDS = ["last", "ly", "prior", "previous", "fy23", "fy24", "2023", "2024", "py"];
+function detectInlineYearLayout(rawArray) {
+  for (let rowIdx = 0; rowIdx < Math.min(7, rawArray.length); rowIdx++) {
+    const row = rawArray[rowIdx] || [];
+    const yearHits = [];
+    row.forEach((cell, colIdx) => {
+      const s = String(cell ?? "").trim();
+      // Match 4-digit years (2023, 2024, 2025 …) or FY notation
+      if (/^(20\d{2}|19\d{2}|FY\s*\d{2,4})$/i.test(s)) yearHits.push({ label: s, colIdx });
+    });
+    const uniqueYears = [...new Set(yearHits.map(y => y.label))];
+    if (uniqueYears.length >= 2) {
+      // Sort descending: larger year = CY, smaller = LY
+      uniqueYears.sort((a, b) => {
+        const numA = parseInt(a.replace(/[^0-9]/g,""));
+        const numB = parseInt(b.replace(/[^0-9]/g,""));
+        return numB - numA;
+      });
+      console.log(`📐 Inline year layout: CY=${uniqueYears[0]}, LY=${uniqueYears[1]}, yearRow=${rowIdx}`);
+      return { isInline: true, cyYear: uniqueYears[0], lyYear: uniqueYears[1], yearRowIdx: rowIdx, yearOccurrences: yearHits };
+    }
+  }
+  return { isInline: false };
+}
 
-  let cySheet = null;
-  let lySheet = null;
+/**
+ * Parse a sheet with inline CY+LY column pairs.
+ *
+ * Strategy:
+ *  A. Find the "store name" row — the row above yearRow that has store names
+ *     (forward-filled across merged cells).
+ *  B. Find the "Amount" sub-header row (usually yearRow+1).
+ *  C. Build a colMap: colIdx → { store, year, isAmountCol }
+ *  D. For each (store, year) pair pick the first "amount" column.
+ *  E. Walk data rows and populate cyData / lyData.
+ */
+function parseInlineYearSheet(sheet, inlineInfo) {
+  const rawArray = sheet.rawArray || [];
+  const { yearRowIdx, cyYear, lyYear } = inlineInfo;
 
-  for (const sheet of sheets) {
-    const n = sheet.name.toLowerCase();
-    const isCY = CY_KEYWORDS.some(k => n.includes(k));
-    const isLY = LY_KEYWORDS.some(k => n.includes(k));
-    if (isCY && !cySheet) cySheet = sheet;
-    else if (isLY && !lySheet) lySheet = sheet;
+  // ── A. Find store name row ──
+  // Walk rows 0..yearRowIdx, pick the last one with ≥2 non-numeric, non-year cells
+  let storeRowIdx = 0;
+  for (let r = 0; r <= yearRowIdx; r++) {
+    const row = rawArray[r] || [];
+    const meaningful = row.filter((c, i) => {
+      if (i === 0) return false;
+      const s = String(c ?? "").trim();
+      if (!s) return false;
+      if (/^(20\d{2}|FY\d{2,4})$/i.test(s)) return false; // year value
+      if (/^[\d.,\s\-\(\)$%]+$/.test(s)) return false;     // numeric value
+      return true;
+    });
+    if (meaningful.length >= 1) storeRowIdx = r;
+  }
+  console.log(`📋 storeRow=${storeRowIdx}, yearRow=${yearRowIdx}`);
+
+  const storeRow = rawArray[storeRowIdx] || [];
+  const yearRow  = rawArray[yearRowIdx]  || [];
+
+  // Forward-fill store names (handles merged cells)
+  const storeByCol = {};
+  let lastStore = null;
+  storeRow.forEach((cell, colIdx) => {
+    const s = String(cell ?? "").trim();
+    if (s && colIdx > 0 && !isConsolidatedColumn(s) && !/^(20\d{2}|FY\d{2,4}|\d+)$/i.test(s)) {
+      lastStore = s;
+    }
+    if (lastStore && colIdx > 0) storeByCol[colIdx] = lastStore;
+  });
+
+  // Forward-fill year labels
+  const yearByCol = {};
+  let lastYear = null;
+  yearRow.forEach((cell, colIdx) => {
+    const s = String(cell ?? "").trim();
+    if (/^(20\d{2}|FY\s*\d{2,4})$/i.test(s)) lastYear = s;
+    if (lastYear) yearByCol[colIdx] = lastYear;
+  });
+
+  // ── B. Find Amount sub-header row ──
+  let amtRowIdx = yearRowIdx + 1;
+  for (let r = yearRowIdx + 1; r < Math.min(yearRowIdx + 5, rawArray.length); r++) {
+    const row = rawArray[r] || [];
+    if (row.some(c => /^amount$|^amt$|^\$$|^value$/i.test(String(c ?? "").trim()))) {
+      amtRowIdx = r; break;
+    }
+  }
+  const amtRow = rawArray[amtRowIdx] || [];
+  console.log(`📋 amtRow=${amtRowIdx}`);
+
+  // ── C. Build column map ──
+  // For each col: does it have a store? a year? is it the Amount col (not %/Diff)?
+  const colMap = {};
+  amtRow.forEach((cell, colIdx) => {
+    const s = String(cell ?? "").trim().toLowerCase();
+    const store = storeByCol[colIdx];
+    const year  = yearByCol[colIdx];
+    if (!store || !year) return;
+    if (isConsolidatedColumn(store)) return;
+    // "amount"/"amt"/"$"/"value" → it's the $ column; blank could also be $ (some files omit the label)
+    const isAmt = (s === "amount" || s === "amt" || s === "$" || s === "value" || s === "");
+    colMap[colIdx] = { store, year, isAmt };
+  });
+
+  // ── D. Pick first "amount" col per (store, year) pair ──
+  const amountCols = {}; // key: `store::year` → colIdx
+  // First pass: labelled Amount cols
+  Object.entries(colMap).forEach(([ci, info]) => {
+    if (!info.isAmt) return;
+    const key = `${info.store}::${info.year}`;
+    if (!(key in amountCols)) amountCols[key] = parseInt(ci);
+  });
+  // Second pass: if nothing found, just take the first col per pair
+  Object.entries(colMap).forEach(([ci, info]) => {
+    const key = `${info.store}::${info.year}`;
+    if (!(key in amountCols)) amountCols[key] = parseInt(ci);
+  });
+
+  console.log(`💡 amountCols: ${JSON.stringify(amountCols)}`);
+
+  // ── E. Collect unique store names ──
+  const storeNames = [...new Set(
+    Object.keys(amountCols).map(k => k.split("::")[0])
+  )].filter(s => !isConsolidatedColumn(s));
+
+  const dataStartRow = amtRowIdx + 1;
+  const lineItemColIdx = 0;
+
+  // ── F. Walk data rows ──
+  const cyData = {}; // { storeName: { "Revenue": 100000, ... } }
+  const lyData = {};
+  storeNames.forEach(s => { cyData[s] = {}; lyData[s] = {}; });
+
+  for (let rowIdx = dataStartRow; rowIdx < rawArray.length; rowIdx++) {
+    const row = rawArray[rowIdx];
+    const desc = String(row[lineItemColIdx] ?? "").trim();
+    if (!desc) continue;
+
+    storeNames.forEach(store => {
+      const cyKey = `${store}::${cyYear}`;
+      const lyKey = `${store}::${lyYear}`;
+
+      if (cyKey in amountCols) {
+        const val = parseAmount(row[amountCols[cyKey]]);
+        if (val !== null) cyData[store][desc] = val;
+      }
+      if (lyKey in amountCols) {
+        const val = parseAmount(row[amountCols[lyKey]]);
+        if (val !== null) lyData[store][desc] = val;
+      }
+    });
   }
 
-  // If no keyword match, assume first sheet = CY, second sheet = LY
-  if (!cySheet && sheets.length >= 1) cySheet = sheets[0];
-  if (!lySheet && sheets.length >= 2) lySheet = sheets[1];
-
-  // Avoid using same sheet for both
-  if (cySheet && lySheet && cySheet.name === lySheet.name) lySheet = null;
-
-  console.log(`📅 CY Sheet: "${cySheet?.name}" | LY Sheet: "${lySheet?.name}"`);
-  return { cySheet, lySheet };
+  console.log(`✅ Inline parse: ${storeNames.length} stores | cyRows: ${Object.keys(cyData[storeNames[0]] || {}).length}`);
+  return { cyData, lyData, storeNames, cyYear, lyYear };
 }
 
 // ─────────────────────────────────────────────
@@ -377,550 +500,493 @@ function classifySheets(sheets) {
 // ─────────────────────────────────────────────
 
 async function step1_understandQueryAndStructure(sheets, userQuestion) {
-  // Send compact sample of ALL sheets so AI can see their structure
-  const fileSample = sheets.slice(0, 4).map((sheet) => {
-    const rawArray = sheet.rawArray || [];
-    if (rawArray.length === 0) return `Sheet: "${sheet.name}" (empty)`;
-    // First 10 rows to capture merged headers and sub-headers
-    const sampleRows = rawArray.slice(0, 10);
-    const formatted = sampleRows.map((row, i) =>
-      `Row${i}: ${row.map((cell, j) => `[${j}]${String(cell || "").slice(0, 35)}`).join(" | ")}`
+  const fileSample = sheets.slice(0, 4).map(sheet => {
+    const ra = sheet.rawArray || [];
+    if (!ra.length) return `Sheet: "${sheet.name}" (empty)`;
+    const sample = ra.slice(0, 10).map((row, i) =>
+      `Row${i}: ${(row || []).map((c, j) => `[${j}]${String(c ?? "").slice(0, 30)}`).join(" | ")}`
     ).join("\n");
-    return `=== Sheet: "${sheet.name}" (${rawArray.length} rows × ${rawArray[0]?.length || 0} cols) ===\n${formatted}`;
+    return `=== Sheet: "${sheet.name}" (${ra.length}r × ${ra[0]?.length || 0}c) ===\n${sample}`;
   }).join("\n\n");
 
   const messages = [
-    {
-      role: "system",
-      content: `You are a financial spreadsheet structure analyzer. Return ONLY valid JSON. No markdown, no explanation, no backticks.`
-    },
+    { role: "system", content: "You are a financial spreadsheet structure analyzer. Return ONLY valid JSON. No markdown, no explanation, no backticks." },
     {
       role: "user",
-      content: `File structure sample:
+      content: `File sample:
 ${fileSample}
 
-User Question: "${userQuestion || "Provide a full P&L analysis"}"
+User question: "${userQuestion || "Full P&L analysis"}"
 
-Analyze ALL sheets shown and return this JSON:
+Return JSON:
 {
-  "cy_sheet": "exact name of current year sheet",
-  "ly_sheet": "exact name of last year sheet or null if not found",
+  "layout_type": "INLINE_YEAR_COLUMNS or SEPARATE_SHEETS",
+  "cy_sheet": "sheet name with CY data",
+  "ly_sheet": "sheet name with LY data, or null",
   "line_item_column_index": 0,
-  "store_columns": [
-    { "name": "Store Name exactly as in header", "index": 1 }
-  ],
-  "consolidated_column_indices": [5],
-  "has_sub_headers": false,
-  "data_start_row": 2,
+  "store_columns": [{ "name": "Store Name", "index": 2 }],
+  "consolidated_column_indices": [],
+  "data_start_row": 3,
   "analysis_type": "FULL_ANALYSIS"
 }
 
-CRITICAL RULES:
-- "store_columns" = only individual store/branch columns. EXCLUDE any column whose header contains words like "Total", "Grand Total", "Consolidated", "Overall", "All Stores" — put those indices in "consolidated_column_indices" instead.
-- If the file has merged headers (store name on row 0, "CY"/"LY" on row 1), set "has_sub_headers": true
-- "data_start_row" = the first row that contains actual P&L line item data (not headers)
-- List ALL individual store columns in "store_columns", not just a sample`
+RULES:
+- layout_type=INLINE_YEAR_COLUMNS if you see year numbers (2024, 2025) as column sub-headers within a single sheet
+- layout_type=SEPARATE_SHEETS if CY and LY are on different sheets
+- store_columns: individual stores only. EXCLUDE Consolidated/Total/Grand Total columns (list those in consolidated_column_indices)
+- data_start_row: first row index with actual P&L data (Revenue, COGS etc.)
+- List ALL store columns`
     }
   ];
 
-  console.log("🔍 Step 1: Sending file sample to AI for structure analysis...");
+  console.log("🔍 Step 1: Analysing file structure...");
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
-    body: JSON.stringify({
-      model: "gpt-4o-mini", messages, temperature: 0, max_tokens: 1200,
-      response_format: { type: "json_object" }
-    })
+    body: JSON.stringify({ model: "gpt-4o-mini", messages, temperature: 0, max_tokens: 1200, response_format: { type: "json_object" } })
   });
   const data = await r.json();
-  if (data.error) throw new Error(`Step 1 AI call failed: ${data.error.message}`);
+  if (data.error) throw new Error(`Step 1 failed: ${data.error.message}`);
   const content = data?.choices?.[0]?.message?.content || "{}";
-  console.log("✅ Step 1 schema:", content.slice(0, 600));
-  try { return JSON.parse(content); }
-  catch { console.warn("⚠️ Step 1 returned invalid JSON."); return null; }
+  console.log("✅ Step 1:", content.slice(0, 500));
+  try { return JSON.parse(content); } catch { return null; }
 }
 
 // ─────────────────────────────────────────────
 //  STEP 2 — CODE DOES ALL THE MATH
-//  Handles: single-row headers, merged/sub-headers,
-//  consolidated exclusion, CY vs LY, EBITDA extraction
 // ─────────────────────────────────────────────
 
-function extractSheetData(sheet, querySchema) {
-  const rawArray = sheet.rawArray || [];
-  if (rawArray.length < 2) return {};
-
-  const lineItemColIdx = querySchema.line_item_column_index ?? 0;
-  const storeColumns   = (querySchema.store_columns || []).filter(sc => !isConsolidatedColumn(sc.name));
-  const dataStartRow   = querySchema.data_start_row ?? 1;
-  const consolidatedIdxs = new Set(querySchema.consolidated_column_indices || []);
-
-  // Also filter store columns that look consolidated
-  const validStoreColumns = storeColumns.filter(sc => !consolidatedIdxs.has(sc.index));
-
-  // lineItemMap: { "Revenue": { "Store A": 100000, "Store B": 90000 } }
-  const lineItemMap = {};
-
-  for (let rowIdx = dataStartRow; rowIdx < rawArray.length; rowIdx++) {
-    const row = rawArray[rowIdx];
-    const description = String(row[lineItemColIdx] || "").trim();
-    if (!description) continue;
-
-    // Skip rows that are purely header/separator
-    const allCellsAreText = validStoreColumns.every(sc => {
-      const val = String(row[sc.index] || "").trim();
-      return !val || isNaN(parseAmount(val));
-    });
-    if (allCellsAreText && validStoreColumns.length > 3) continue;
-
-    lineItemMap[description] = {};
-    validStoreColumns.forEach((sc) => {
-      const val = parseAmount(row[sc.index]);
-      lineItemMap[description][sc.name] = val; // null if blank/dash
-    });
-  }
-
-  return { lineItemMap, storeColumns: validStoreColumns };
-}
-
-function computeStoreMetrics(lineItemMap, storeNames) {
-  // Find which line item description corresponds to each KPI
-  const kpiMapping = {}; // { EBITDA: "EBITDA", REVENUE: "Total Revenue", ... }
-  for (const desc of Object.keys(lineItemMap)) {
+/**
+ * Given a dict of { storeName: { lineItemDesc: value } },
+ * match KPIs and compute all % metrics in code.
+ */
+function computeKPIsFromLineItems(lineItemDict, storeNames) {
+  const kpiMapping = {};
+  const allDescs = [...new Set(Object.values(lineItemDict).flatMap(d => Object.keys(d)))];
+  for (const desc of allDescs) {
     const kpi = matchKPI(desc);
     if (kpi && !kpiMapping[kpi]) kpiMapping[kpi] = desc;
   }
-  console.log("📊 KPIs found:", kpiMapping);
+  console.log("📊 KPIs matched:", kpiMapping);
 
   const storeMetrics = {};
-  storeNames.forEach((store) => {
-    const m = { _rawValues: {} };
-    // Pull raw KPI values from matched line items
-    Object.entries(kpiMapping).forEach(([kpi, lineItemName]) => {
-      const val = lineItemMap[lineItemName]?.[store];
-      m[kpi] = (val !== null && val !== undefined) ? val : null;
-      m._rawValues[kpi] = m[kpi];
+  storeNames.forEach(store => {
+    const items = lineItemDict[store] || {};
+    const m = {};
+    Object.entries(kpiMapping).forEach(([kpi, desc]) => {
+      const val = items[desc];
+      m[kpi] = (val !== undefined && val !== null) ? val : null;
     });
-
-    // Compute derived % metrics only from known values
+    // Derived % metrics — CODE only, never AI
     const rev = m.REVENUE;
     if (rev && rev !== 0) {
-      if (m.GROSS_PROFIT  !== null) m.GROSS_MARGIN_PCT  = safeDivide(m.GROSS_PROFIT, rev);
-      if (m.EBITDA        !== null) m.EBITDA_MARGIN_PCT = safeDivide(m.EBITDA, rev);
-      if (m.NET_PROFIT    !== null) m.NET_MARGIN_PCT    = safeDivide(m.NET_PROFIT, rev);
-      if (m.COGS          !== null) m.COGS_PCT          = safeDivide(m.COGS, rev);
-      if (m.TOTAL_OPEX    !== null) m.OPEX_PCT          = safeDivide(m.TOTAL_OPEX, rev);
-      if (m.STAFF_COST    !== null) m.STAFF_PCT         = safeDivide(m.STAFF_COST, rev);
-      if (m.RENT          !== null) m.RENT_PCT          = safeDivide(m.RENT, rev);
+      if (m.GROSS_PROFIT  !== null) m.GROSS_MARGIN_PCT  = safeDivide(m.GROSS_PROFIT,  rev);
+      if (m.EBITDA        !== null) m.EBITDA_MARGIN_PCT = safeDivide(m.EBITDA,        rev);
+      if (m.NET_PROFIT    !== null) m.NET_MARGIN_PCT    = safeDivide(m.NET_PROFIT,    rev);
+      if (m.COGS          !== null) m.COGS_PCT          = safeDivide(m.COGS,          rev);
+      if (m.TOTAL_OPEX    !== null) m.OPEX_PCT          = safeDivide(m.TOTAL_OPEX,    rev);
+      if (m.STAFF_COST    !== null) m.STAFF_PCT         = safeDivide(m.STAFF_COST,    rev);
+      if (m.RENT          !== null) m.RENT_PCT          = safeDivide(m.RENT,          rev);
     }
     storeMetrics[store] = m;
   });
-
   return { storeMetrics, kpiMapping };
 }
 
+/**
+ * Extract separate-sheet layout (Layout A)
+ */
+function extractSeparateSheetData(sheet, querySchema) {
+  const rawArray = sheet.rawArray || [];
+  if (rawArray.length < 2) return {};
+
+  const lineItemColIdx   = querySchema.line_item_column_index ?? 0;
+  const consolidatedIdxs = new Set(querySchema.consolidated_column_indices || []);
+  const dataStartRow     = querySchema.data_start_row ?? 1;
+
+  const storeColumns = (querySchema.store_columns || []).filter(sc =>
+    !isConsolidatedColumn(sc.name) && !consolidatedIdxs.has(sc.index)
+  );
+  if (!storeColumns.length) return {};
+
+  const lineItemDict = {};
+  storeColumns.forEach(sc => { lineItemDict[sc.name] = {}; });
+
+  for (let rowIdx = dataStartRow; rowIdx < rawArray.length; rowIdx++) {
+    const row = rawArray[rowIdx];
+    const desc = String(row[lineItemColIdx] ?? "").trim();
+    if (!desc) continue;
+
+    // Skip separator rows where all store cells are blank/text
+    const allBlank = storeColumns.every(sc => {
+      const v = row[sc.index];
+      return v === null || v === undefined || (typeof v === "string" && !v.trim()) || parseAmount(v) === null;
+    });
+    if (allBlank && storeColumns.length > 3) continue;
+
+    storeColumns.forEach(sc => {
+      const val = parseAmount(row[sc.index]);
+      if (val !== null) lineItemDict[sc.name][desc] = val;
+    });
+  }
+  return { lineItemDict, storeColumns };
+}
+
+/**
+ * Main Step 2 — auto-detects layout then routes to correct parser
+ */
 function step2_extractAndCompute(sheets, querySchema) {
-  console.log("📐 Step 2: Extracting and computing all math in code...");
+  console.log("📐 Step 2: Extracting and computing...");
 
-  const { cySheet, lySheet } = classifySheets(sheets);
-
-  // Determine which sheet to use as primary based on querySchema
-  let primarySheet = sheets.find(s => s.name === querySchema?.cy_sheet) || cySheet;
-  let secondarySheet = sheets.find(s => s.name === querySchema?.ly_sheet) || lySheet;
-
+  const primarySheet = sheets.find(s => s.name === querySchema?.cy_sheet) || sheets[0];
   if (!primarySheet) return null;
 
-  // ── Extract CY data ──
-  const cyExtracted = extractSheetData(primarySheet, querySchema);
-  if (!cyExtracted.storeColumns || cyExtracted.storeColumns.length === 0) return null;
+  // Always run inline detection on the primary sheet
+  const inlineInfo = detectInlineYearLayout(primarySheet.rawArray || []);
+  const isInline   = inlineInfo.isInline || querySchema?.layout_type === "INLINE_YEAR_COLUMNS";
 
-  const storeNames = cyExtracted.storeColumns.map(sc => sc.name).filter(n => !isConsolidatedColumn(n));
-  if (storeNames.length === 0) return null;
+  let cyLineItemDict = {}, lyLineItemDict = {};
+  let storeNames = [], cyYear = "CY", lyYear = "LY";
 
-  const { storeMetrics: cyMetrics, kpiMapping } = computeStoreMetrics(cyExtracted.lineItemMap, storeNames);
+  if (isInline) {
+    // ── Layout B: CY and LY are column pairs in ONE sheet ──
+    console.log("📊 Using INLINE year-column layout");
+    const parsed    = parseInlineYearSheet(primarySheet, inlineInfo.isInline ? inlineInfo : detectInlineYearLayout(primarySheet.rawArray));
+    cyLineItemDict  = parsed.cyData;
+    lyLineItemDict  = parsed.lyData;
+    storeNames      = parsed.storeNames;
+    cyYear          = parsed.cyYear;
+    lyYear          = parsed.lyYear;
 
-  // ── Extract LY data (FIX #6 — actually use the second sheet) ──
-  let lyMetrics = null;
-  let lyStoreNames = [];
-  if (secondarySheet && secondarySheet.name !== primarySheet.name) {
-    // FIX: use same querySchema but for the LY sheet
-    // If LY sheet has same structure, reuse schema; otherwise use fallback auto-detect
-    const lyExtracted = extractSheetData(secondarySheet, querySchema);
-    if (lyExtracted.storeColumns && lyExtracted.storeColumns.length > 0) {
-      const lyNames = lyExtracted.storeColumns.map(sc => sc.name).filter(n => !isConsolidatedColumn(n));
-      const { storeMetrics: ly } = computeStoreMetrics(lyExtracted.lineItemMap, lyNames);
-      lyMetrics = ly;
-      lyStoreNames = lyNames;
-      console.log(`✅ LY data extracted from "${secondarySheet.name}": ${lyNames.length} stores`);
-    } else {
-      // LY sheet may have different column layout — try auto-detect
-      const lyFallback = step2_fallback([secondarySheet]);
-      if (lyFallback) {
-        lyMetrics = lyFallback.storeMetrics;
-        lyStoreNames = lyFallback.stores;
-        console.log(`✅ LY data extracted via fallback: ${lyStoreNames.length} stores`);
+  } else {
+    // ── Layout A: separate sheets ──
+    console.log("📊 Using SEPARATE SHEETS layout");
+    const cyExt = extractSeparateSheetData(primarySheet, querySchema);
+    if (!cyExt.storeColumns?.length) return null;
+    storeNames      = cyExt.storeColumns.map(sc => sc.name).filter(n => !isConsolidatedColumn(n));
+    cyLineItemDict  = cyExt.lineItemDict;
+    cyYear          = primarySheet.name;
+
+    const lySheet = sheets.find(s => s.name === querySchema?.ly_sheet && s.name !== primarySheet.name)
+      || (sheets.length > 1 ? sheets.find(s => s.name !== primarySheet.name) : null);
+
+    if (lySheet) {
+      const lyExt = extractSeparateSheetData(lySheet, querySchema);
+      if (lyExt.storeColumns?.length) {
+        lyLineItemDict = lyExt.lineItemDict;
+        lyYear = lySheet.name;
+        console.log(`✅ LY sheet "${lySheet.name}": ${lyExt.storeColumns.length} stores`);
       }
     }
   }
 
-  // ── Portfolio totals (code math, no AI) ──
-  const absoluteKpis = Object.keys(KPI_PATTERNS);
+  if (!storeNames.length) return null;
+
+  // ── Compute KPIs ──
+  const { storeMetrics: cyMetrics, kpiMapping } = computeKPIsFromLineItems(cyLineItemDict, storeNames);
+  let lyMetrics = null, lyStoreNames = [];
+  if (Object.keys(lyLineItemDict).length) {
+    lyStoreNames = Object.keys(lyLineItemDict).filter(n => !isConsolidatedColumn(n));
+    const { storeMetrics: ly } = computeKPIsFromLineItems(lyLineItemDict, lyStoreNames);
+    lyMetrics = ly;
+  }
+
+  // ── Portfolio totals ──
+  const kpiKeys = Object.keys(KPI_PATTERNS);
   const totals = {};
-  absoluteKpis.forEach((kpi) => {
-    const vals = storeNames.map(s => cyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined);
-    if (vals.length > 0) totals[kpi] = roundTo2(vals.reduce((a, b) => a + b, 0));
-  });
-
-  // ── Portfolio averages for % metrics ──
-  const pctKpis = ["GROSS_MARGIN_PCT", "EBITDA_MARGIN_PCT", "NET_MARGIN_PCT", "COGS_PCT", "OPEX_PCT", "STAFF_PCT", "RENT_PCT"];
-  const averages = {};
-  pctKpis.forEach((kpi) => {
+  kpiKeys.forEach(kpi => {
     const vals = storeNames.map(s => cyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
-    if (vals.length > 0) averages[kpi] = roundTo2(vals.reduce((a, b) => a + b, 0) / vals.length);
+    if (vals.length) totals[kpi] = roundTo2(vals.reduce((a,b) => a+b, 0));
   });
 
-  // ── FIX #5: Proper EBITDA ranking — sorted strictly descending, all stores ──
+  // ── Portfolio averages ──
+  const pctKpis = ["GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT","OPEX_PCT","STAFF_PCT","RENT_PCT"];
+  const averages = {};
+  pctKpis.forEach(kpi => {
+    const vals = storeNames.map(s => cyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
+    if (vals.length) averages[kpi] = roundTo2(vals.reduce((a,b) => a+b, 0) / vals.length);
+  });
+
+  // ── EBITDA ranking — strictly sorted ──
   const ebitdaRanking = storeNames
-    .map(s => ({
-      store: s,
-      ebitda: cyMetrics[s]?.EBITDA ?? null,
-      ebitdaMargin: cyMetrics[s]?.EBITDA_MARGIN_PCT ?? null,
-      revenue: cyMetrics[s]?.REVENUE ?? null
-    }))
-    .filter(item => item.ebitda !== null)
-    .sort((a, b) => b.ebitda - a.ebitda); // strict numeric descending
+    .map(s => ({ store: s, ebitda: cyMetrics[s]?.EBITDA ?? null, ebitdaMargin: cyMetrics[s]?.EBITDA_MARGIN_PCT ?? null, revenue: cyMetrics[s]?.REVENUE ?? null }))
+    .filter(x => x.ebitda !== null)
+    .sort((a, b) => b.ebitda - a.ebitda);
 
   const revenueRanking = storeNames
     .map(s => ({ store: s, revenue: cyMetrics[s]?.REVENUE ?? null }))
-    .filter(item => item.revenue !== null)
+    .filter(x => x.revenue !== null)
     .sort((a, b) => b.revenue - a.revenue);
 
-  // ── YoY comparisons (FIX #3: compare CY vs LY) ──
+  // ── YoY per store ──
   const yoyComparisons = {};
   if (lyMetrics) {
-    storeNames.forEach((store) => {
-      const cy = cyMetrics[store];
-      // Try to match store name in LY (exact match first, then fuzzy)
+    storeNames.forEach(store => {
       const lyStore = lyStoreNames.includes(store)
         ? store
-        : lyStoreNames.find(ls => ls.toLowerCase().includes(store.toLowerCase().slice(0, 6)));
+        : lyStoreNames.find(ls => ls.toLowerCase().replace(/\s+/g,"").includes(store.toLowerCase().replace(/\s+/g,"").slice(0,5)));
       if (!lyStore) return;
-      const ly = lyMetrics[lyStore];
       yoyComparisons[store] = {};
-      absoluteKpis.forEach((kpi) => {
-        const cyVal = cy?.[kpi];
-        const lyVal = ly?.[kpi];
-        if (cyVal !== null && cyVal !== undefined && lyVal !== null && lyVal !== undefined && lyVal !== 0) {
+      kpiKeys.forEach(kpi => {
+        const cy = cyMetrics[store]?.[kpi];
+        const ly = lyMetrics[lyStore]?.[kpi];
+        if (cy !== null && cy !== undefined && ly !== null && ly !== undefined && isFinite(cy) && isFinite(ly)) {
           yoyComparisons[store][kpi] = {
-            cy: cyVal,
-            ly: lyVal,
-            change: roundTo2(cyVal - lyVal),
-            changePct: safeDivide(cyVal - lyVal, Math.abs(lyVal))
+            cy, ly,
+            change: roundTo2(cy - ly),
+            changePct: ly !== 0 ? safeDivide(cy - ly, Math.abs(ly)) : null
           };
         }
       });
     });
   }
 
-  // Portfolio-level YoY
+  // ── Portfolio YoY ──
   const portfolioYoY = {};
   if (lyMetrics) {
-    absoluteKpis.forEach((kpi) => {
-      const lyVals = lyStoreNames.map(s => lyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined);
-      if (lyVals.length > 0) {
-        const lyTotal = roundTo2(lyVals.reduce((a, b) => a + b, 0));
-        const cyTotal = totals[kpi];
-        if (lyTotal && lyTotal !== 0 && cyTotal !== undefined) {
+    kpiKeys.forEach(kpi => {
+      const lyVals = lyStoreNames.map(s => lyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
+      if (lyVals.length && totals[kpi] !== undefined) {
+        const lyTotal = roundTo2(lyVals.reduce((a,b) => a+b, 0));
+        if (lyTotal && lyTotal !== 0) {
           portfolioYoY[kpi] = {
-            cy: cyTotal,
-            ly: lyTotal,
-            change: roundTo2(cyTotal - lyTotal),
-            changePct: safeDivide(cyTotal - lyTotal, Math.abs(lyTotal))
+            cy: totals[kpi], ly: lyTotal,
+            change: roundTo2(totals[kpi] - lyTotal),
+            changePct: safeDivide(totals[kpi] - lyTotal, Math.abs(lyTotal))
           };
         }
       }
     });
   }
 
-  console.log(`✅ Step 2 done. CY: ${storeNames.length} stores | LY: ${lyStoreNames.length} stores | EBITDA ranked: ${ebitdaRanking.length}`);
+  console.log(`✅ Step 2 done. ${storeNames.length} stores | EBITDA ranked: ${ebitdaRanking.length} | YoY: ${Object.keys(yoyComparisons).length} stores`);
 
   return {
+    layoutType: isInline ? "INLINE" : "SEPARATE_SHEETS",
     cySheetName: primarySheet.name,
-    lySheetName: secondarySheet?.name || null,
+    lySheetName: lyMetrics ? (lyYear || "LY Sheet") : null,
+    cyYear, lyYear,
     storeCount: storeNames.length,
     stores: storeNames,
     storeMetrics: cyMetrics,
-    lyMetrics,
-    lyStores: lyStoreNames,
-    kpiMapping,
-    totals,
-    averages,
-    ebitdaRanking,       // full sorted array
-    revenueRanking,
-    yoyComparisons,
-    portfolioYoY,
-    allLineItems: cyExtracted.lineItemMap
+    lyMetrics, lyStores: lyStoreNames,
+    kpiMapping, totals, averages,
+    ebitdaRanking, revenueRanking,
+    yoyComparisons, portfolioYoY
   };
 }
 
-// ─────────────────────────────────────────────
-//  STEP 2 FALLBACK — auto-detect when Step 1 unavailable
-// ─────────────────────────────────────────────
-
+/**
+ * Fallback — auto-detect without Step 1 schema
+ */
 function step2_fallback(sheets) {
-  console.log("⚠️ Step 2 fallback: auto-detecting structure...");
+  console.log("⚠️ Step 2 fallback: auto-detecting...");
   for (const sheet of sheets) {
-    const rawArray = sheet.rawArray || [];
-    if (rawArray.length < 3) continue;
+    const ra = sheet.rawArray || [];
+    if (ra.length < 3) continue;
+
+    // Try inline first
+    const inlineInfo = detectInlineYearLayout(ra);
+    if (inlineInfo.isInline) {
+      const result = step2_extractAndCompute(sheets, { layout_type: "INLINE_YEAR_COLUMNS", cy_sheet: sheet.name });
+      if (result?.storeCount > 0) return result;
+    }
+
+    // Separate-sheet fallback
     let headerRowIdx = -1;
-    for (let i = 0; i < Math.min(10, rawArray.length); i++) {
-      if (rawArray[i].filter(c => c && String(c).trim()).length >= 3) { headerRowIdx = i; break; }
+    for (let i = 0; i < Math.min(10, ra.length); i++) {
+      if ((ra[i] || []).filter(c => c !== null && c !== undefined && String(c).trim()).length >= 3) {
+        headerRowIdx = i; break;
+      }
     }
     if (headerRowIdx === -1) continue;
-    const headers = rawArray[headerRowIdx].map((h, i) => ({ name: String(h || "").trim(), index: i }));
-    const storeColumns = headers.slice(1).filter(h => h.name && !isConsolidatedColumn(h.name));
-    if (storeColumns.length === 0) continue;
+
+    const headers = (ra[headerRowIdx] || []).map((h, i) => ({ name: String(h ?? "").trim(), index: i }));
+    const storeColumns = headers.slice(1).filter(h => h.name && !isConsolidatedColumn(h.name) && !/^(20\d{2}|FY\d{2,4})$/i.test(h.name));
+    if (!storeColumns.length) continue;
+
     const fakeSchema = {
-      cy_sheet: sheet.name,
-      ly_sheet: null,
-      line_item_column_index: 0,
-      store_columns: storeColumns,
+      layout_type: "SEPARATE_SHEETS", cy_sheet: sheet.name, ly_sheet: null,
+      line_item_column_index: 0, store_columns: storeColumns,
       consolidated_column_indices: headers.filter(h => isConsolidatedColumn(h.name)).map(h => h.index),
-      data_start_row: headerRowIdx + 1,
-      analysis_type: "FULL_ANALYSIS"
+      data_start_row: headerRowIdx + 1
     };
     const result = step2_extractAndCompute(sheets, fakeSchema);
-    if (result && result.storeCount > 0) return result;
+    if (result?.storeCount > 0) return result;
   }
   return null;
 }
 
 // ─────────────────────────────────────────────
-//  BUILD CLEAN DATA BLOCK FOR STEP 3 (AI Commentary)
-//  All numbers pre-formatted in US style, ranked correctly
+//  BUILD CLEAN DATA BLOCK FOR AI (Step 3 input)
 // ─────────────────────────────────────────────
 
 const KPI_LABELS = {
-  REVENUE:          "Revenue",
-  COGS:             "COGS",
-  GROSS_PROFIT:     "Gross Profit",
-  GROSS_MARGIN_PCT: "GP Margin%",
-  STAFF_COST:       "Staff Cost",
-  STAFF_PCT:        "Staff Cost%",
-  RENT:             "Rent",
-  RENT_PCT:         "Rent%",
-  MARKETING:        "Marketing",
-  OTHER_OPEX:       "Other OpEx",
-  TOTAL_OPEX:       "Total OpEx",
-  OPEX_PCT:         "OpEx%",
-  EBITDA:           "EBITDA",
-  EBITDA_MARGIN_PCT:"EBITDA Margin%",
-  DEPRECIATION:     "Depreciation",
-  EBIT:             "EBIT",
-  INTEREST:         "Interest",
-  PBT:              "PBT",
-  TAX:              "Tax",
-  NET_PROFIT:       "Net Profit",
-  NET_MARGIN_PCT:   "Net Margin%"
+  REVENUE:"Revenue", COGS:"COGS", GROSS_PROFIT:"Gross Profit", GROSS_MARGIN_PCT:"GP Margin%",
+  STAFF_COST:"Staff Cost", STAFF_PCT:"Staff%", RENT:"Rent", RENT_PCT:"Rent%",
+  MARKETING:"Marketing", OTHER_OPEX:"Other OpEx", TOTAL_OPEX:"Total OpEx", OPEX_PCT:"OpEx%",
+  EBITDA:"EBITDA", EBITDA_MARGIN_PCT:"EBITDA%", DEPRECIATION:"Depreciation",
+  EBIT:"EBIT", INTEREST:"Interest", PBT:"PBT", TAX:"Tax",
+  NET_PROFIT:"Net Profit", NET_MARGIN_PCT:"Net Margin%"
 };
+const KPI_ORDER = ["REVENUE","COGS","GROSS_PROFIT","STAFF_COST","RENT","MARKETING","OTHER_OPEX",
+                   "TOTAL_OPEX","EBITDA","DEPRECIATION","EBIT","INTEREST","PBT","TAX","NET_PROFIT"];
 
-function buildDataBlockForAI(computedResults, userQuestion) {
-  const {
-    storeMetrics, lyMetrics, stores, totals, averages,
-    ebitdaRanking, revenueRanking, yoyComparisons, portfolioYoY,
-    kpiMapping, cySheetName, lySheetName, storeCount
-  } = computedResults;
+function buildDataBlockForAI(r, userQuestion) {
+  const { storeMetrics, stores, totals, averages, ebitdaRanking, revenueRanking,
+          yoyComparisons, portfolioYoY, cyYear, lyYear, cySheetName, lySheetName, storeCount } = r;
+  let b = "";
+  b += `══════════════════════════════════════════════════════\n`;
+  b += `  PRE-COMPUTED FINANCIAL DATA — ALL MATH DONE IN CODE\n`;
+  b += `  DO NOT RECALCULATE. Figures are verified and final.\n`;
+  b += `  Negatives are shown with minus sign: -1,234\n`;
+  b += `  Format: US-style 1,234,567.89\n`;
+  b += `══════════════════════════════════════════════════════\n\n`;
+  b += `CY: ${cyYear} (${cySheetName})\n`;
+  b += `LY: ${lySheetName ? `${lyYear} (${lySheetName})` : "Not available"}\n`;
+  b += `Stores: ${storeCount}\n\n`;
 
-  let block = "";
-
-  block += `══════════════════════════════════════════════════════════\n`;
-  block += `   PRE-COMPUTED FINANCIAL DATA — VERIFIED BY BACKEND\n`;
-  block += `   DO NOT RECALCULATE. Use only these figures.\n`;
-  block += `   Numbers formatted in US style (e.g. 1,234,567)\n`;
-  block += `══════════════════════════════════════════════════════════\n\n`;
-  block += `Current Year Sheet : ${cySheetName}\n`;
-  block += `Last Year Sheet    : ${lySheetName || "Not found / Single sheet"}\n`;
-  block += `Total Stores       : ${storeCount}\n\n`;
-
-  // ── Portfolio Totals ──
-  const kpiOrder = ["REVENUE","COGS","GROSS_PROFIT","STAFF_COST","RENT","MARKETING","OTHER_OPEX","TOTAL_OPEX","EBITDA","DEPRECIATION","EBIT","INTEREST","PBT","TAX","NET_PROFIT"];
-  block += `▶ PORTFOLIO TOTALS (Sum of ${storeCount} stores)\n${"─".repeat(52)}\n`;
-  kpiOrder.forEach(kpi => {
+  // Portfolio totals
+  b += `▶ PORTFOLIO TOTALS\n${"─".repeat(58)}\n`;
+  KPI_ORDER.forEach(kpi => {
     if (totals[kpi] !== undefined && totals[kpi] !== null) {
-      const label = (KPI_LABELS[kpi] || kpi).padEnd(22);
-      const cy = formatNum(totals[kpi]);
-      const yoy = portfolioYoY[kpi];
-      const lyStr = yoy ? `  |  LY: ${formatNum(yoy.ly)}  |  Chg: ${formatNum(yoy.change)} (${formatPct(yoy.changePct)})` : "";
-      block += `  ${label}: ${cy.padStart(14)}${lyStr}\n`;
+      const label = (KPI_LABELS[kpi]||kpi).padEnd(22);
+      const cy    = formatNum(totals[kpi]);
+      const yoy   = portfolioYoY[kpi];
+      const yoyStr = yoy ? `  |  LY: ${formatNum(yoy.ly)}  |  Δ: ${formatNum(yoy.change)} (${formatPct(yoy.changePct)})` : "";
+      b += `  ${label}: ${cy.padStart(15)}${yoyStr}\n`;
     }
   });
-  if (Object.keys(averages).length > 0) {
-    block += `\n▶ PORTFOLIO AVERAGES (avg across ${storeCount} stores)\n${"─".repeat(52)}\n`;
+
+  if (Object.keys(averages).length) {
+    b += `\n▶ PORTFOLIO AVERAGES\n${"─".repeat(58)}\n`;
     ["GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","OPEX_PCT","STAFF_PCT","RENT_PCT"].forEach(kpi => {
-      if (averages[kpi] !== undefined) {
-        block += `  ${(KPI_LABELS[kpi] || kpi).padEnd(22)}: ${formatPct(averages[kpi])}\n`;
-      }
+      if (averages[kpi] !== undefined)
+        b += `  ${(KPI_LABELS[kpi]||kpi).padEnd(22)}: ${formatPct(averages[kpi])}\n`;
     });
   }
 
-  // ── Full Store Table ──
-  const availableKpis = kpiOrder.filter(kpi => stores.some(s => storeMetrics[s]?.[kpi] !== null && storeMetrics[s]?.[kpi] !== undefined));
-  const pctKpis = ["GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT"].filter(k =>
-    stores.some(s => storeMetrics[s]?.[k] !== null && storeMetrics[s]?.[k] !== undefined)
-  );
-  const displayKpis = [...availableKpis, ...pctKpis];
-
-  block += `\n▶ ALL STORES — CY PERFORMANCE TABLE\n${"─".repeat(52)}\n`;
-  stores.forEach((store) => {
-    const m = storeMetrics[store];
-    block += `\n  Store: ${store}\n`;
-    displayKpis.forEach(kpi => {
-      const val = m?.[kpi];
-      if (val !== null && val !== undefined && isFinite(val)) {
-        const isPct = kpi.endsWith("_PCT");
-        const label = (KPI_LABELS[kpi] || kpi).padEnd(22);
-        const formatted = isPct ? formatPct(val) : formatNum(val);
-        block += `    ${label}: ${formatted}\n`;
+  // Per-store detail
+  b += `\n▶ ALL STORES — CY PERFORMANCE\n${"─".repeat(58)}\n`;
+  stores.forEach(store => {
+    const m   = storeMetrics[store];
+    const yoy = yoyComparisons[store];
+    b += `\n  ┌─ ${store}\n`;
+    KPI_ORDER.forEach(kpi => {
+      const v = m?.[kpi];
+      if (v !== null && v !== undefined && isFinite(v)) {
+        const pctKey = kpi + "_PCT";
+        const pct    = m?.[pctKey];
+        const pctStr = (pct !== null && pct !== undefined && isFinite(pct)) ? `  (${formatPct(pct)})` : "";
+        b += `  │  ${(KPI_LABELS[kpi]||kpi).padEnd(20)}: ${formatNum(v)}${pctStr}\n`;
       }
     });
-    // Add LY comparison for this store if available
-    const yoy = yoyComparisons[store];
-    if (yoy && Object.keys(yoy).length > 0) {
-      block += `    --- YoY vs Last Year ---\n`;
-      kpiOrder.forEach(kpi => {
+    if (yoy && Object.keys(yoy).length) {
+      b += `  │  ── YoY vs ${lyYear} ──\n`;
+      KPI_ORDER.forEach(kpi => {
         if (yoy[kpi]) {
-          const label = (KPI_LABELS[kpi] || kpi).padEnd(22);
-          block += `    ${label}: CY ${formatNum(yoy[kpi].cy)} | LY ${formatNum(yoy[kpi].ly)} | Chg ${formatNum(yoy[kpi].change)} (${formatPct(yoy[kpi].changePct)})\n`;
+          const { cy, ly, change, changePct } = yoy[kpi];
+          b += `  │  ${(KPI_LABELS[kpi]||kpi).padEnd(20)}: CY ${formatNum(cy)} | LY ${formatNum(ly)} | Δ ${formatNum(change)} (${formatPct(changePct)})\n`;
         }
       });
     }
+    b += `  └${"─".repeat(56)}\n`;
   });
 
-  // ── FIX #5: EBITDA Ranking — full sorted list, top 5 and bottom 5 explicit ──
-  if (ebitdaRanking.length > 0) {
-    block += `\n▶ EBITDA RANKING — ALL STORES (sorted highest to lowest)\n${"─".repeat(52)}\n`;
-    ebitdaRanking.forEach((item, i) => {
-      const margin = item.ebitdaMargin !== null ? ` | Margin: ${formatPct(item.ebitdaMargin)}` : "";
-      block += `  #${String(i + 1).padStart(2)} ${item.store.padEnd(32)} EBITDA: ${formatNum(item.ebitda)}${margin}\n`;
+  // EBITDA full ranking
+  if (ebitdaRanking.length) {
+    b += `\n▶ EBITDA RANKING — ALL ${ebitdaRanking.length} STORES (highest → lowest)\n${"─".repeat(58)}\n`;
+    ebitdaRanking.forEach((x, i) => {
+      const m = x.ebitdaMargin !== null ? ` | ${formatPct(x.ebitdaMargin)}` : "";
+      b += `  #${String(i+1).padStart(2)} ${x.store.padEnd(34)} ${formatNum(x.ebitda)}${m}\n`;
     });
-
-    const top5  = ebitdaRanking.slice(0, 5);
-    const bottom5 = ebitdaRanking.slice(-5).reverse(); // lowest first
-
-    block += `\n  TOP 5 BY EBITDA:\n`;
-    top5.forEach((item, i) => {
-      block += `    ${i + 1}. ${item.store} — EBITDA: ${formatNum(item.ebitda)}${item.ebitdaMargin !== null ? ` (${formatPct(item.ebitdaMargin)})` : ""}\n`;
-    });
-
-    block += `\n  BOTTOM 5 BY EBITDA (lowest performers):\n`;
-    bottom5.forEach((item, i) => {
-      block += `    ${i + 1}. ${item.store} — EBITDA: ${formatNum(item.ebitda)}${item.ebitdaMargin !== null ? ` (${formatPct(item.ebitdaMargin)})` : ""}\n`;
-    });
+    const top5    = ebitdaRanking.slice(0, 5);
+    const bottom5 = [...ebitdaRanking].reverse().slice(0, 5);
+    b += `\n  ★ TOP 5:\n`;
+    top5.forEach((x,i) => b += `    ${i+1}. ${x.store} — ${formatNum(x.ebitda)}${x.ebitdaMargin!==null?` (${formatPct(x.ebitdaMargin)})`:""}\n`);
+    b += `\n  ▼ BOTTOM 5:\n`;
+    bottom5.forEach((x,i) => b += `    ${i+1}. ${x.store} — ${formatNum(x.ebitda)}${x.ebitdaMargin!==null?` (${formatPct(x.ebitdaMargin)})`:""}\n`);
   }
 
-  if (revenueRanking.length > 0) {
-    block += `\n▶ REVENUE RANKING (top 10)\n${"─".repeat(52)}\n`;
-    revenueRanking.slice(0, 10).forEach((item, i) => {
-      block += `  #${String(i + 1).padStart(2)} ${item.store.padEnd(32)} Revenue: ${formatNum(item.revenue)}\n`;
-    });
+  if (revenueRanking.length) {
+    b += `\n▶ REVENUE RANKING (top 10)\n${"─".repeat(58)}\n`;
+    revenueRanking.slice(0, 10).forEach((x, i) =>
+      b += `  #${String(i+1).padStart(2)} ${x.store.padEnd(34)} ${formatNum(x.revenue)}\n`);
   }
 
-  block += `\n▶ USER QUESTION: "${userQuestion || "Full P&L analysis"}"\n`;
-
-  return block;
+  b += `\n▶ USER QUESTION: "${userQuestion || "Full P&L analysis"}"\n`;
+  return b;
 }
 
 // ─────────────────────────────────────────────
-//  STEP 3 — AI WRITES COMMENTARY ONLY
+//  STEP 3 — AI WRITES COMMENTARY
 // ─────────────────────────────────────────────
 
 async function step3_generateCommentary(computedResults, userQuestion) {
   const dataBlock = buildDataBlockForAI(computedResults, userQuestion);
-
-  console.log(`📦 Data block size: ${dataBlock.length} chars`);
-
-  const hasLY = !!computedResults.lySheetName;
+  const hasLY     = !!computedResults.lySheetName;
   const hasEbitda = computedResults.ebitdaRanking.length > 0;
+  console.log(`📦 Data block: ${dataBlock.length} chars`);
 
   const messages = [
     {
       role: "system",
       content: `You are an expert P&L financial analyst writing detailed MIS commentary for senior management.
 
-ABSOLUTE RULES — NEVER BREAK THESE:
-1. Use ONLY numbers from the pre-computed data block. Every figure you write must be in the data block.
-2. NEVER calculate, estimate, or derive any numbers yourself.
-3. If a metric is not in the data block, write "data not available" — do not estimate.
-4. Use US number format: 1,234,567 (comma every 3 digits, dot for decimals).
-5. DO NOT include a Recommendations section. Omit it entirely.
-6. Write detailed, professional MIS-style commentary — not bullet-point summaries.
-7. Be specific: always name the store and metric together.`
+ABSOLUTE RULES — NEVER BREAK:
+1. Use ONLY numbers from the pre-computed data block. Every figure must appear exactly in the data block.
+2. NEVER calculate, estimate, or derive any number yourself.
+3. Negative numbers MUST remain negative. Write them with a minus sign: -1,234. NEVER convert negatives to positives.
+4. Use US number format: 1,234,567 (comma every 3 digits, period for decimal).
+5. DO NOT write a Recommendations section under any circumstances.
+6. Be specific — always name the store and the exact figure together.`
     },
     {
       role: "user",
       content: `${dataBlock}
 
-Write a detailed MIS P&L commentary. Structure as follows:
+Write a detailed MIS P&L commentary structured as:
 
 ## Executive Summary
-(3-4 sentences covering overall portfolio performance. Include total Revenue, EBITDA, and Net Profit vs LY if available.)
+(3-4 sentences: portfolio Revenue, EBITDA, Net Profit.${hasLY?" Include YoY direction.":""})
 
 ## Portfolio Performance Overview
-(Paragraph covering key headline metrics — Revenue, Gross Profit, EBITDA, Net Profit — with YoY comparison if LY data is available.)
-${hasLY ? "\n## Year-on-Year Analysis\n(Detailed CY vs LY comparison for the portfolio and for notable stores. Cover Revenue growth/decline, EBITDA movement, Net Profit change. Use the YoY figures from the data block.)" : ""}
+(Detailed paragraph on headline metrics with exact figures and margins.)
+${hasLY?`\n## Year-on-Year Analysis\n(Detailed CY vs LY for portfolio then individual stores. Quote Δ and Δ% exactly from the data block.)`:""}
 
-## Store-wise Performance Table
-(Insert a markdown table with columns: Store | Revenue | Gross Profit | GP% | EBITDA | EBITDA% | Net Profit — use ONLY values from the data block. Include all stores.)
+## Store-wise Performance Summary
+(Markdown table: Store | Revenue | Gross Profit | GP% | EBITDA | EBITDA% | Net Profit. Values from data block only.)
 
 ## EBITDA Analysis
 ${hasEbitda
-  ? "(Detailed analysis of EBITDA performance. List the TOP 5 performers and BOTTOM 5 performers exactly as shown in the data block ranking. Include their EBITDA values and margins. Explain what the spread between top and bottom indicates.)"
-  : "(EBITDA data not available in this file.)"}
+? "(Analyse EBITDA across the portfolio. List TOP 5 and BOTTOM 5 exactly as in the data block — same order, same figures, including negatives. Discuss the spread.)"
+: "(EBITDA data not available.)"}
 
 ## Cost Structure Analysis
-(Cover COGS, Staff Cost, Rent, and Total OpEx as % of revenue where available. Highlight stores with notably high or low cost ratios.)
+(Cover COGS%, Staff%, Rent%, OpEx% where available. Highlight outlier stores.)
 
 ## Key Observations
-(5-7 specific observations from the data — name stores, quote figures, identify patterns.)
+(5-7 specific bullet points, each citing a store name and exact figure from the data block.)
 
-IMPORTANT REMINDERS:
-- Every number must come from the data block exactly.
-- No recommendations section.
-- US number format throughout.
-- Top 5 and Bottom 5 must match the EBITDA RANKING in the data block exactly — same order, same figures.`
+REMINDERS:
+- Every number from the data block exactly — including the sign (negatives stay negative).
+- No Recommendations section.
+- Top 5 / Bottom 5 must match the EBITDA RANKING in the data block exactly.`
     }
   ];
 
-  console.log("✍️  Step 3: Sending pre-computed data to AI for commentary...");
+  console.log("✍️  Step 3: Generating commentary...");
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages,
-      temperature: 0,
-      max_tokens: 4000,
-      top_p: 1.0,
-      frequency_penalty: 0.05
-    })
+    body: JSON.stringify({ model: "gpt-4o-mini", messages, temperature: 0, max_tokens: 4000, frequency_penalty: 0.05 })
   });
-
   const data = await r.json();
-  if (data.error) return { reply: null, error: data.error.message, httpStatus: r.status };
-  console.log(`✅ Step 3 done. Tokens:`, data?.usage);
-
+  if (data.error) return { reply: null, error: data.error.message };
+  console.log("✅ Step 3. Tokens:", data?.usage);
   let reply = data?.choices?.[0]?.message?.content || null;
-  if (reply) {
-    reply = reply
-      .replace(/^```(?:markdown|json)\s*\n/gm, "")
-      .replace(/\n```\s*$/gm, "")
-      .trim();
-  }
-  return {
-    reply, httpStatus: r.status,
-    finishReason: data?.choices?.[0]?.finish_reason,
-    tokenUsage: data?.usage
-  };
+  if (reply) reply = reply.replace(/^```(?:markdown|json)?\s*\n/gm,"").replace(/\n```\s*$/gm,"").trim();
+  return { reply, httpStatus: r.status, finishReason: data?.choices?.[0]?.finish_reason, tokenUsage: data?.usage };
 }
 
 // ─────────────────────────────────────────────
@@ -928,27 +994,19 @@ IMPORTANT REMINDERS:
 // ─────────────────────────────────────────────
 
 function truncateText(text, maxChars = 60000) {
-  if (!text) return "";
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars)}\n\n[TRUNCATED ${text.length - maxChars} CHARS]`;
+  if (!text || text.length <= maxChars) return text || "";
+  return `${text.slice(0, maxChars)}\n\n[TRUNCATED]`;
 }
 
 async function callModelWithText({ extracted, question }) {
-  const text = truncateText(extracted.textContent || "");
   const messages = [
     {
       role: "system",
-      content: `You are a careful accounting copilot.
-Only use facts present in the supplied document text.
-If a requested figure is missing or ambiguous, clearly state that instead of guessing.
-When quoting numbers, include the nearby label/line-item exactly as it appears in the file.
-Do not swap entities, stores, or periods.
-Use US number format (1,234,567).
-Do NOT include a Recommendations section.`
+      content: `You are a careful accounting copilot. Use only facts from the document. Never estimate missing figures. Negative numbers stay negative. US number format. No Recommendations section.`
     },
     {
       role: "user",
-      content: `User question:\n${question || "Please analyze this document and provide an accurate accounting-focused summary."}\n\nDocument type: ${extracted.type}\n\nExtracted file content:\n\n${text}`
+      content: `Question: ${question || "Analyze this document."}\n\nDocument (${extracted.type}):\n\n${truncateText(extracted.textContent || "")}`
     }
   ];
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -957,135 +1015,90 @@ Do NOT include a Recommendations section.`
     body: JSON.stringify({ model: "gpt-4o-mini", messages, temperature: 0, max_tokens: 3000 })
   });
   let data;
-  try { data = await r.json(); }
-  catch (err) { return { reply: null, httpStatus: r.status }; }
-  if (data.error) return { reply: null, error: data.error.message, httpStatus: r.status };
+  try { data = await r.json(); } catch { return { reply: null }; }
+  if (data.error) return { reply: null, error: data.error.message };
   let reply = data?.choices?.[0]?.message?.content || null;
-  if (reply) reply = reply.replace(/^```(?:markdown|json)\s*\n/gm, "").replace(/\n```\s*$/gm, "").trim();
-  return { reply, httpStatus: r.status, finishReason: data?.choices?.[0]?.finish_reason, tokenUsage: data?.usage };
+  if (reply) reply = reply.replace(/^```(?:markdown|json)?\s*\n/gm,"").replace(/\n```\s*$/gm,"").trim();
+  return { reply, finishReason: data?.choices?.[0]?.finish_reason, tokenUsage: data?.usage };
 }
 
 // ─────────────────────────────────────────────
 //  WORD DOCUMENT GENERATOR
 // ─────────────────────────────────────────────
 
-async function markdownToWord(markdownText) {
-  const sections = [];
-  const lines = markdownText.split("\n");
-  let tableData = [];
-  let inTable = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) {
-      if (inTable && tableData.length > 0) {
-        sections.push(buildWordTable(tableData));
-        sections.push(new Paragraph({ text: "" }));
-        tableData = []; inTable = false;
-      } else if (sections.length > 0) {
-        sections.push(new Paragraph({ text: "" }));
-      }
-      continue;
-    }
-    if (line.startsWith("#")) {
-      if (inTable && tableData.length > 0) {
-        sections.push(buildWordTable(tableData));
-        sections.push(new Paragraph({ text: "" }));
-        tableData = []; inTable = false;
-      }
-      const level = (line.match(/^#+/) || [""])[0].length;
-      const text = line.replace(/^#+\s*/, "").replace(/\*\*/g, "").replace(/\*/g, "");
-      sections.push(new Paragraph({
-        text,
-        heading: level <= 2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
-        spacing: { before: 240, after: 120 }
-      }));
-      continue;
-    }
-    if (line.includes("|")) {
-      const cells = line.split("|").map(c => c.trim()).filter(c => c !== "");
-      if (cells.every(c => /^[-:]+$/.test(c))) { inTable = true; continue; }
-      tableData.push(cells.map(c => c.replace(/\*\*/g, "").replace(/\*/g, "").replace(/`/g, "")));
-      continue;
-    }
-    if (inTable && tableData.length > 0) {
-      sections.push(buildWordTable(tableData));
-      sections.push(new Paragraph({ text: "" }));
-      tableData = []; inTable = false;
-    }
-    if (line.startsWith("-") || line.startsWith("*")) {
-      const text = line.replace(/^[-*]\s+/, "");
-      sections.push(new Paragraph({
-        children: parseInlineBold(text),
-        bullet: { level: 0 },
-        spacing: { before: 60, after: 60 }
-      }));
-      continue;
-    }
-    if (line.match(/^\d+\.\s/)) {
-      const text = line.replace(/^\d+\.\s+/, "");
-      sections.push(new Paragraph({
-        children: parseInlineBold(text),
-        numbering: { reference: "default", level: 0 },
-        spacing: { before: 60, after: 60 }
-      }));
-      continue;
-    }
-    sections.push(new Paragraph({
-      children: parseInlineBold(line),
-      spacing: { before: 60, after: 60 }
-    }));
-  }
-
-  if (inTable && tableData.length > 0) {
-    sections.push(buildWordTable(tableData));
-  }
-
-  const doc = new Document({ sections: [{ properties: {}, children: sections }] });
-  const buffer = await Packer.toBuffer(doc);
-  return buffer.toString("base64");
-}
-
 function parseInlineBold(text) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return parts.filter(p => p).map(p =>
-    p.startsWith("**") && p.endsWith("**")
-      ? new TextRun({ text: p.replace(/\*\*/g, ""), bold: true })
+  return text.split(/(\*\*[^*]+\*\*)/).filter(Boolean).map(p =>
+    (p.startsWith("**") && p.endsWith("**"))
+      ? new TextRun({ text: p.replace(/\*\*/g,""), bold: true })
       : new TextRun({ text: p })
   );
 }
 
 function buildWordTable(tableData) {
   return new Table({
-    rows: tableData.map((rowData, rowIdx) =>
-      new TableRow({
-        children: rowData.map(cellText =>
-          new TableCell({
-            children: [new Paragraph({
-              children: [new TextRun({
-                text: cellText,
-                bold: rowIdx === 0,
-                color: rowIdx === 0 ? "FFFFFF" : "000000",
-                size: 20
-              })],
-              alignment: AlignmentType.LEFT
-            })],
-            shading: { fill: rowIdx === 0 ? "4472C4" : (rowIdx % 2 === 0 ? "F2F2F2" : "FFFFFF") },
-            margins: { top: 80, bottom: 80, left: 120, right: 120 }
-          })
-        )
-      })
-    ),
-    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: tableData.map((rowData, ri) => new TableRow({
+      children: rowData.map(cellText => new TableCell({
+        children: [new Paragraph({
+          children: [new TextRun({ text: cellText, bold: ri===0, color: ri===0?"FFFFFF":"000000", size: 20 })],
+          alignment: AlignmentType.LEFT
+        })],
+        shading: { fill: ri===0?"4472C4": ri%2===0?"F2F2F2":"FFFFFF" },
+        margins: { top:80, bottom:80, left:120, right:120 }
+      }))
+    })),
+    width: { size:100, type: WidthType.PERCENTAGE },
     borders: {
-      top:               { style: BorderStyle.SINGLE, size: 1, color: "AAAAAA" },
-      bottom:            { style: BorderStyle.SINGLE, size: 1, color: "AAAAAA" },
-      left:              { style: BorderStyle.SINGLE, size: 1, color: "AAAAAA" },
-      right:             { style: BorderStyle.SINGLE, size: 1, color: "AAAAAA" },
-      insideHorizontal:  { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
-      insideVertical:    { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" }
+      top:             { style: BorderStyle.SINGLE, size:1, color:"AAAAAA" },
+      bottom:          { style: BorderStyle.SINGLE, size:1, color:"AAAAAA" },
+      left:            { style: BorderStyle.SINGLE, size:1, color:"AAAAAA" },
+      right:           { style: BorderStyle.SINGLE, size:1, color:"AAAAAA" },
+      insideHorizontal:{ style: BorderStyle.SINGLE, size:1, color:"CCCCCC" },
+      insideVertical:  { style: BorderStyle.SINGLE, size:1, color:"CCCCCC" }
     }
   });
+}
+
+async function markdownToWord(markdownText) {
+  const sections = [];
+  const lines = markdownText.split("\n");
+  let tableData = [], inTable = false;
+
+  const flushTable = () => {
+    if (tableData.length) { sections.push(buildWordTable(tableData)); sections.push(new Paragraph({ text:"" })); }
+    tableData = []; inTable = false;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) { if (inTable) flushTable(); else sections.push(new Paragraph({ text:"" })); continue; }
+
+    if (line.startsWith("#")) {
+      if (inTable) flushTable();
+      const level = (line.match(/^#+/)||[""])[0].length;
+      sections.push(new Paragraph({
+        text: line.replace(/^#+\s*/,"").replace(/\*\*/g,"").replace(/\*/g,""),
+        heading: level<=2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
+        spacing: { before:240, after:120 }
+      }));
+      continue;
+    }
+    if (line.includes("|")) {
+      const cells = line.split("|").map(c=>c.trim()).filter(c=>c!=="");
+      if (cells.every(c=>/^[-:]+$/.test(c))) { inTable=true; continue; }
+      tableData.push(cells.map(c=>c.replace(/\*\*/g,"").replace(/\*/g,"").replace(/`/g,"")));
+      continue;
+    }
+    if (inTable) flushTable();
+    if (line.startsWith("- ")||line.startsWith("* ")) {
+      sections.push(new Paragraph({ children: parseInlineBold(line.replace(/^[-*]\s+/,"")), bullet:{ level:0 }, spacing:{ before:60, after:60 } }));
+      continue;
+    }
+    sections.push(new Paragraph({ children: parseInlineBold(line), spacing:{ before:60, after:60 } }));
+  }
+  if (inTable) flushTable();
+
+  const doc = new Document({ sections:[{ properties:{}, children: sections }] });
+  return (await Packer.toBuffer(doc)).toString("base64");
 }
 
 // ─────────────────────────────────────────────
@@ -1104,13 +1117,11 @@ export default async function handler(req, res) {
     const { fileUrl, question = "" } = body || {};
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
 
-    // ── Download ──
-    console.log("📥 Downloading file...");
+    console.log("📥 Downloading...");
     const { buffer, contentType } = await downloadFileToBuffer(fileUrl);
     const detectedType = detectFileType(fileUrl, contentType, buffer);
-    console.log(`📄 File type: ${detectedType}`);
+    console.log(`📄 Type: ${detectedType}`);
 
-    // ── Extract ──
     let extracted = { type: detectedType };
     if      (detectedType === "pdf")  extracted = await extractPdf(buffer);
     else if (detectedType === "docx") extracted = await extractDocx(buffer);
@@ -1121,77 +1132,49 @@ export default async function handler(req, res) {
       extracted = extractCsv(buffer);
       if (extracted.textContent) {
         const rows = parseCSV(extracted.textContent);
-        if (rows.length > 0) {
-          const headerRow = Object.keys(rows[0]);
-          const dataRows  = rows.map(r => Object.values(r));
-          extracted.sheets = [{ name: "Main Sheet", rows, rawArray: [headerRow, ...dataRows], rowCount: rows.length }];
+        if (rows.length) {
+          const header = Object.keys(rows[0]);
+          extracted.sheets = [{ name:"Main Sheet", rows, rawArray:[header,...rows.map(r=>Object.values(r))], rowCount:rows.length }];
         }
       }
-    } else {
-      extracted = extractTextLike(buffer, detectedType);
-    }
+    } else extracted = extractTextLike(buffer, detectedType);
 
-    if (extracted.error) {
-      return res.status(200).json({ ok: false, type: extracted.type, reply: `Failed to parse file: ${extracted.error}` });
-    }
-    if (extracted.ocrNeeded || extracted.requiresManualProcessing) {
-      return res.status(200).json({ ok: true, type: extracted.type, reply: extracted.textContent || "This file requires special processing." });
-    }
+    if (extracted.error) return res.status(200).json({ ok:false, type:extracted.type, reply:`Failed to parse file: ${extracted.error}` });
+    if (extracted.ocrNeeded || extracted.requiresManualProcessing)
+      return res.status(200).json({ ok:true, type:extracted.type, reply:extracted.textContent||"File requires special processing." });
 
-    // ── Choose pipeline ──
-    let modelResult;
-    let computedResults = null;
     const hasSheets = Array.isArray(extracted.sheets) && extracted.sheets.length > 0;
+    let modelResult, computedResults = null;
 
     if (hasSheets) {
-      // ── 3-STEP SPREADSHEET PIPELINE ──
       let querySchema = null;
-      try {
-        querySchema = await step1_understandQueryAndStructure(extracted.sheets, question);
-      } catch (e) {
-        console.warn("⚠️ Step 1 failed:", e.message);
-      }
+      try { querySchema = await step1_understandQueryAndStructure(extracted.sheets, question); }
+      catch (e) { console.warn("⚠️ Step 1 failed:", e.message); }
 
-      if (querySchema && (querySchema.store_columns?.length > 0)) {
-        computedResults = step2_extractAndCompute(extracted.sheets, querySchema);
-      }
+      const canUseSchema = querySchema && (querySchema.store_columns?.length > 0 || querySchema.layout_type === "INLINE_YEAR_COLUMNS");
+      computedResults = canUseSchema ? step2_extractAndCompute(extracted.sheets, querySchema) : null;
+
       if (!computedResults || computedResults.storeCount === 0) {
-        console.warn("⚠️ Fallback to auto-detect...");
+        console.warn("⚠️ Using fallback...");
         computedResults = step2_fallback(extracted.sheets);
       }
 
       if (!computedResults || computedResults.storeCount === 0) {
-        // Last resort text mode
-        const rawText = extracted.sheets.map(s =>
-          `Sheet: ${s.name}\n` + (s.rawArray || []).map(r => r.join("\t")).join("\n")
-        ).join("\n\n");
-        modelResult = await callModelWithText({ extracted: { type: "xlsx", textContent: rawText }, question });
+        const rawText = extracted.sheets.map(s => `Sheet: ${s.name}\n`+(s.rawArray||[]).map(r=>(r||[]).join("\t")).join("\n")).join("\n\n");
+        modelResult = await callModelWithText({ extracted:{ type:"xlsx", textContent:rawText }, question });
       } else {
         modelResult = await step3_generateCommentary(computedResults, question);
       }
-
     } else {
-      // ── TEXT PIPELINE (PDF / DOCX / TXT) ──
       modelResult = await callModelWithText({ extracted, question });
     }
 
     const { reply, httpStatus, finishReason, tokenUsage, error } = modelResult;
+    if (!reply) return res.status(200).json({ ok:false, type:extracted.type, reply:error||"(No reply)", debug:{ httpStatus, error } });
 
-    if (!reply) {
-      return res.status(200).json({
-        ok: false, type: extracted.type,
-        reply: error || "(No reply from model)",
-        debug: { status: httpStatus, error }
-      });
-    }
-
-    // ── Generate Word document ──
     let wordBase64 = null;
-    try {
-      wordBase64 = await markdownToWord(reply);
-    } catch (wordError) {
-      console.error("❌ Word generation error:", wordError.message);
-    }
+    try { wordBase64 = await markdownToWord(reply); }
+    catch (e) { console.error("❌ Word error:", e.message); }
 
     return res.status(200).json({
       ok: true,
@@ -1200,33 +1183,31 @@ export default async function handler(req, res) {
       category: computedResults ? "profit_loss" : "general",
       reply,
       wordDownload: wordBase64,
-      downloadUrl: wordBase64
-        ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}`
-        : null,
+      downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
       structuredData: computedResults ? {
-        storeCount: computedResults.storeCount,
-        stores: computedResults.stores,
-        kpisFound: Object.keys(computedResults.kpiMapping),
-        cySheet: computedResults.cySheetName,
-        lySheet: computedResults.lySheetName,
-        totals: computedResults.totals,
-        ebitdaTop5: computedResults.ebitdaRanking.slice(0, 5).map(r => ({ store: r.store, ebitda: r.ebitda })),
-        ebitdaBottom5: computedResults.ebitdaRanking.slice(-5).reverse().map(r => ({ store: r.store, ebitda: r.ebitda }))
+        layout:        computedResults.layoutType,
+        storeCount:    computedResults.storeCount,
+        stores:        computedResults.stores,
+        kpisFound:     Object.keys(computedResults.kpiMapping),
+        cySheet:       computedResults.cySheetName,
+        lySheet:       computedResults.lySheetName,
+        totals:        computedResults.totals,
+        ebitdaTop5:    computedResults.ebitdaRanking.slice(0,5).map(x=>({ store:x.store, ebitda:x.ebitda, margin:x.ebitdaMargin })),
+        ebitdaBottom5: [...computedResults.ebitdaRanking].reverse().slice(0,5).map(x=>({ store:x.store, ebitda:x.ebitda, margin:x.ebitdaMargin }))
       } : null,
       debug: {
-        status: httpStatus,
-        pipeline: hasSheets ? "3-step-spreadsheet" : "text-analysis",
-        storeCount: computedResults?.storeCount || 0,
-        kpisFound: Object.keys(computedResults?.kpiMapping || {}),
-        ebitdaRankedStores: computedResults?.ebitdaRanking?.length || 0,
-        hasLYData: !!computedResults?.lySheetName,
-        finishReason,
-        tokenUsage
+        pipeline:    hasSheets ? "3-step-spreadsheet" : "text-analysis",
+        layout:      computedResults?.layoutType,
+        storeCount:  computedResults?.storeCount || 0,
+        kpisFound:   Object.keys(computedResults?.kpiMapping || {}),
+        ebitdaRanked:computedResults?.ebitdaRanking?.length || 0,
+        hasLY:       !!computedResults?.lySheetName,
+        finishReason, tokenUsage
       }
     });
 
   } catch (err) {
-    console.error("❌ analyze-file error:", err);
+    console.error("❌ Handler error:", err);
     return res.status(500).json({ error: String(err?.message || err) });
   }
 }
