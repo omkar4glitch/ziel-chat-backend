@@ -257,20 +257,22 @@ function roundTo2(n) {
   return Math.round(n * 100) / 100;
 }
 
-// US-style: 1,234,567.89  |  Negatives: -1,234,567.89
+// US-style WHOLE numbers: 1,234,567  |  Negatives: -1,234,567  (no decimals on amounts)
 function formatNum(n) {
   if (n === undefined || n === null || !isFinite(n)) return "N/A";
-  return Number(n).toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return Math.round(Number(n)).toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
+// Percentage to 1 decimal: +12.3%  /  -4.5%
 function formatPct(n) {
   if (n === undefined || n === null || !isFinite(n)) return "N/A";
-  return `${n >= 0 ? "+" : ""}${roundTo2(n)}%`;
+  const r = Math.round(Number(n) * 10) / 10;
+  return `${r >= 0 ? "+" : ""}${r.toFixed(1)}%`;
 }
 
 function safeDivide(num, den) {
   if (!den || den === 0) return null;
-  return roundTo2((num / den) * 100);
+  return roundTo2((num / den) * 100); // stored at 2dp, displayed at 1dp via formatPct
 }
 
 // ─────────────────────────────────────────────
@@ -316,13 +318,18 @@ function matchKPI(description) {
 //  CONSOLIDATED COLUMN DETECTION
 // ─────────────────────────────────────────────
 
-const CONSOLIDATED_PATTERNS = [
+// Columns that should be EXCLUDED from store list entirely
+const EXCLUDED_COLUMN_PATTERNS = [
+  // Consolidated / total columns
   "total","consolidated","grand total","all stores","overall","company total",
-  "aggregate","sum","portfolio","net total"
+  "aggregate","sum","portfolio","net total",
+  // Reference / benchmark columns — NOT a store, just a target/reference value
+  "benchmark","target","budget","plan","reference","ref","kpi target",
+  "industry avg","industry average","standard","norm","goal"
 ];
 function isConsolidatedColumn(name) {
   const n = String(name || "").toLowerCase().trim();
-  return CONSOLIDATED_PATTERNS.some(p => n === p || n.startsWith(p) || n.includes(p));
+  return EXCLUDED_COLUMN_PATTERNS.some(p => n === p || n.startsWith(p) || n.includes(p));
 }
 
 // ─────────────────────────────────────────────
@@ -397,15 +404,25 @@ function parseInlineYearSheet(sheet, inlineInfo) {
   const storeRow = rawArray[storeRowIdx] || [];
   const yearRow  = rawArray[yearRowIdx]  || [];
 
-  // Forward-fill store names (handles merged cells)
+  // Forward-fill store names (handles merged cells).
+  // IMPORTANT: reset lastStore whenever we hit a column that is NOT a valid store
+  // (e.g. "Benchmark", "Consolidated", blank between groups).
+  // This prevents Benchmark leaking into subsequent store columns.
   const storeByCol = {};
   let lastStore = null;
   storeRow.forEach((cell, colIdx) => {
+    if (colIdx === 0) return; // skip line-item col
     const s = String(cell ?? "").trim();
-    if (s && colIdx > 0 && !isConsolidatedColumn(s) && !/^(20\d{2}|FY\d{2,4}|\d+)$/i.test(s)) {
-      lastStore = s;
+    if (s) {
+      // If this cell has a value, decide whether it's a real store or an exclusion
+      if (!isConsolidatedColumn(s) && !/^(20\d{2}|FY\d{2,4}|\d+\.?\d*)$/i.test(s)) {
+        lastStore = s; // valid store name — update
+      } else {
+        lastStore = null; // it's Benchmark/Consolidated/year — reset, don't bleed
+      }
     }
-    if (lastStore && colIdx > 0) storeByCol[colIdx] = lastStore;
+    // Only assign if we have a valid lastStore
+    if (lastStore) storeByCol[colIdx] = lastStore;
   });
 
   // Forward-fill year labels
@@ -839,8 +856,8 @@ function buildDataBlockForAI(r, userQuestion) {
   b += `══════════════════════════════════════════════════════\n`;
   b += `  PRE-COMPUTED FINANCIAL DATA — ALL MATH DONE IN CODE\n`;
   b += `  DO NOT RECALCULATE. Figures are verified and final.\n`;
-  b += `  Negatives are shown with minus sign: -1,234\n`;
-  b += `  Format: US-style 1,234,567.89\n`;
+  b += `  Amounts: whole numbers, US commas, no decimals (1,234,567)\n`;
+  b += `  Percentages: 1 decimal place (+12.3%)  Negatives: -1,234\n`;
   b += `══════════════════════════════════════════════════════\n\n`;
   b += `CY: ${cyYear} (${cySheetName})\n`;
   b += `LY: ${lySheetName ? `${lyYear} (${lySheetName})` : "Not available"}\n`;
@@ -937,9 +954,10 @@ ABSOLUTE RULES — NEVER BREAK:
 1. Use ONLY numbers from the pre-computed data block. Every figure must appear exactly in the data block.
 2. NEVER calculate, estimate, or derive any number yourself.
 3. Negative numbers MUST remain negative. Write them with a minus sign: -1,234. NEVER convert negatives to positives.
-4. Use US number format: 1,234,567 (comma every 3 digits, period for decimal).
-5. DO NOT write a Recommendations section under any circumstances.
-6. Be specific — always name the store and the exact figure together.`
+4. NUMBER FORMAT — amounts: whole numbers with US commas, NO decimal places (e.g. 1,234,567 not 1,234,567.89).
+5. PERCENTAGE FORMAT — always 1 decimal place (e.g. 12.3% not 12% or 12.34%).
+6. DO NOT write a Recommendations section under any circumstances.
+7. Be specific — always name the store and the exact figure together.`
     },
     {
       role: "user",
