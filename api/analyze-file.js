@@ -342,31 +342,100 @@ function isConsolidatedColumn(name) {
 // ─────────────────────────────────────────────
 
 /**
- * Scan the first few rows looking for a row that contains 2+ distinct year-like values.
- * Returns { isInline, cyYear, lyYear, yearRowIdx, yearOccurrences }
+ * STRICT inline detection.
+ * Only fires when: 2+ distinct years appear in a header row (rows 0-6),
+ * each year appears in >=2 columns (multi-store), AND the row above has store-name text.
+ * This prevents data cells with year numbers triggering false inline mode.
  */
 function detectInlineYearLayout(rawArray) {
+  if (!rawArray || rawArray.length < 3) return { isInline: false };
+
   for (let rowIdx = 0; rowIdx < Math.min(7, rawArray.length); rowIdx++) {
     const row = rawArray[rowIdx] || [];
+
+    // Collect year hits — skip col 0 (line-item col)
     const yearHits = [];
     row.forEach((cell, colIdx) => {
+      if (colIdx === 0) return;
       const s = String(cell ?? "").trim();
-      // Match 4-digit years (2023, 2024, 2025 …) or FY notation
-      if (/^(20\d{2}|19\d{2}|FY\s*\d{2,4})$/i.test(s)) yearHits.push({ label: s, colIdx });
+      if (/^(202\d|201\d|FY\s*\d{2,4})$/i.test(s)) yearHits.push({ label: s, colIdx });
     });
+
     const uniqueYears = [...new Set(yearHits.map(y => y.label))];
-    if (uniqueYears.length >= 2) {
-      // Sort descending: larger year = CY, smaller = LY
-      uniqueYears.sort((a, b) => {
-        const numA = parseInt(a.replace(/[^0-9]/g,""));
-        const numB = parseInt(b.replace(/[^0-9]/g,""));
-        return numB - numA;
+    if (uniqueYears.length < 2) continue;
+
+    // Each year must appear in at least 2 columns (multi-store structure)
+    const yearCounts = {};
+    yearHits.forEach(y => { yearCounts[y.label] = (yearCounts[y.label] || 0) + 1; });
+    const bothRepeat = uniqueYears.every(yr => yearCounts[yr] >= 2);
+    if (!bothRepeat) continue;
+
+    // Row above must have store-name-like text (not all numeric/blank)
+    let hasStoreRowAbove = false;
+    if (rowIdx > 0) {
+      const above = rawArray[rowIdx - 1] || [];
+      const textCells = above.filter((c, i) => {
+        if (i === 0) return false;
+        const s = String(c ?? "").trim();
+        return s && !/^[\d.,\-\(\)$%\s]+$/.test(s) && !/^(20\d{2}|FY\d{2,4})$/i.test(s);
       });
-      console.log(`📐 Inline year layout: CY=${uniqueYears[0]}, LY=${uniqueYears[1]}, yearRow=${rowIdx}`);
-      return { isInline: true, cyYear: uniqueYears[0], lyYear: uniqueYears[1], yearRowIdx: rowIdx, yearOccurrences: yearHits };
+      hasStoreRowAbove = textCells.length >= 2;
     }
+    if (!hasStoreRowAbove) continue;
+
+    uniqueYears.sort((a, b) => parseInt(b.replace(/\D/g,"")) - parseInt(a.replace(/\D/g,"")));
+    console.log(`📐 INLINE layout confirmed: CY=${uniqueYears[0]}, LY=${uniqueYears[1]}, yearRow=${rowIdx}`);
+    return { isInline: true, cyYear: uniqueYears[0], lyYear: uniqueYears[1], yearRowIdx: rowIdx, yearOccurrences: yearHits };
   }
   return { isInline: false };
+}
+
+/**
+ * Detect separate-sheet layout: stores are columns, one year per sheet.
+ */
+function detectSeparateSheetLayout(rawArray) {
+  if (!rawArray || rawArray.length < 3) return { isSeparateSheet: false };
+
+  for (let rowIdx = 0; rowIdx < Math.min(10, rawArray.length); rowIdx++) {
+    const row = rawArray[rowIdx] || [];
+    if (row.filter(c => c !== null && c !== undefined && String(c).trim()).length < 2) continue;
+
+    const candidateStoreCols = [];
+    row.forEach((cell, colIdx) => {
+      if (colIdx === 0) return;
+      const s = String(cell ?? "").trim();
+      if (!s) return;
+      if (typeof cell === "number") return;
+      if (/^[\d.,\-\(\)$%\s]+$/.test(s)) return;
+      if (/^(20\d{2}|FY\s*\d{2,4})$/i.test(s)) return;
+      if (isConsolidatedColumn(s)) return;
+      candidateStoreCols.push({ name: s, index: colIdx });
+    });
+
+    if (candidateStoreCols.length === 0) continue;
+
+    let numericBelow = 0;
+    for (let r = rowIdx + 1; r < Math.min(rowIdx + 10, rawArray.length); r++) {
+      const dataRow = rawArray[r] || [];
+      const hasNum = candidateStoreCols.some(sc => {
+        const v = dataRow[sc.index];
+        return typeof v === "number" && isFinite(v);
+      });
+      if (hasNum) numericBelow++;
+    }
+
+    let textInCol0 = 0;
+    for (let r = rowIdx + 1; r < Math.min(rowIdx + 10, rawArray.length); r++) {
+      const s = String((rawArray[r] || [])[0] ?? "").trim();
+      if (s && !/^[\d.,\-\(\)$%]+$/.test(s)) textInCol0++;
+    }
+
+    if (numericBelow >= 2 && textInCol0 >= 2) {
+      console.log(`📋 SEPARATE SHEET layout: headerRow=${rowIdx}, stores=${candidateStoreCols.length}`);
+      return { isSeparateSheet: true, headerRowIdx: rowIdx, lineItemColIdx: 0, storeColumns: candidateStoreCols, dataStartRow: rowIdx + 1 };
+    }
+  }
+  return { isSeparateSheet: false };
 }
 
 /**
@@ -517,11 +586,12 @@ function parseInlineYearSheet(sheet, inlineInfo) {
 // ─────────────────────────────────────────────
 
 async function step1_understandQueryAndStructure(sheets, userQuestion) {
+  // Send first 12 rows of each sheet (enough to see full header structure)
   const fileSample = sheets.slice(0, 4).map(sheet => {
     const ra = sheet.rawArray || [];
     if (!ra.length) return `Sheet: "${sheet.name}" (empty)`;
-    const sample = ra.slice(0, 10).map((row, i) =>
-      `Row${i}: ${(row || []).map((c, j) => `[${j}]${String(c ?? "").slice(0, 30)}`).join(" | ")}`
+    const sample = ra.slice(0, 12).map((row, i) =>
+      `Row${i}: ${(row || []).map((c, j) => `[${j}]${String(c ?? "").slice(0, 28)}`).join(" | ")}`
     ).join("\n");
     return `=== Sheet: "${sheet.name}" (${ra.length}r × ${ra[0]?.length || 0}c) ===\n${sample}`;
   }).join("\n\n");
@@ -530,29 +600,41 @@ async function step1_understandQueryAndStructure(sheets, userQuestion) {
     { role: "system", content: "You are a financial spreadsheet structure analyzer. Return ONLY valid JSON. No markdown, no explanation, no backticks." },
     {
       role: "user",
-      content: `File sample:
+      content: `File sample (first 12 rows of each sheet):
 ${fileSample}
 
 User question: "${userQuestion || "Full P&L analysis"}"
 
+FIRST: Identify which layout this file uses:
+
+LAYOUT A — SEPARATE_SHEETS:
+  Each sheet contains ONE year of data. Stores are columns. Line items are rows.
+  Example: Sheet "2025" has columns [Particulars | Store A | Store B | Store C]
+  If there are 2 sheets (one per year), that is SEPARATE_SHEETS.
+
+LAYOUT B — INLINE_YEAR_COLUMNS:
+  ONE sheet contains BOTH years. Each store has TWO column groups (CY Amount, LY Amount).
+  Example headers: Row0=[Particulars | | Store A | | Store B] Row1=[| | 2025 | 2024 | 2025 | 2024]
+  The year row has the SAME year values repeated for EACH store group.
+
 Return JSON:
 {
   "layout_type": "INLINE_YEAR_COLUMNS or SEPARATE_SHEETS",
-  "cy_sheet": "sheet name with CY data",
-  "ly_sheet": "sheet name with LY data, or null",
+  "cy_sheet": "sheet name with most recent year data",
+  "ly_sheet": "sheet name with prior year data, or null if INLINE or single sheet",
   "line_item_column_index": 0,
-  "store_columns": [{ "name": "Store Name", "index": 2 }],
-  "consolidated_column_indices": [],
-  "data_start_row": 3,
+  "store_columns": [{ "name": "Store Name exactly as header", "index": 2 }],
+  "consolidated_column_indices": [3],
+  "data_start_row": 4,
   "analysis_type": "FULL_ANALYSIS"
 }
 
-RULES:
-- layout_type=INLINE_YEAR_COLUMNS if you see year numbers (2024, 2025) as column sub-headers within a single sheet
-- layout_type=SEPARATE_SHEETS if CY and LY are on different sheets
-- store_columns: individual stores only. EXCLUDE Consolidated/Total/Grand Total columns (list those in consolidated_column_indices)
-- data_start_row: first row index with actual P&L data (Revenue, COGS etc.)
-- List ALL store columns`
+CRITICAL RULES:
+- store_columns must list EVERY individual store. EXCLUDE: Benchmark, Target, Budget, Consolidated, Total, Grand Total (put those in consolidated_column_indices)
+- For SEPARATE_SHEETS: store_columns are the column headers of the CY sheet
+- For INLINE_YEAR_COLUMNS: store_columns are the store group headers (before year sub-headers)
+- data_start_row: the first row index that has actual P&L data (Revenue, COGS, etc.) — not header rows
+- List ALL stores, do not truncate`
     }
   ];
 
@@ -794,43 +876,94 @@ function step2_extractAndCompute(sheets, querySchema) {
 }
 
 /**
- * Fallback — auto-detect without Step 1 schema
+ * Fallback — auto-detect layout without Step 1 schema.
+ * Uses detectInlineYearLayout and detectSeparateSheetLayout to determine format,
+ * then handles multi-sheet CY/LY pairing for separate-sheet layout.
  */
 function step2_fallback(sheets) {
-  console.log("⚠️ Step 2 fallback: auto-detecting...");
+  console.log("⚠️ Step 2 fallback: auto-detecting layout...");
+
+  // ── Try inline layout first (on all sheets, use first that matches) ──
   for (const sheet of sheets) {
     const ra = sheet.rawArray || [];
-    if (ra.length < 3) continue;
-
-    // Try inline first
     const inlineInfo = detectInlineYearLayout(ra);
     if (inlineInfo.isInline) {
+      console.log(`🔍 Fallback: INLINE layout detected on sheet "${sheet.name}"`);
       const result = step2_extractAndCompute(sheets, { layout_type: "INLINE_YEAR_COLUMNS", cy_sheet: sheet.name });
       if (result?.storeCount > 0) return result;
     }
-
-    // Separate-sheet fallback
-    let headerRowIdx = -1;
-    for (let i = 0; i < Math.min(10, ra.length); i++) {
-      if ((ra[i] || []).filter(c => c !== null && c !== undefined && String(c).trim()).length >= 3) {
-        headerRowIdx = i; break;
-      }
-    }
-    if (headerRowIdx === -1) continue;
-
-    const headers = (ra[headerRowIdx] || []).map((h, i) => ({ name: String(h ?? "").trim(), index: i }));
-    const storeColumns = headers.slice(1).filter(h => h.name && !isConsolidatedColumn(h.name) && !/^(20\d{2}|FY\d{2,4})$/i.test(h.name));
-    if (!storeColumns.length) continue;
-
-    const fakeSchema = {
-      layout_type: "SEPARATE_SHEETS", cy_sheet: sheet.name, ly_sheet: null,
-      line_item_column_index: 0, store_columns: storeColumns,
-      consolidated_column_indices: headers.filter(h => isConsolidatedColumn(h.name)).map(h => h.index),
-      data_start_row: headerRowIdx + 1
-    };
-    const result = step2_extractAndCompute(sheets, fakeSchema);
-    if (result?.storeCount > 0) return result;
   }
+
+  // ── Try separate-sheet layout ──
+  // Detect structure on each sheet independently, then pair CY + LY sheets
+  const validSheets = [];
+  for (const sheet of sheets) {
+    const ra = sheet.rawArray || [];
+    const detection = detectSeparateSheetLayout(ra);
+    if (detection.isSeparateSheet) {
+      validSheets.push({ sheet, detection });
+      console.log(`🔍 Fallback: SEPARATE SHEET layout on "${sheet.name}", ${detection.storeColumns.length} stores`);
+    }
+  }
+
+  if (validSheets.length === 0) return null;
+
+  // Use the first valid sheet as primary (CY), second as LY if available
+  const { sheet: cySheet, detection: cyDetection } = validSheets[0];
+  const lyEntry = validSheets.length > 1 ? validSheets[1] : null;
+
+  // Build schema from detected structure
+  const fakeSchema = {
+    layout_type: "SEPARATE_SHEETS",
+    cy_sheet: cySheet.name,
+    ly_sheet: lyEntry?.sheet.name || null,
+    line_item_column_index: cyDetection.lineItemColIdx,
+    store_columns: cyDetection.storeColumns,
+    consolidated_column_indices: [],
+    data_start_row: cyDetection.dataStartRow
+  };
+
+  // If LY sheet has different structure (different store columns), handle it separately
+  if (lyEntry && lyEntry.detection.storeColumns.length !== cyDetection.storeColumns.length) {
+    // Build a schema that uses LY sheet's own detected store columns
+    const lyFakeSchema = {
+      ...fakeSchema,
+      cy_sheet: lyEntry.sheet.name,
+      ly_sheet: null,
+      store_columns: lyEntry.detection.storeColumns,
+      data_start_row: lyEntry.detection.dataStartRow
+    };
+    // Extract LY independently and merge
+    const cyResult = step2_extractAndCompute([cySheet], fakeSchema);
+    const lyResult = step2_extractAndCompute([lyEntry.sheet], lyFakeSchema);
+    if (cyResult?.storeCount > 0 && lyResult?.storeCount > 0) {
+      // Merge LY data into CY result
+      cyResult.lyMetrics = lyResult.storeMetrics;
+      cyResult.lyStores = lyResult.stores;
+      cyResult.lySheetName = lyEntry.sheet.name;
+      cyResult.lyYear = lyEntry.sheet.name;
+      // Recompute YoY
+      const kpiKeys = Object.keys(KPI_PATTERNS);
+      cyResult.stores.forEach(store => {
+        const lyStore = lyResult.stores.includes(store) ? store
+          : lyResult.stores.find(ls => ls.toLowerCase().replace(/\s+/g,"").includes(store.toLowerCase().replace(/\s+/g,"").slice(0,5)));
+        if (!lyStore) return;
+        cyResult.yoyComparisons[store] = {};
+        kpiKeys.forEach(kpi => {
+          const cy = cyResult.storeMetrics[store]?.[kpi];
+          const ly = lyResult.storeMetrics[lyStore]?.[kpi];
+          if (cy != null && ly != null && isFinite(cy) && isFinite(ly)) {
+            cyResult.yoyComparisons[store][kpi] = { cy, ly, change: roundTo2(cy - ly), changePct: ly !== 0 ? safeDivide(cy - ly, Math.abs(ly)) : null };
+          }
+        });
+      });
+      return cyResult;
+    }
+  }
+
+  const result = step2_extractAndCompute(sheets, fakeSchema);
+  if (result?.storeCount > 0) return result;
+
   return null;
 }
 
@@ -1165,9 +1298,25 @@ export default async function handler(req, res) {
     let modelResult, computedResults = null;
 
     if (hasSheets) {
+      // ── Pre-flight: run both detectors on all sheets to help Step 1 ──
+      const preInline = extracted.sheets.some(s => detectInlineYearLayout(s.rawArray || []).isInline);
+      const preSeparate = extracted.sheets.some(s => detectSeparateSheetLayout(s.rawArray || []).isSeparateSheet);
+      console.log(`🔭 Pre-flight: inline=${preInline}, separate=${preSeparate}`);
+
       let querySchema = null;
       try { querySchema = await step1_understandQueryAndStructure(extracted.sheets, question); }
       catch (e) { console.warn("⚠️ Step 1 failed:", e.message); }
+
+      // If Step 1 said inline but our detector disagrees, trust the detector
+      if (querySchema?.layout_type === "INLINE_YEAR_COLUMNS" && !preInline && preSeparate) {
+        console.warn("⚠️ Step 1 said INLINE but detector says SEPARATE — overriding to SEPARATE_SHEETS");
+        querySchema.layout_type = "SEPARATE_SHEETS";
+      }
+      // If Step 1 said separate but our detector found inline, trust the detector
+      if (querySchema?.layout_type === "SEPARATE_SHEETS" && preInline && !preSeparate) {
+        console.warn("⚠️ Step 1 said SEPARATE but detector found INLINE — overriding to INLINE_YEAR_COLUMNS");
+        querySchema.layout_type = "INLINE_YEAR_COLUMNS";
+      }
 
       const canUseSchema = querySchema && (querySchema.store_columns?.length > 0 || querySchema.layout_type === "INLINE_YEAR_COLUMNS");
       computedResults = canUseSchema ? step2_extractAndCompute(extracted.sheets, querySchema) : null;
