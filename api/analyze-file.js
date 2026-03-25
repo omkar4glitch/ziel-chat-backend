@@ -579,10 +579,14 @@ function parseInlineYearSheet(sheet, inlineInfo) {
     if (lastStore) storeByCol[colIdx] = lastStore;
   });
 
-  // Forward-fill year labels
+  // Forward-fill year labels — but ONLY within a valid store's column group.
+  // Reset lastYear whenever storeByCol has no entry (meaning we're in a gap/consolidated group).
   const yearByCol = {};
   let lastYear = null;
   yearRow.forEach((cell, colIdx) => {
+    if (colIdx === 0) return;
+    // If this column has no valid store, reset the year bleed
+    if (!storeByCol[colIdx]) { lastYear = null; return; }
     const s = String(cell ?? "").trim();
     if (/^(20\d{2}|FY\s*\d{2,4})$/i.test(s)) lastYear = s;
     if (lastYear) yearByCol[colIdx] = lastYear;
@@ -1336,11 +1340,13 @@ CRITICAL REMINDERS:
 }
 
 async function step3_generateCommentary(computedResults, userQuestion) {
-  const dataBlock = buildDataBlockForAI(computedResults, userQuestion, kpiScope);
-  const hasLY     = !!computedResults.lySheetName;
-  const hasEbitda = computedResults.ebitdaRanking.length > 0;
+  // ── Must declare these BEFORE any function that uses them ──
   const intent    = parseUserIntent(userQuestion);
   const kpiScope  = getKPIOrderForIntent(intent);
+  const hasLY     = !!computedResults.lySheetName;
+  const hasEbitda = computedResults.ebitdaRanking.length > 0;
+
+  const dataBlock = buildDataBlockForAI(computedResults, userQuestion, kpiScope);
   console.log(`📦 Data block: ${dataBlock.length} chars | Intent: kpiLimit=${intent.kpiLimit}, storeFilter=${JSON.stringify(intent.storeFilter)}`);
 
   // Build dynamic analysis instructions based on what the user actually asked
@@ -1541,24 +1547,31 @@ export default async function handler(req, res) {
     let modelResult, computedResults = null;
 
     if (hasSheets) {
-      // ── Pre-flight: run both detectors on all sheets to help Step 1 ──
-      const preInline = extracted.sheets.some(s => detectInlineYearLayout(s.rawArray || []).isInline);
-      const preSeparate = extracted.sheets.some(s => detectSeparateSheetLayout(s.rawArray || []).isSeparateSheet);
+      // ── Pre-flight: run both detectors on all sheets ──
+      // inline detection is stricter (3 conditions), so if it fires it wins
+      const preInlineSheet = extracted.sheets.find(s => detectInlineYearLayout(s.rawArray || []).isInline);
+      const preSeparateSheet = extracted.sheets.find(s => detectSeparateSheetLayout(s.rawArray || []).isSeparateSheet);
+      const preInline   = !!preInlineSheet;
+      const preSeparate = !!preSeparateSheet;
       console.log(`🔭 Pre-flight: inline=${preInline}, separate=${preSeparate}`);
 
       let querySchema = null;
       try { querySchema = await step1_understandQueryAndStructure(extracted.sheets, question); }
       catch (e) { console.warn("⚠️ Step 1 failed:", e.message); }
 
-      // If Step 1 said inline but our detector disagrees, trust the detector
-      if (querySchema?.layout_type === "INLINE_YEAR_COLUMNS" && !preInline && preSeparate) {
-        console.warn("⚠️ Step 1 said INLINE but detector says SEPARATE — overriding to SEPARATE_SHEETS");
-        querySchema.layout_type = "SEPARATE_SHEETS";
-      }
-      // If Step 1 said separate but our detector found inline, trust the detector
-      if (querySchema?.layout_type === "SEPARATE_SHEETS" && preInline && !preSeparate) {
-        console.warn("⚠️ Step 1 said SEPARATE but detector found INLINE — overriding to INLINE_YEAR_COLUMNS");
+      // Override rules — code detector wins over AI when they disagree:
+      // Rule 1: Step 1 says SEPARATE but code found INLINE → force INLINE
+      //   (This was the missing-store bug: Step 1 saw the separate-sheet pattern
+      //    in row 1 store names but inline has more stores in the year-col structure)
+      if (querySchema?.layout_type === "SEPARATE_SHEETS" && preInline) {
+        console.warn("⚠️ Override: Step 1=SEPARATE but code found INLINE — using INLINE");
         querySchema.layout_type = "INLINE_YEAR_COLUMNS";
+        querySchema.cy_sheet = preInlineSheet.name;
+      }
+      // Rule 2: Step 1 says INLINE but code found only SEPARATE → force SEPARATE
+      if (querySchema?.layout_type === "INLINE_YEAR_COLUMNS" && !preInline && preSeparate) {
+        console.warn("⚠️ Override: Step 1=INLINE but code found SEPARATE — using SEPARATE");
+        querySchema.layout_type = "SEPARATE_SHEETS";
       }
 
       const canUseSchema = querySchema && (querySchema.store_columns?.length > 0 || querySchema.layout_type === "INLINE_YEAR_COLUMNS");
