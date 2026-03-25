@@ -1004,7 +1004,8 @@ function step2_extractAndCompute(sheets, querySchema) {
     lyMetrics, lyStores: lyStoreNames,
     kpiMapping, totals, averages,
     ebitdaRanking, revenueRanking,
-    yoyComparisons, portfolioYoY
+    yoyComparisons, portfolioYoY,
+    allLineItems: cyLineItemDict   // all raw line items for deep analysis
   };
 }
 
@@ -1115,9 +1116,30 @@ const KPI_LABELS = {
 const KPI_ORDER = ["REVENUE","COGS","GROSS_PROFIT","STAFF_COST","RENT","MARKETING","OTHER_OPEX",
                    "TOTAL_OPEX","EBITDA","DEPRECIATION","EBIT","INTEREST","PBT","TAX","NET_PROFIT"];
 
-function buildDataBlockForAI(r, userQuestion, kpiScope) {
+function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   const { storeMetrics, stores, totals, averages, ebitdaRanking, revenueRanking,
-          yoyComparisons, portfolioYoY, cyYear, lyYear, cySheetName, lySheetName, storeCount } = r;
+          yoyComparisons, portfolioYoY, cyYear, lyYear, cySheetName, lySheetName,
+          storeCount, allLineItems } = r;
+
+  const activeKPIs   = kpiScope || KPI_ORDER;
+  const inp          = intent || {};
+
+  // ── Determine which stores to include in the data block ──
+  // For specific-store queries: only those stores
+  // For top/bottom ranking: all stores (need full list for ranking)
+  // For all-store analysis: all stores
+  let activeStores = stores;
+  if (inp.isSpecificStore && inp.specificStores?.length > 0) {
+    // Fuzzy match: find actual store objects that match the mentioned names
+    activeStores = stores.filter(s =>
+      inp.specificStores.some(req =>
+        s.toLowerCase().includes(req.toLowerCase()) ||
+        req.toLowerCase().includes(s.toLowerCase().split(" ")[0])
+      )
+    );
+    if (activeStores.length === 0) activeStores = stores; // fallback if nothing matched
+  }
+
   let b = "";
   b += `══════════════════════════════════════════════════════\n`;
   b += `  PRE-COMPUTED FINANCIAL DATA — ALL MATH DONE IN CODE\n`;
@@ -1127,65 +1149,103 @@ function buildDataBlockForAI(r, userQuestion, kpiScope) {
   b += `══════════════════════════════════════════════════════\n\n`;
   b += `CY: ${cyYear} (${cySheetName})\n`;
   b += `LY: ${lySheetName ? `${lyYear} (${lySheetName})` : "Not available"}\n`;
-  b += `Stores: ${storeCount}\n\n`;
+  b += `Total stores in file: ${storeCount}\n`;
+  b += `Stores in this analysis: ${activeStores.length}${inp.isSpecificStore ? ` (filtered to: ${activeStores.join(", ")})` : ""}\n\n`;
 
-  // Portfolio totals — only KPIs within user-requested scope
-  const activeKPIs = kpiScope || KPI_ORDER; // fallback to full list if no scope
-  b += `▶ PORTFOLIO TOTALS\n${"─".repeat(58)}\n`;
+  // ── Portfolio totals (scoped to activeStores only) ──
+  // For specific-store queries: recalculate totals just for those stores
+  const scopedTotals = {};
   activeKPIs.forEach(kpi => {
-    if (totals[kpi] !== undefined && totals[kpi] !== null) {
-      const label = (KPI_LABELS[kpi]||kpi).padEnd(22);
-      const cy    = formatNum(totals[kpi]);
-      const yoy   = portfolioYoY[kpi];
+    const vals = activeStores.map(s => storeMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
+    if (vals.length) scopedTotals[kpi] = Math.round(vals.reduce((a, b) => a + b, 0));
+  });
+
+  b += `▶ ${inp.isSpecificStore ? `TOTALS FOR SELECTED STORES` : "PORTFOLIO TOTALS"}\n${"─".repeat(58)}\n`;
+  activeKPIs.forEach(kpi => {
+    if (scopedTotals[kpi] !== undefined) {
+      const label  = (KPI_LABELS[kpi]||kpi).padEnd(22);
+      const cy     = formatNum(scopedTotals[kpi]);
+      // Portfolio YoY only shown for all-store analysis
+      const yoy    = (!inp.isSpecificStore) ? portfolioYoY[kpi] : null;
       const yoyStr = yoy ? `  |  LY: ${formatNum(yoy.ly)}  |  Δ: ${formatNum(yoy.change)} (${formatPct(yoy.changePct)})` : "";
       b += `  ${label}: ${cy.padStart(15)}${yoyStr}\n`;
     }
   });
 
-  const avgKPIs = ["GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","OPEX_PCT","STAFF_PCT","RENT_PCT"]
-    .filter(k => {
-      // Only show average if base KPI is in scope
-      const base = k.replace("_PCT","").replace("MARGIN","_MARGIN").replace("_MARGIN_","_");
-      const baseKpi = k.replace("_MARGIN_PCT","").replace("_PCT","");
-      return activeKPIs.includes(baseKpi) || activeKPIs.some(ak => ak.startsWith(baseKpi));
-    });
-  if (avgKPIs.length) {
-    b += `\n▶ PORTFOLIO AVERAGES\n${"─".repeat(58)}\n`;
-    avgKPIs.forEach(kpi => {
-      if (averages[kpi] !== undefined)
-        b += `  ${(KPI_LABELS[kpi]||kpi).padEnd(22)}: ${formatPct(averages[kpi])}\n`;
-    });
+  // Portfolio averages (only for all-store analysis)
+  if (!inp.isSpecificStore) {
+    const avgKPIs = ["GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","OPEX_PCT","STAFF_PCT","RENT_PCT"]
+      .filter(k => {
+        const baseKpi = k.replace("_MARGIN_PCT","").replace("_PCT","");
+        return activeKPIs.includes(baseKpi) || activeKPIs.some(ak => ak.startsWith(baseKpi));
+      });
+    if (avgKPIs.length) {
+      b += `\n▶ PORTFOLIO AVERAGES (all ${storeCount} stores)\n${"─".repeat(58)}\n`;
+      avgKPIs.forEach(kpi => {
+        if (averages[kpi] !== undefined)
+          b += `  ${(KPI_LABELS[kpi]||kpi).padEnd(22)}: ${formatPct(averages[kpi])}\n`;
+      });
+    }
   }
 
-  // Per-store detail
-  b += `\n▶ ALL STORES — CY PERFORMANCE\n${"─".repeat(58)}\n`;
-  stores.forEach(store => {
+  // ── Per-store detail ──
+  b += `\n▶ ${inp.isSpecificStore ? "SELECTED STORE DETAIL" : "ALL STORES"} — CY PERFORMANCE\n${"─".repeat(58)}\n`;
+  activeStores.forEach(store => {
     const m   = storeMetrics[store];
     const yoy = yoyComparisons[store];
     b += `\n  ┌─ ${store}\n`;
-    activeKPIs.forEach(kpi => {
-      const v = m?.[kpi];
-      if (v !== null && v !== undefined && isFinite(v)) {
-        const pctKey = kpi + "_PCT";
-        const pct    = m?.[pctKey];
-        const pctStr = (pct !== null && pct !== undefined && isFinite(pct)) ? `  (${formatPct(pct)})` : "";
-        b += `  │  ${(KPI_LABELS[kpi]||kpi).padEnd(20)}: ${formatNum(v)}${pctStr}\n`;
-      }
-    });
+
+    // For deep analysis: include ALL line items from the raw data, not just matched KPIs
+    if (inp.isDeepAnalysis && allLineItems) {
+      const storeLineItems = allLineItems[store] || {};
+      // First show KPI-matched items in order
+      activeKPIs.forEach(kpi => {
+        const v = m?.[kpi];
+        if (v !== null && v !== undefined && isFinite(v)) {
+          const pctKey = kpi + "_PCT";
+          const pct    = m?.[pctKey];
+          const pctStr = (pct !== null && pct !== undefined && isFinite(pct)) ? `  (${formatPct(pct)})` : "";
+          b += `  │  ${(KPI_LABELS[kpi]||kpi).padEnd(28)}: ${formatNum(v)}${pctStr}\n`;
+        }
+      });
+      // Then show ALL remaining raw line items not already shown
+      const shownDescs = new Set(activeKPIs.map(k => {
+        const kpiDesc = Object.keys(storeLineItems).find(desc => matchKPI(desc) === k);
+        return kpiDesc;
+      }).filter(Boolean));
+      Object.entries(storeLineItems).forEach(([desc, val]) => {
+        if (!shownDescs.has(desc) && val !== null && val !== undefined && isFinite(val)) {
+          b += `  │  ${desc.slice(0,28).padEnd(28)}: ${formatNum(val)}\n`;
+        }
+      });
+    } else {
+      // Standard: only matched KPIs
+      activeKPIs.forEach(kpi => {
+        const v = m?.[kpi];
+        if (v !== null && v !== undefined && isFinite(v)) {
+          const pctKey = kpi + "_PCT";
+          const pct    = m?.[pctKey];
+          const pctStr = (pct !== null && pct !== undefined && isFinite(pct)) ? `  (${formatPct(pct)})` : "";
+          b += `  │  ${(KPI_LABELS[kpi]||kpi).padEnd(28)}: ${formatNum(v)}${pctStr}\n`;
+        }
+      });
+    }
+
     if (yoy && Object.keys(yoy).length) {
       b += `  │  ── YoY vs ${lyYear} ──\n`;
       activeKPIs.forEach(kpi => {
         if (yoy[kpi]) {
           const { cy, ly, change, changePct } = yoy[kpi];
-          b += `  │  ${(KPI_LABELS[kpi]||kpi).padEnd(20)}: CY ${formatNum(cy)} | LY ${formatNum(ly)} | Δ ${formatNum(change)} (${formatPct(changePct)})\n`;
+          b += `  │  ${(KPI_LABELS[kpi]||kpi).padEnd(28)}: CY ${formatNum(cy)} | LY ${formatNum(ly)} | Δ ${formatNum(change)} (${formatPct(changePct)})\n`;
         }
       });
     }
-    b += `  └${"─".repeat(56)}\n`;
+    b += `  └${"─".repeat(60)}\n`;
   });
 
-  // EBITDA full ranking
-  if (ebitdaRanking.length) {
+  // ── EBITDA ranking: only for all-store analysis OR when explicitly requested ──
+  const showEbitdaRanking = (!inp.isSpecificStore && inp.isAllStoreAnalysis) || inp.wantsEbitdaRank || inp.storeFilter;
+  if (showEbitdaRanking && ebitdaRanking.length && activeKPIs.includes("EBITDA")) {
     b += `\n▶ EBITDA RANKING — ALL ${ebitdaRanking.length} STORES (highest → lowest)\n${"─".repeat(58)}\n`;
     ebitdaRanking.forEach((x, i) => {
       const m = x.ebitdaMargin !== null ? ` | ${formatPct(x.ebitdaMargin)}` : "";
@@ -1199,7 +1259,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope) {
     bottom5.forEach((x,i) => b += `    ${i+1}. ${x.store} — ${formatNum(x.ebitda)}${x.ebitdaMargin!==null?` (${formatPct(x.ebitdaMargin)})`:""}\n`);
   }
 
-  if (revenueRanking.length) {
+  if (!inp.isSpecificStore && revenueRanking.length) {
     b += `\n▶ REVENUE RANKING (top 10)\n${"─".repeat(58)}\n`;
     revenueRanking.slice(0, 10).forEach((x, i) =>
       b += `  #${String(i+1).padStart(2)} ${x.store.padEnd(34)} ${formatNum(x.revenue)}\n`);
@@ -1220,34 +1280,59 @@ function buildDataBlockForAI(r, userQuestion, kpiScope) {
  * - What type of analysis (ranking, comparison, single store, full review)
  * - Whether YoY is relevant to their question
  */
-function parseUserIntent(userQuestion) {
+function parseUserIntent(userQuestion, allStoreNames = []) {
   const q = String(userQuestion || "").toLowerCase();
+  const qRaw = String(userQuestion || ""); // preserve case for store matching
 
-  // Detect KPI depth limit — broad patterns for natural language:
-  // "till ebitda", "upto ebitda", "analysis till ebitda", "give till ebitda", etc.
-  let kpiLimit = null; // null = no limit (full P&L)
+  // ── KPI depth limit ──
+  let kpiLimit = null;
   if (/till ebid?ta|upto ebid?ta|up to ebid?ta|only.*ebid?ta|ebid?ta only|stop at ebid?ta|through ebid?ta|ebid?ta level|show.*ebid?ta|give.*ebid?ta|analysis.*ebid?ta/.test(q)) kpiLimit = "EBITDA";
   else if (/till gross.{0,8}profit|up to gross|gross profit only/.test(q)) kpiLimit = "GROSS_PROFIT";
   else if (/till net.{0,8}profit|net profit only/.test(q)) kpiLimit = "NET_PROFIT";
   else if (/till revenue|revenue only/.test(q)) kpiLimit = "REVENUE";
   else if (/till ebit[^d]|up to ebit[^d]|ebit only/.test(q)) kpiLimit = "EBIT";
   else if (/till pbt|up to pbt|pbt only/.test(q)) kpiLimit = "PBT";
-  // Detect store filter
+
+  // ── Specific store detection ──
+  // Match store names mentioned in the question (case-insensitive, partial ok for long names)
+  let specificStores = [];
+  if (allStoreNames.length > 0) {
+    specificStores = allStoreNames.filter(storeName => {
+      const sLower = storeName.toLowerCase();
+      // Match full name, or first significant word (≥4 chars) of the store name
+      if (q.includes(sLower)) return true;
+      // Try matching first word of store name if it's meaningful
+      const firstWord = sLower.split(/\s+/)[0];
+      if (firstWord.length >= 4 && q.includes(firstWord)) return true;
+      // Try matching any significant token (≥5 chars) from store name
+      const tokens = sLower.split(/\s+/).filter(t => t.length >= 5 && !/^(donuts?|llc|inc|corp|group|street|avenue|place)$/i.test(t));
+      return tokens.some(t => q.includes(t));
+    });
+  }
+  const isSpecificStore = specificStores.length > 0;
+
+  // ── Ranking / top-bottom filter ──
   let storeFilter = null;
-  const topMatch  = q.match(/top\s*(\d+)/);
-  const botMatch  = q.match(/bottom\s*(\d+)/);
-  if (topMatch)  storeFilter = { type: "top",    n: parseInt(topMatch[1]) };
-  if (botMatch)  storeFilter = { type: "bottom", n: parseInt(botMatch[1]) };
+  const topMatch = q.match(/top\s*(\d+)/);
+  const botMatch = q.match(/bottom\s*(\d+)/);
+  if (topMatch) storeFilter = { type: "top",    n: parseInt(topMatch[1]) };
+  if (botMatch) storeFilter = { type: "bottom", n: parseInt(botMatch[1]) };
 
-  // Detect analysis type
-  const isRanking    = /top|bottom|rank|best|worst|highest|lowest/.test(q);
-  const isComparison = /compar|vs|versus|against|yoy|year.on.year|last year/.test(q);
-  const isSingleStore = false; // Could be extended
+  // ── Analysis depth ──
+  const isDeepAnalysis   = /deep|detail|thorough|comprehensive|full|complete|in.depth|all head|every head|all line|breakdown/.test(q);
+  const isRanking        = /top|bottom|rank|best|worst|highest|lowest/.test(q);
+  const isComparison     = /compar|vs|versus|against|yoy|year.on.year|last year/.test(q);
+  const wantsYoY         = isComparison || /yoy|year.on.year|last year|vs.*last|compared to/.test(q);
+  // EBITDA ranking explicitly requested
+  const wantsEbitdaRank  = /top.*ebid?ta|bottom.*ebid?ta|ebid?ta.*top|ebid?ta.*bottom|ebid?ta.*rank|rank.*ebid?ta|best.*ebid?ta|worst.*ebid?ta/.test(q);
+  // All-store analysis (no specific store, not a ranking, not a single store)
+  const isAllStoreAnalysis = !isSpecificStore && !storeFilter && !isRanking;
 
-  // Detect if they want YoY
-  const wantsYoY = isComparison || /yoy|year.on.year|last year|vs.*last|compared to/.test(q);
-
-  return { kpiLimit, storeFilter, isRanking, isComparison, wantsYoY };
+  return {
+    kpiLimit, specificStores, isSpecificStore,
+    storeFilter, isRanking, isComparison, wantsYoY,
+    isDeepAnalysis, wantsEbitdaRank, isAllStoreAnalysis
+  };
 }
 
 /**
@@ -1269,71 +1354,117 @@ function getKPIOrderForIntent(intent) {
  * based on what the user actually asked for.
  */
 function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults) {
-  const kpiScopeStr = kpiScope.join(", ");
-  const q = intent;
+  const kpiScopeStr      = kpiScope.join(", ");
+  const isSpecific       = intent.isSpecificStore && intent.specificStores?.length > 0;
+  const isDeep           = intent.isDeepAnalysis;
+  const showEbitdaRank   = (!isSpecific && intent.isAllStoreAnalysis) || intent.wantsEbitdaRank || intent.storeFilter;
+  const storeLabel       = isSpecific ? `for: ${intent.specificStores.join(", ")}` : "all stores";
 
-  // Table columns limited to kpiScope
+  // Table columns
   const tableKPIs = kpiScope.filter(k => ["REVENUE","GROSS_PROFIT","EBITDA","NET_PROFIT"].includes(k));
   const tableCols = ["Store", ...tableKPIs.map(k => ({
-    REVENUE:"Revenue", GROSS_PROFIT:"Gross Profit", GROSS_MARGIN_PCT:"GP%",
-    EBITDA:"EBITDA", EBITDA_MARGIN_PCT:"EBITDA%", NET_PROFIT:"Net Profit"
+    REVENUE:"Revenue", GROSS_PROFIT:"Gross Profit", EBITDA:"EBITDA", NET_PROFIT:"Net Profit"
   }[k] || k))];
+  if (kpiScope.includes("GROSS_PROFIT")) tableCols.splice(2, 0, "GP%");
+  if (kpiScope.includes("EBITDA"))       tableCols.push("EBITDA%");
 
-  let instructions = `The user asked: "${intent.kpiLimit ? `Analysis limited to: ${intent.kpiLimit} and above only.` : "Full P&L analysis."}"
+  let scopeNote = intent.kpiLimit
+    ? `Analysis limited to KPIs up to and including: ${intent.kpiLimit}.`
+    : "Full P&L analysis.";
+  if (isSpecific) scopeNote += ` Focus ONLY on: ${intent.specificStores.join(", ")}.`;
 
-SCOPE CONSTRAINT: Only discuss KPIs in this list: [${kpiScopeStr}].
-Do NOT mention or include any KPIs outside this list, even if data exists for them.
+  let instructions = `The user asked: "${scopeNote}"
+
+SCOPE CONSTRAINTS:
+1. KPI scope: [${kpiScopeStr}] — do NOT include KPIs outside this list.
+2. Store scope: ${isSpecific ? `ONLY the following stores: ${intent.specificStores.join(", ")}. Do NOT include totality figures for all 22 stores.` : "All stores."}
+${isDeep ? "3. DEEP ANALYSIS requested: discuss every line item in the data block, not just headline KPIs. Flag anomalies, unusual ratios, and unexpected figures." : ""}
 
 Write a detailed MIS P&L commentary with these sections:
 
 ## Executive Summary
-(3-4 sentences covering portfolio performance within the allowed KPI scope.${hasLY ? " Include YoY direction." : ""})
+(3-4 sentences. Cover ${isSpecific ? "performance of the specified store(s)" : "overall portfolio"} within KPI scope.${hasLY ? " Include YoY direction." : ""})
 
-## Portfolio Performance Overview
-(Paragraph on headline metrics within scope: ${kpiScope.slice(0, 5).join(", ")}. Use exact figures from data block.)
 `;
 
-  if (hasLY && q.wantsYoY) {
-    instructions += `
-## Year-on-Year Analysis
-(CY vs LY comparison for portfolio and notable stores. Only KPIs in scope. Quote Δ and Δ% from data block.)
+  if (isSpecific) {
+    instructions += `## Store Performance — ${intent.specificStores.join(" & ")}
+(Detailed paragraph for each specified store. Cover all KPIs in scope with exact figures. Compare stores to each other if multiple were requested.)
+
+`;
+    if (hasLY && intent.wantsYoY) {
+      instructions += `## Year-on-Year Analysis
+(CY vs LY for the specified store(s) only. Quote Δ and Δ% from data block.)
+
+`;
+    }
+    if (isDeep) {
+      instructions += `## Detailed Line Item Analysis
+(Go through EVERY line item in the data block for the specified store(s). For each:
+- State the value
+- Note if it seems high, low, or unusual relative to Revenue %
+- Flag any anomaly, unexpected ratio, or item that warrants attention
+This is the most important section for deep analysis.)
+
+`;
+    }
+    instructions += `## Key Observations
+(5-7 specific points about the specified store(s). Each must cite exact figures. Flag any concerns or anomalies.)
+
+`;
+  } else {
+    // All-store analysis
+    if (hasLY && intent.wantsYoY) {
+      instructions += `## Year-on-Year Analysis
+(CY vs LY for portfolio and notable stores. Only KPIs in scope. Quote Δ and Δ% from data block.)
+
+`;
+    }
+
+    instructions += `## Store-wise Performance Summary
+(Markdown table: ${tableCols.join(" | ")}. All stores. Values from data block only.)
+
+`;
+
+    if (showEbitdaRank && hasEbitda && kpiScope.includes("EBITDA")) {
+      instructions += `## EBITDA Analysis
+(EBITDA performance. List TOP 5 and BOTTOM 5 exactly as in data block — same order, same figures.)
+
+`;
+    }
+
+    const hasCostKPIs = kpiScope.some(k => ["COGS","STAFF_COST","RENT","TOTAL_OPEX"].includes(k));
+    if (hasCostKPIs) {
+      const costList = kpiScope.filter(k => ["COGS","STAFF_COST","RENT","MARKETING","OTHER_OPEX","TOTAL_OPEX"].includes(k)).join(", ");
+      instructions += `## Cost Structure Analysis
+(Cover: ${costList}. Highlight outlier stores.)
+
+`;
+    }
+
+    if (isDeep) {
+      instructions += `## Anomaly & Deep Dive
+(Flag any stores or line items where figures look unusual, ratios are out of range, or numbers warrant investigation. Be specific with figures.)
+
+`;
+    }
+
+    instructions += `## Key Observations
+(5-7 bullet points. Each must cite a store name and exact figure.)
+
 `;
   }
 
-  instructions += `
-## Store-wise Performance Summary
-(Markdown table with columns: ${tableCols.join(" | ")}. Values from data block only. All stores.)
-`;
-
-  if (hasEbitda && kpiScope.includes("EBITDA")) {
-    instructions += `
-## EBITDA Analysis
-(EBITDA performance across portfolio. List TOP 5 and BOTTOM 5 exactly as in the data block — same order, same figures, including negatives.)
-`;
-  }
-
-  // Only include cost structure if the user's scope goes deep enough
-  const hasCostKPIs = kpiScope.some(k => ["COGS","STAFF_COST","RENT","TOTAL_OPEX"].includes(k));
-  if (hasCostKPIs) {
-    instructions += `
-## Cost Structure Analysis
-(Cover only cost KPIs within scope: ${kpiScope.filter(k => ["COGS","STAFF_COST","RENT","MARKETING","OTHER_OPEX","TOTAL_OPEX"].includes(k)).join(", ")}. Highlight outliers.)
-`;
-  }
-
-  instructions += `
-## Key Observations
-(5-7 bullet points. Each must cite a store name and exact figure. Only use KPIs within scope: [${kpiScopeStr}].)
-
-CRITICAL REMINDERS:
-- ONLY the KPIs in scope: [${kpiScopeStr}]. Do NOT add Net Profit, PBT, Tax, Depreciation, EBIT, or Interest if they are not in this list.
+  instructions += `CRITICAL REMINDERS:
+- KPIs in scope ONLY: [${kpiScopeStr}]. Do NOT add anything outside this list.
+- ${isSpecific ? `Store scope: ONLY ${intent.specificStores.join(", ")}. Do NOT present all-store totals as if they represent just these stores.` : "Include all stores."}
 - Every number must come exactly from the data block.
 - Negatives stay negative.
 - No Recommendations section.`;
 
-  if (kpiScope.includes("EBITDA")) {
+  if (showEbitdaRank && kpiScope.includes("EBITDA") && !isSpecific) {
     instructions += `
-- Top 5 / Bottom 5 must match the EBITDA RANKING in the data block exactly — same order, same figures.`;
+- Top 5 / Bottom 5 must match EBITDA RANKING in data block exactly.`;
   }
 
   return instructions;
@@ -1341,13 +1472,14 @@ CRITICAL REMINDERS:
 
 async function step3_generateCommentary(computedResults, userQuestion) {
   // ── Must declare these BEFORE any function that uses them ──
-  const intent    = parseUserIntent(userQuestion);
+  const intent    = parseUserIntent(userQuestion, computedResults.stores || []);
   const kpiScope  = getKPIOrderForIntent(intent);
   const hasLY     = !!computedResults.lySheetName;
   const hasEbitda = computedResults.ebitdaRanking.length > 0;
 
-  const dataBlock = buildDataBlockForAI(computedResults, userQuestion, kpiScope);
-  console.log(`📦 Data block: ${dataBlock.length} chars | Intent: kpiLimit=${intent.kpiLimit}, storeFilter=${JSON.stringify(intent.storeFilter)}`);
+  // Pass intent into data block so it can filter stores and include deep line items
+  const dataBlock = buildDataBlockForAI(computedResults, userQuestion, kpiScope, intent);
+  console.log(`📦 Data block: ${dataBlock.length} chars | Intent: kpiLimit=${intent.kpiLimit}, specificStores=${JSON.stringify(intent.specificStores)}, deep=${intent.isDeepAnalysis}, ebitdaRank=${intent.wantsEbitdaRank}`);
 
   // Build dynamic analysis instructions based on what the user actually asked
   const analysisInstructions = buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults);
