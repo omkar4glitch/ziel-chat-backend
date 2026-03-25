@@ -279,9 +279,16 @@ function safeDivide(num, den) {
 //  KPI PATTERN MATCHING
 // ─────────────────────────────────────────────
 
+// Revenue priority: NET always beats GROSS when both exist in the same file.
+// We use a two-pass approach: first try to match NET_REVENUE specifically,
+// then fall back to GROSS_REVENUE. Both map to the REVENUE KPI slot,
+// but net takes precedence in computeKPIsFromLineItems().
 const KPI_PATTERNS = {
-  REVENUE:      ["total revenue","net revenue","total net revenue","revenue","net sales","total sales",
-                 "total net sales","sales","turnover","gross revenue","total income","net income from sales"],
+  // NET revenue patterns — checked FIRST (higher priority)
+  NET_REVENUE:  ["net revenue","total net revenue","net sales","total net sales","net income from sales",
+                 "net turnover","revenue (net)","sales (net)"],
+  // GROSS revenue patterns — only used if no net revenue found
+  GROSS_REVENUE:["gross revenue","gross sales","total revenue","total sales","revenue","sales","turnover","total income"],
   COGS:         ["cost of goods sold","cost of sales","cogs","direct cost","cost of revenue",
                  "cost of material","material cost","food cost","beverage cost","cost of food"],
   GROSS_PROFIT: ["gross profit","gross margin amount","gross margin","gross income"],
@@ -306,12 +313,72 @@ const KPI_PATTERNS = {
 
 function matchKPI(description) {
   const d = String(description || "").toLowerCase().trim();
+
+  // Pass 1: exact and startsWith matches only (highest confidence)
   for (const [kpi, patterns] of Object.entries(KPI_PATTERNS)) {
     for (const p of patterns) {
-      if (d === p || d.startsWith(p) || d.includes(p)) return kpi;
+      if (d === p || d.startsWith(p)) return kpi;
+    }
+  }
+
+  // Pass 2: substring includes — but NET_REVENUE must beat GROSS_REVENUE
+  // Check NET_REVENUE first so "net revenue" never falls into GROSS_REVENUE via includes("revenue")
+  const netPatterns = KPI_PATTERNS["NET_REVENUE"] || [];
+  for (const p of netPatterns) {
+    if (d.includes(p)) return "NET_REVENUE";
+  }
+
+  for (const [kpi, patterns] of Object.entries(KPI_PATTERNS)) {
+    if (kpi === "NET_REVENUE") continue; // already checked above
+    for (const p of patterns) {
+      if (d.includes(p)) {
+        return kpi;
+      }
     }
   }
   return null;
+}
+
+/**
+ * FIX: When iterating KPI_PATTERNS, NET_REVENUE and GROSS_REVENUE are separate keys.
+ * computeKPIsFromLineItems collects both, then resolveRevenueKPI picks net > gross.
+ * This function ensures we never overwrite a NET_REVENUE match with a GROSS_REVENUE one.
+ */
+function setKPIMapping(kpiMapping, kpi, desc) {
+  // Never overwrite NET_REVENUE with GROSS_REVENUE
+  if (kpi === "GROSS_REVENUE" && kpiMapping["NET_REVENUE"]) return;
+  // Never overwrite GROSS_REVENUE with NET_REVENUE (net will be resolved later)
+  if (!kpiMapping[kpi]) kpiMapping[kpi] = desc;
+}
+
+/**
+ * Resolve the REVENUE KPI from line items.
+ * Priority: NET_REVENUE > GROSS_REVENUE > REVENUE (generic)
+ * If both net and gross exist in the same file, always use net.
+ */
+function resolveRevenueKPI(kpiMapping, lineItemDict) {
+  // If we already have a clean REVENUE match (no gross/net distinction), keep it
+  const hasNet   = "NET_REVENUE"   in kpiMapping;
+  const hasGross = "GROSS_REVENUE" in kpiMapping;
+
+  if (hasNet && hasGross) {
+    // Both exist — drop gross, keep net, rename to REVENUE
+    console.log(`💰 Both NET and GROSS revenue found. Using NET: "${kpiMapping.NET_REVENUE}" (dropping gross: "${kpiMapping.GROSS_REVENUE}")`);
+    kpiMapping.REVENUE = kpiMapping.NET_REVENUE;
+    delete kpiMapping.NET_REVENUE;
+    delete kpiMapping.GROSS_REVENUE;
+  } else if (hasNet) {
+    // Only net — rename to REVENUE
+    kpiMapping.REVENUE = kpiMapping.NET_REVENUE;
+    delete kpiMapping.NET_REVENUE;
+  } else if (hasGross) {
+    // Only gross — use it but rename to REVENUE
+    kpiMapping.REVENUE = kpiMapping.GROSS_REVENUE;
+    delete kpiMapping.GROSS_REVENUE;
+  }
+  // else: REVENUE already set by a generic pattern, leave it
+
+  return kpiMapping;
 }
 
 // ─────────────────────────────────────────────
@@ -400,16 +467,34 @@ function detectSeparateSheetLayout(rawArray) {
     const row = rawArray[rowIdx] || [];
     if (row.filter(c => c !== null && c !== undefined && String(c).trim()).length < 2) continue;
 
-    const candidateStoreCols = [];
+    // Forward-fill store names: Excel merged cells appear as value in first cell,
+    // null/empty in subsequent merged cells. Forward-fill so we catch every column.
+    const forwardFilledRow = [];
+    let lastLabel = null;
     row.forEach((cell, colIdx) => {
-      if (colIdx === 0) return;
+      if (colIdx === 0) { forwardFilledRow.push(null); return; }
       const s = String(cell ?? "").trim();
+      if (s && typeof cell !== "number" && !/^[\d.,\-\(\)$%\s]+$/.test(s) && !/^(20\d{2}|FY\s*\d{2,4})$/i.test(s)) {
+        lastLabel = s; // new store name
+      }
+      // Only forward-fill if the cell is blank/null (merged cell continuation)
+      forwardFilledRow.push((cell === null || cell === undefined || !String(cell).trim()) ? lastLabel : s || null);
+    });
+
+    const candidateStoreCols = [];
+    const seenStoreNames = new Set();
+    forwardFilledRow.forEach((s, colIdx) => {
+      if (colIdx === 0) return;
       if (!s) return;
-      if (typeof cell === "number") return;
-      if (/^[\d.,\-\(\)$%\s]+$/.test(s)) return;
-      if (/^(20\d{2}|FY\s*\d{2,4})$/i.test(s)) return;
       if (isConsolidatedColumn(s)) return;
-      candidateStoreCols.push({ name: s, index: colIdx });
+      if (/^(20\d{2}|FY\s*\d{2,4})$/i.test(s)) return;
+      if (/^[\d.,\-\(\)$%\s]+$/.test(s)) return;
+      // For separate-sheet layout, each store appears exactly once as a column header
+      // Don't add duplicates from forward-fill (we just want the first column per store)
+      if (!seenStoreNames.has(s)) {
+        seenStoreNames.add(s);
+        candidateStoreCols.push({ name: s, index: colIdx });
+      }
     });
 
     if (candidateStoreCols.length === 0) continue;
@@ -600,44 +685,41 @@ async function step1_understandQueryAndStructure(sheets, userQuestion) {
     { role: "system", content: "You are a financial spreadsheet structure analyzer. Return ONLY valid JSON. No markdown, no explanation, no backticks." },
     {
       role: "user",
-      content: `File sample (first 12 rows of each sheet):
+      content: `File sample (first 12 rows of ALL sheets):
 ${fileSample}
 
 User question: "${userQuestion || "Full P&L analysis"}"
 
-FIRST: Identify which layout this file uses:
+LAYOUT IDENTIFICATION RULES:
 
 LAYOUT A — SEPARATE_SHEETS:
-  Each sheet contains ONE year of data. Stores are columns. Line items are rows.
-  Example: Sheet "2025" has columns [Particulars | Store A | Store B | Store C]
-  If there are 2 sheets (one per year), that is SEPARATE_SHEETS.
+  Each sheet covers ONE time period. Stores are columns. Row 0 = [Particulars | Store A | Store B...]
+  KEY SIGN: Sheet NAMES contain year or period info (e.g. "2024", "2025", "FY24", "CY", "LY", "Jan-Dec 2025")
 
 LAYOUT B — INLINE_YEAR_COLUMNS:
-  ONE sheet contains BOTH years. Each store has TWO column groups (CY Amount, LY Amount).
-  Example headers: Row0=[Particulars | | Store A | | Store B] Row1=[| | 2025 | 2024 | 2025 | 2024]
-  The year row has the SAME year values repeated for EACH store group.
+  ONE sheet has both years as COLUMN sub-headers. Year numbers (2024, 2025) appear INSIDE a row.
+  KEY SIGN: Year numbers appear in a header ROW (not as sheet names). Same year repeats per store group.
+
+DECISION RULE: If sheet names are year-based → SEPARATE_SHEETS. If years appear inside rows → INLINE_YEAR_COLUMNS.
 
 Return JSON:
 {
-  "layout_type": "INLINE_YEAR_COLUMNS or SEPARATE_SHEETS",
-  "cy_sheet": "sheet name with most recent year data",
-  "ly_sheet": "sheet name with prior year data, or null if INLINE or single sheet",
+  "layout_type": "SEPARATE_SHEETS or INLINE_YEAR_COLUMNS",
+  "cy_sheet": "exact sheet name with most recent year",
+  "ly_sheet": "exact sheet name with prior year, or null",
   "line_item_column_index": 0,
-  "store_columns": [{ "name": "Store Name exactly as header", "index": 2 }],
-  "consolidated_column_indices": [3],
-  "data_start_row": 4,
+  "store_columns": [{ "name": "Store Name as in header", "index": 2 }],
+  "consolidated_column_indices": [],
+  "data_start_row": 1,
   "analysis_type": "FULL_ANALYSIS"
 }
 
-CRITICAL RULES:
-- store_columns must list EVERY individual store. EXCLUDE: Benchmark, Target, Budget, Consolidated, Total, Grand Total (put those in consolidated_column_indices)
-- For SEPARATE_SHEETS: store_columns are the column headers of the CY sheet
-- For INLINE_YEAR_COLUMNS: store_columns are the store group headers (before year sub-headers)
-- data_start_row: the first row index that has actual P&L data (Revenue, COGS, etc.) — not header rows
-- List ALL stores, do not truncate`
+RULES:
+- store_columns: ALL individual stores. EXCLUDE by name: Benchmark, Target, Budget, Plan, Consolidated, Total, Grand Total, All Stores, Overall — put their indices in consolidated_column_indices
+- data_start_row: first row index with actual P&L data (Revenue, Sales, COGS etc.) — after ALL header rows
+- List ALL stores`
     }
   ];
-
   console.log("🔍 Step 1: Analysing file structure...");
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -664,9 +746,11 @@ function computeKPIsFromLineItems(lineItemDict, storeNames) {
   const allDescs = [...new Set(Object.values(lineItemDict).flatMap(d => Object.keys(d)))];
   for (const desc of allDescs) {
     const kpi = matchKPI(desc);
-    if (kpi && !kpiMapping[kpi]) kpiMapping[kpi] = desc;
+    if (kpi) setKPIMapping(kpiMapping, kpi, desc);
   }
-  console.log("📊 KPIs matched:", kpiMapping);
+  // FIX: resolve NET vs GROSS — net always wins
+  resolveRevenueKPI(kpiMapping, lineItemDict);
+  console.log("📊 KPIs matched (after revenue resolution):", kpiMapping);
 
   const storeMetrics = {};
   storeNames.forEach(store => {
@@ -693,36 +777,72 @@ function computeKPIsFromLineItems(lineItemDict, storeNames) {
 }
 
 /**
- * Extract separate-sheet layout (Layout A)
+ * Extract separate-sheet layout (Layout A).
+ * ALWAYS auto-detects structure in code first — Step 1 schema used only as supplement.
  */
 function extractSeparateSheetData(sheet, querySchema) {
   const rawArray = sheet.rawArray || [];
   if (rawArray.length < 2) return {};
 
-  const lineItemColIdx   = querySchema.line_item_column_index ?? 0;
-  const consolidatedIdxs = new Set(querySchema.consolidated_column_indices || []);
-  const dataStartRow     = querySchema.data_start_row ?? 1;
+  // Code-based auto-detection (reliable regardless of Step 1 quality)
+  const autoDetected = detectSeparateSheetLayout(rawArray);
 
-  const storeColumns = (querySchema.store_columns || []).filter(sc =>
-    !isConsolidatedColumn(sc.name) && !consolidatedIdxs.has(sc.index)
-  );
+  let lineItemColIdx, storeColumns, dataStartRow;
+
+  if (autoDetected.isSeparateSheet) {
+    lineItemColIdx = autoDetected.lineItemColIdx;
+    dataStartRow   = autoDetected.dataStartRow;
+
+    // Merge auto-detected stores + schema stores (union by column index)
+    // This catches stores that one method finds but the other misses
+    const consolidatedIdxs = new Set(querySchema?.consolidated_column_indices || []);
+    const schemaStores = (querySchema?.store_columns || []).filter(sc =>
+      !isConsolidatedColumn(sc.name) && !consolidatedIdxs.has(sc.index)
+    );
+
+    // Start with auto-detected, add any schema stores not already included
+    const mergedByIndex = new Map(autoDetected.storeColumns.map(sc => [sc.index, sc]));
+    schemaStores.forEach(sc => {
+      if (!mergedByIndex.has(sc.index) && !isConsolidatedColumn(sc.name)) {
+        mergedByIndex.set(sc.index, sc);
+      }
+    });
+    storeColumns = [...mergedByIndex.values()].sort((a, b) => a.index - b.index);
+
+    // Use schema data_start_row if it starts earlier (catches multi-row headers)
+    const schemaStart = querySchema?.data_start_row;
+    if (schemaStart !== undefined && schemaStart < dataStartRow) dataStartRow = schemaStart;
+
+    console.log(`📋 Merged: ${storeColumns.length} stores (auto=${autoDetected.storeColumns.length}, schema=${schemaStores.length}), dataStart=${dataStartRow}`);
+  } else {
+    // Auto-detect failed — use Step 1 schema
+    const consolidatedIdxs = new Set(querySchema?.consolidated_column_indices || []);
+    storeColumns   = (querySchema?.store_columns || []).filter(sc =>
+      !isConsolidatedColumn(sc.name) && !consolidatedIdxs.has(sc.index)
+    );
+    lineItemColIdx = querySchema?.line_item_column_index ?? 0;
+    dataStartRow   = querySchema?.data_start_row ?? 1;
+    console.log(`📋 Using Step 1 schema only: ${storeColumns.length} stores`);
+  }
+
   if (!storeColumns.length) return {};
 
   const lineItemDict = {};
   storeColumns.forEach(sc => { lineItemDict[sc.name] = {}; });
 
   for (let rowIdx = dataStartRow; rowIdx < rawArray.length; rowIdx++) {
-    const row = rawArray[rowIdx];
-    const desc = String(row[lineItemColIdx] ?? "").trim();
+    const row = rawArray[rowIdx] || [];
+    const desc = String(row[lineItemColIdx] ?? '').trim();
     if (!desc) continue;
-
-    // Skip separator rows where all store cells are blank/text
+    // Skip rows whose description looks like a header/year
+    if (/^(20d{2}|19d{2}|amount|amt|particulars|description|line item)$/i.test(desc)) continue;
+    // Skip rows where ALL store columns are blank/non-numeric
     const allBlank = storeColumns.every(sc => {
       const v = row[sc.index];
-      return v === null || v === undefined || (typeof v === "string" && !v.trim()) || parseAmount(v) === null;
+      return v === null || v === undefined ||
+        (typeof v === 'string' && !v.trim()) || parseAmount(v) === null;
     });
-    if (allBlank && storeColumns.length > 3) continue;
-
+    if (allBlank) continue;
     storeColumns.forEach(sc => {
       const val = parseAmount(row[sc.index]);
       if (val !== null) lineItemDict[sc.name][desc] = val;
@@ -762,15 +882,24 @@ function step2_extractAndCompute(sheets, querySchema) {
     console.log("📊 Using SEPARATE SHEETS layout");
     const cyExt = extractSeparateSheetData(primarySheet, querySchema);
     if (!cyExt.storeColumns?.length) return null;
-    storeNames      = cyExt.storeColumns.map(sc => sc.name).filter(n => !isConsolidatedColumn(n));
-    cyLineItemDict  = cyExt.lineItemDict;
-    cyYear          = primarySheet.name;
+    storeNames     = cyExt.storeColumns.map(sc => sc.name).filter(n => !isConsolidatedColumn(n));
+    cyLineItemDict = cyExt.lineItemDict;
+    cyYear         = primarySheet.name;
 
-    const lySheet = sheets.find(s => s.name === querySchema?.ly_sheet && s.name !== primarySheet.name)
-      || (sheets.length > 1 ? sheets.find(s => s.name !== primarySheet.name) : null);
+    // Find LY sheet — prefer schema hint, then any other sheet, then skip
+    const allOtherSheets = sheets.filter(s => s.name !== primarySheet.name);
+    const lySheet = sheets.find(s => s.name === querySchema?.ly_sheet)
+      || (allOtherSheets.length > 0 ? allOtherSheets[0] : null);
 
     if (lySheet) {
-      const lyExt = extractSeparateSheetData(lySheet, querySchema);
+      // LY sheet gets its OWN independent schema so different column layouts are handled
+      const lyExt = extractSeparateSheetData(lySheet, {
+        ...querySchema,
+        cy_sheet: lySheet.name,
+        // pass empty store_columns so auto-detect runs on LY sheet independently
+        store_columns: [],
+        data_start_row: undefined
+      });
       if (lyExt.storeColumns?.length) {
         lyLineItemDict = lyExt.lineItemDict;
         lyYear = lySheet.name;
@@ -982,7 +1111,7 @@ const KPI_LABELS = {
 const KPI_ORDER = ["REVENUE","COGS","GROSS_PROFIT","STAFF_COST","RENT","MARKETING","OTHER_OPEX",
                    "TOTAL_OPEX","EBITDA","DEPRECIATION","EBIT","INTEREST","PBT","TAX","NET_PROFIT"];
 
-function buildDataBlockForAI(r, userQuestion) {
+function buildDataBlockForAI(r, userQuestion, kpiScope) {
   const { storeMetrics, stores, totals, averages, ebitdaRanking, revenueRanking,
           yoyComparisons, portfolioYoY, cyYear, lyYear, cySheetName, lySheetName, storeCount } = r;
   let b = "";
@@ -996,9 +1125,10 @@ function buildDataBlockForAI(r, userQuestion) {
   b += `LY: ${lySheetName ? `${lyYear} (${lySheetName})` : "Not available"}\n`;
   b += `Stores: ${storeCount}\n\n`;
 
-  // Portfolio totals
+  // Portfolio totals — only KPIs within user-requested scope
+  const activeKPIs = kpiScope || KPI_ORDER; // fallback to full list if no scope
   b += `▶ PORTFOLIO TOTALS\n${"─".repeat(58)}\n`;
-  KPI_ORDER.forEach(kpi => {
+  activeKPIs.forEach(kpi => {
     if (totals[kpi] !== undefined && totals[kpi] !== null) {
       const label = (KPI_LABELS[kpi]||kpi).padEnd(22);
       const cy    = formatNum(totals[kpi]);
@@ -1008,9 +1138,16 @@ function buildDataBlockForAI(r, userQuestion) {
     }
   });
 
-  if (Object.keys(averages).length) {
+  const avgKPIs = ["GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","OPEX_PCT","STAFF_PCT","RENT_PCT"]
+    .filter(k => {
+      // Only show average if base KPI is in scope
+      const base = k.replace("_PCT","").replace("MARGIN","_MARGIN").replace("_MARGIN_","_");
+      const baseKpi = k.replace("_MARGIN_PCT","").replace("_PCT","");
+      return activeKPIs.includes(baseKpi) || activeKPIs.some(ak => ak.startsWith(baseKpi));
+    });
+  if (avgKPIs.length) {
     b += `\n▶ PORTFOLIO AVERAGES\n${"─".repeat(58)}\n`;
-    ["GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","OPEX_PCT","STAFF_PCT","RENT_PCT"].forEach(kpi => {
+    avgKPIs.forEach(kpi => {
       if (averages[kpi] !== undefined)
         b += `  ${(KPI_LABELS[kpi]||kpi).padEnd(22)}: ${formatPct(averages[kpi])}\n`;
     });
@@ -1022,7 +1159,7 @@ function buildDataBlockForAI(r, userQuestion) {
     const m   = storeMetrics[store];
     const yoy = yoyComparisons[store];
     b += `\n  ┌─ ${store}\n`;
-    KPI_ORDER.forEach(kpi => {
+    activeKPIs.forEach(kpi => {
       const v = m?.[kpi];
       if (v !== null && v !== undefined && isFinite(v)) {
         const pctKey = kpi + "_PCT";
@@ -1033,7 +1170,7 @@ function buildDataBlockForAI(r, userQuestion) {
     });
     if (yoy && Object.keys(yoy).length) {
       b += `  │  ── YoY vs ${lyYear} ──\n`;
-      KPI_ORDER.forEach(kpi => {
+      activeKPIs.forEach(kpi => {
         if (yoy[kpi]) {
           const { cy, ly, change, changePct } = yoy[kpi];
           b += `  │  ${(KPI_LABELS[kpi]||kpi).padEnd(20)}: CY ${formatNum(cy)} | LY ${formatNum(ly)} | Δ ${formatNum(change)} (${formatPct(changePct)})\n`;
@@ -1072,11 +1209,142 @@ function buildDataBlockForAI(r, userQuestion) {
 //  STEP 3 — AI WRITES COMMENTARY
 // ─────────────────────────────────────────────
 
+/**
+ * Analyse the user's question to determine:
+ * - Which KPIs they care about (e.g. "till EBITDA only" → stop at EBITDA)
+ * - Which stores they want (e.g. "top 5 only", "only Store A")
+ * - What type of analysis (ranking, comparison, single store, full review)
+ * - Whether YoY is relevant to their question
+ */
+function parseUserIntent(userQuestion) {
+  const q = String(userQuestion || "").toLowerCase();
+
+  // Detect KPI depth limit — broad patterns for natural language:
+  // "till ebitda", "upto ebitda", "analysis till ebitda", "give till ebitda", etc.
+  let kpiLimit = null; // null = no limit (full P&L)
+  if (/till ebid?ta|upto ebid?ta|up to ebid?ta|only.*ebid?ta|ebid?ta only|stop at ebid?ta|through ebid?ta|ebid?ta level|show.*ebid?ta|give.*ebid?ta|analysis.*ebid?ta/.test(q)) kpiLimit = "EBITDA";
+  else if (/till gross.{0,8}profit|up to gross|gross profit only/.test(q)) kpiLimit = "GROSS_PROFIT";
+  else if (/till net.{0,8}profit|net profit only/.test(q)) kpiLimit = "NET_PROFIT";
+  else if (/till revenue|revenue only/.test(q)) kpiLimit = "REVENUE";
+  else if (/till ebit[^d]|up to ebit[^d]|ebit only/.test(q)) kpiLimit = "EBIT";
+  else if (/till pbt|up to pbt|pbt only/.test(q)) kpiLimit = "PBT";
+  // Detect store filter
+  let storeFilter = null;
+  const topMatch  = q.match(/top\s*(\d+)/);
+  const botMatch  = q.match(/bottom\s*(\d+)/);
+  if (topMatch)  storeFilter = { type: "top",    n: parseInt(topMatch[1]) };
+  if (botMatch)  storeFilter = { type: "bottom", n: parseInt(botMatch[1]) };
+
+  // Detect analysis type
+  const isRanking    = /top|bottom|rank|best|worst|highest|lowest/.test(q);
+  const isComparison = /compar|vs|versus|against|yoy|year.on.year|last year/.test(q);
+  const isSingleStore = false; // Could be extended
+
+  // Detect if they want YoY
+  const wantsYoY = isComparison || /yoy|year.on.year|last year|vs.*last|compared to/.test(q);
+
+  return { kpiLimit, storeFilter, isRanking, isComparison, wantsYoY };
+}
+
+/**
+ * Build the KPI display order respecting the user's depth limit.
+ * e.g. if kpiLimit=EBITDA, only include KPIs up to and including EBITDA
+ */
+function getKPIOrderForIntent(intent) {
+  const FULL_ORDER = ["REVENUE","COGS","GROSS_PROFIT","STAFF_COST","RENT","MARKETING",
+                      "OTHER_OPEX","TOTAL_OPEX","EBITDA","DEPRECIATION","EBIT",
+                      "INTEREST","PBT","TAX","NET_PROFIT"];
+  if (!intent.kpiLimit) return FULL_ORDER;
+  const limitIdx = FULL_ORDER.indexOf(intent.kpiLimit);
+  if (limitIdx === -1) return FULL_ORDER;
+  return FULL_ORDER.slice(0, limitIdx + 1); // inclusive of the limit KPI
+}
+
+/**
+ * Dynamically build the analysis instructions for Step 3
+ * based on what the user actually asked for.
+ */
+function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults) {
+  const kpiScopeStr = kpiScope.join(", ");
+  const q = intent;
+
+  // Table columns limited to kpiScope
+  const tableKPIs = kpiScope.filter(k => ["REVENUE","GROSS_PROFIT","EBITDA","NET_PROFIT"].includes(k));
+  const tableCols = ["Store", ...tableKPIs.map(k => ({
+    REVENUE:"Revenue", GROSS_PROFIT:"Gross Profit", GROSS_MARGIN_PCT:"GP%",
+    EBITDA:"EBITDA", EBITDA_MARGIN_PCT:"EBITDA%", NET_PROFIT:"Net Profit"
+  }[k] || k))];
+
+  let instructions = `The user asked: "${intent.kpiLimit ? `Analysis limited to: ${intent.kpiLimit} and above only.` : "Full P&L analysis."}"
+
+SCOPE CONSTRAINT: Only discuss KPIs in this list: [${kpiScopeStr}].
+Do NOT mention or include any KPIs outside this list, even if data exists for them.
+
+Write a detailed MIS P&L commentary with these sections:
+
+## Executive Summary
+(3-4 sentences covering portfolio performance within the allowed KPI scope.${hasLY ? " Include YoY direction." : ""})
+
+## Portfolio Performance Overview
+(Paragraph on headline metrics within scope: ${kpiScope.slice(0, 5).join(", ")}. Use exact figures from data block.)
+`;
+
+  if (hasLY && q.wantsYoY) {
+    instructions += `
+## Year-on-Year Analysis
+(CY vs LY comparison for portfolio and notable stores. Only KPIs in scope. Quote Δ and Δ% from data block.)
+`;
+  }
+
+  instructions += `
+## Store-wise Performance Summary
+(Markdown table with columns: ${tableCols.join(" | ")}. Values from data block only. All stores.)
+`;
+
+  if (hasEbitda && kpiScope.includes("EBITDA")) {
+    instructions += `
+## EBITDA Analysis
+(EBITDA performance across portfolio. List TOP 5 and BOTTOM 5 exactly as in the data block — same order, same figures, including negatives.)
+`;
+  }
+
+  // Only include cost structure if the user's scope goes deep enough
+  const hasCostKPIs = kpiScope.some(k => ["COGS","STAFF_COST","RENT","TOTAL_OPEX"].includes(k));
+  if (hasCostKPIs) {
+    instructions += `
+## Cost Structure Analysis
+(Cover only cost KPIs within scope: ${kpiScope.filter(k => ["COGS","STAFF_COST","RENT","MARKETING","OTHER_OPEX","TOTAL_OPEX"].includes(k)).join(", ")}. Highlight outliers.)
+`;
+  }
+
+  instructions += `
+## Key Observations
+(5-7 bullet points. Each must cite a store name and exact figure. Only use KPIs within scope: [${kpiScopeStr}].)
+
+CRITICAL REMINDERS:
+- ONLY the KPIs in scope: [${kpiScopeStr}]. Do NOT add Net Profit, PBT, Tax, Depreciation, EBIT, or Interest if they are not in this list.
+- Every number must come exactly from the data block.
+- Negatives stay negative.
+- No Recommendations section.`;
+
+  if (kpiScope.includes("EBITDA")) {
+    instructions += `
+- Top 5 / Bottom 5 must match the EBITDA RANKING in the data block exactly — same order, same figures.`;
+  }
+
+  return instructions;
+}
+
 async function step3_generateCommentary(computedResults, userQuestion) {
-  const dataBlock = buildDataBlockForAI(computedResults, userQuestion);
+  const dataBlock = buildDataBlockForAI(computedResults, userQuestion, kpiScope);
   const hasLY     = !!computedResults.lySheetName;
   const hasEbitda = computedResults.ebitdaRanking.length > 0;
-  console.log(`📦 Data block: ${dataBlock.length} chars`);
+  const intent    = parseUserIntent(userQuestion);
+  const kpiScope  = getKPIOrderForIntent(intent);
+  console.log(`📦 Data block: ${dataBlock.length} chars | Intent: kpiLimit=${intent.kpiLimit}, storeFilter=${JSON.stringify(intent.storeFilter)}`);
+
+  // Build dynamic analysis instructions based on what the user actually asked
+  const analysisInstructions = buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults);
 
   const messages = [
     {
@@ -1086,43 +1354,18 @@ async function step3_generateCommentary(computedResults, userQuestion) {
 ABSOLUTE RULES — NEVER BREAK:
 1. Use ONLY numbers from the pre-computed data block. Every figure must appear exactly in the data block.
 2. NEVER calculate, estimate, or derive any number yourself.
-3. Negative numbers MUST remain negative. Write them with a minus sign: -1,234. NEVER convert negatives to positives.
-4. NUMBER FORMAT — amounts: whole numbers with US commas, NO decimal places (e.g. 1,234,567 not 1,234,567.89).
-5. PERCENTAGE FORMAT — always 1 decimal place (e.g. 12.3% not 12% or 12.34%).
-6. DO NOT write a Recommendations section under any circumstances.
-7. Be specific — always name the store and the exact figure together.`
+3. Negative numbers MUST remain negative. Write them with a minus sign: -1,234.
+4. NUMBER FORMAT — amounts: whole numbers with US commas, NO decimal places (1,234,567).
+5. PERCENTAGE FORMAT — always 1 decimal place (12.3%).
+6. DO NOT write a Recommendations section.
+7. FOLLOW THE USER QUESTION SCOPE: if the user asks for analysis only up to a certain KPI (e.g. "till EBITDA"), DO NOT include any deeper KPIs (Depreciation, EBIT, Net Profit etc.) anywhere in your response — not in tables, not in paragraphs, not in observations.
+8. Be specific — always name the store and exact figure together.`
     },
     {
       role: "user",
       content: `${dataBlock}
 
-Write a detailed MIS P&L commentary structured as:
-
-## Executive Summary
-(3-4 sentences: portfolio Revenue, EBITDA, Net Profit.${hasLY?" Include YoY direction.":""})
-
-## Portfolio Performance Overview
-(Detailed paragraph on headline metrics with exact figures and margins.)
-${hasLY?`\n## Year-on-Year Analysis\n(Detailed CY vs LY for portfolio then individual stores. Quote Δ and Δ% exactly from the data block.)`:""}
-
-## Store-wise Performance Summary
-(Markdown table: Store | Revenue | Gross Profit | GP% | EBITDA | EBITDA% | Net Profit. Values from data block only.)
-
-## EBITDA Analysis
-${hasEbitda
-? "(Analyse EBITDA across the portfolio. List TOP 5 and BOTTOM 5 exactly as in the data block — same order, same figures, including negatives. Discuss the spread.)"
-: "(EBITDA data not available.)"}
-
-## Cost Structure Analysis
-(Cover COGS%, Staff%, Rent%, OpEx% where available. Highlight outlier stores.)
-
-## Key Observations
-(5-7 specific bullet points, each citing a store name and exact figure from the data block.)
-
-REMINDERS:
-- Every number from the data block exactly — including the sign (negatives stay negative).
-- No Recommendations section.
-- Top 5 / Bottom 5 must match the EBITDA RANKING in the data block exactly.`
+${analysisInstructions}`
     }
   ];
 
