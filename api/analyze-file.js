@@ -947,9 +947,11 @@ function step2_extractAndCompute(sheets, querySchema) {
   }
 
   // ── Portfolio totals ──
-  const kpiKeys = Object.keys(KPI_PATTERNS);
+  // Use kpiMapping keys (resolvedKpiKeys) — these match what's ACTUALLY stored in storeMetrics.
+  // KPI_PATTERNS keys contain NET_REVENUE/GROSS_REVENUE but storeMetrics uses REVENUE after resolution.
+  const resolvedKpiKeys = Object.keys(kpiMapping);
   const totals = {};
-  kpiKeys.forEach(kpi => {
+  resolvedKpiKeys.forEach(kpi => {
     const vals = storeNames.map(s => cyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
     if (vals.length) totals[kpi] = roundTo2(vals.reduce((a,b) => a+b, 0));
   });
@@ -974,6 +976,7 @@ function step2_extractAndCompute(sheets, querySchema) {
     .sort((a, b) => b.revenue - a.revenue);
 
   // ── YoY per store ──
+  // Use resolvedKpiKeys (declared above in totals block) — matches actual storeMetrics keys.
   const yoyComparisons = {};
   if (lyMetrics) {
     storeNames.forEach(store => {
@@ -982,7 +985,7 @@ function step2_extractAndCompute(sheets, querySchema) {
         : lyStoreNames.find(ls => ls.toLowerCase().replace(/\s+/g,"").includes(store.toLowerCase().replace(/\s+/g,"").slice(0,5)));
       if (!lyStore) return;
       yoyComparisons[store] = {};
-      kpiKeys.forEach(kpi => {
+      resolvedKpiKeys.forEach(kpi => {
         const cy = cyMetrics[store]?.[kpi];
         const ly = lyMetrics[lyStore]?.[kpi];
         if (cy !== null && cy !== undefined && ly !== null && ly !== undefined && isFinite(cy) && isFinite(ly)) {
@@ -999,7 +1002,7 @@ function step2_extractAndCompute(sheets, querySchema) {
   // ── Portfolio YoY ──
   const portfolioYoY = {};
   if (lyMetrics) {
-    kpiKeys.forEach(kpi => {
+    resolvedKpiKeys.forEach(kpi => {
       const lyVals = lyStoreNames.map(s => lyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
       if (lyVals.length && totals[kpi] !== undefined) {
         const lyTotal = roundTo2(lyVals.reduce((a,b) => a+b, 0));
@@ -1444,17 +1447,16 @@ Write a detailed MIS P&L commentary with these sections:
 `;
     if (hasLY && intent.wantsYoY) {
       instructions += `## Year-on-Year Analysis
-(CY vs LY for the specified store(s) only. Quote Δ and Δ% from data block.)
+(CY vs LY for the specified store(s). For every KPI in scope, show: CY value, LY value, Δ amount, Δ%. Pull directly from the YoY block in the data.)
 
 `;
     }
     if (isDeep) {
       instructions += `## Detailed Line Item Analysis
-(Go through EVERY line item in the data block for the specified store(s). For each:
-- State the value
-- Note if it seems high, low, or unusual relative to Revenue %
-- Flag any anomaly, unexpected ratio, or item that warrants attention
-This is the most important section for deep analysis.)
+(Go through EVERY line item in the data block for the specified store(s). For each item:
+- State the value and % of Revenue
+- Note if it seems high, low, or unusual
+- Flag any anomaly, unexpected ratio, or concern)
 
 `;
     }
@@ -1465,8 +1467,12 @@ This is the most important section for deep analysis.)
   } else {
     // All-store analysis
     if (hasLY && intent.wantsYoY) {
-      instructions += `## Year-on-Year Analysis
-(CY vs LY for portfolio and notable stores. Only KPIs in scope. Quote Δ and Δ% from data block.)
+      instructions += `## Year-on-Year Analysis — Portfolio
+(Portfolio-level CY vs LY. For every KPI in scope show: CY total, LY total, Δ amount, Δ%. Use only portfolio YoY data from the data block.)
+
+## Store-wise Year-on-Year Comparison
+(Markdown table. Columns: Store | Rev CY | Rev LY | Rev Δ% | Gross Profit CY | GP LY | EBITDA CY | EBITDA LY | EBITDA Δ%
+Rules: use ONLY per-store YoY values from the data block. Include every store that has LY data. Only include columns whose KPI is in scope.)
 
 `;
     }
@@ -1475,6 +1481,7 @@ This is the most important section for deep analysis.)
 (Markdown table: ${tableCols.join(" | ")}. All stores. Values from data block only.)
 
 `;
+
 
     if (showEbitdaRank && hasEbitda && kpiScope.includes("EBITDA")) {
       instructions += `## EBITDA Analysis
