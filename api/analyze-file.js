@@ -390,13 +390,36 @@ const EXCLUDED_COLUMN_PATTERNS = [
   // Consolidated / total columns
   "total","consolidated","grand total","all stores","overall","company total",
   "aggregate","sum","portfolio","net total",
-  // Reference / benchmark columns — NOT a store, just a target/reference value
+  // Same-store / comparable-store aggregate columns
+  "same store","same-store","sss","like for like","lfl","like-for-like",
+  "comparable store","comp store","mature store","existing store",
+  // Reference / benchmark columns
   "benchmark","target","budget","plan","reference","ref","kpi target",
   "industry avg","industry average","standard","norm","goal"
 ];
 function isConsolidatedColumn(name) {
   const n = String(name || "").toLowerCase().trim();
   return EXCLUDED_COLUMN_PATTERNS.some(p => n === p || n.startsWith(p) || n.includes(p));
+}
+
+/**
+ * Parse explicit exclusion instructions from the user prompt.
+ * e.g. "don't include same store consolidated" -> ["same store consolidated"]
+ * Returns array of lowercased phrases the user wants excluded.
+ */
+function parseExclusionsFromPrompt(userQuestion) {
+  const excluded = [];
+  const exclusionRegex = /(?:don['']?t include|do not include|exclude|ignore|remove|without|skip|not consider|don['']?t consider)\s+([^.,;()\n]{3,60})/gi;
+  let m;
+  while ((m = exclusionRegex.exec(userQuestion)) !== null) {
+    const phrase = m[1].trim().toLowerCase()
+      .replace(/in the analysis|from the analysis|in this analysis|from this/g, "")
+      .replace(/\.\s*cause.*/g, "")  // strip "cause ..." explanation tail
+      .replace(/\s*\(.*\)\s*/g, "")    // strip parenthetical explanations
+      .trim();
+    if (phrase.length >= 3) excluded.push(phrase);
+  }
+  return excluded;
 }
 
 // ─────────────────────────────────────────────
@@ -1128,16 +1151,34 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   // For specific-store queries: only those stores
   // For top/bottom ranking: all stores (need full list for ranking)
   // For all-store analysis: all stores
-  let activeStores = stores;
+  // ── Filter stores: remove prompt-excluded stores FIRST, then apply specific-store filter ──
+  const promptExcl = inp.promptExclusions || [];
+
+  // Always remove stores the user explicitly asked to exclude (e.g. "same store consolidated")
+  let activeStores = stores.filter(s => {
+    const sl = s.toLowerCase();
+    // Check against prompt exclusion phrases
+    if (promptExcl.some(excl => sl.includes(excl) || excl.includes(sl.replace(/\s+(llc|inc|corp|group).*$/i, "")))) {
+      console.log(`🚫 Excluding store "${s}" due to prompt exclusion`);
+      return false;
+    }
+    // Also check against the built-in exclusion patterns (catches "Same Store Consolidated" etc.)
+    if (isConsolidatedColumn(s)) {
+      console.log(`🚫 Excluding store "${s}" — matches consolidated pattern`);
+      return false;
+    }
+    return true;
+  });
+
   if (inp.isSpecificStore && inp.specificStores?.length > 0) {
-    // Fuzzy match: find actual store objects that match the mentioned names
-    activeStores = stores.filter(s =>
+    const filtered = activeStores.filter(s =>
       inp.specificStores.some(req =>
         s.toLowerCase().includes(req.toLowerCase()) ||
         req.toLowerCase().includes(s.toLowerCase().split(" ")[0])
       )
     );
-    if (activeStores.length === 0) activeStores = stores; // fallback if nothing matched
+    if (filtered.length > 0) activeStores = filtered;
+    // If no match after filter, keep all non-excluded stores (don't collapse to zero)
   }
 
   let b = "";
@@ -1282,7 +1323,6 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
  */
 function parseUserIntent(userQuestion, allStoreNames = []) {
   const q = String(userQuestion || "").toLowerCase();
-  const qRaw = String(userQuestion || ""); // preserve case for store matching
 
   // ── KPI depth limit ──
   let kpiLimit = null;
@@ -1293,18 +1333,21 @@ function parseUserIntent(userQuestion, allStoreNames = []) {
   else if (/till ebit[^d]|up to ebit[^d]|ebit only/.test(q)) kpiLimit = "EBIT";
   else if (/till pbt|up to pbt|pbt only/.test(q)) kpiLimit = "PBT";
 
+  // ── Explicit exclusions from user prompt ──
+  const promptExclusions = parseExclusionsFromPrompt(userQuestion);
+  console.log("🚫 Prompt exclusions:", JSON.stringify(promptExclusions));
+
   // ── Specific store detection ──
-  // Match store names mentioned in the question (case-insensitive, partial ok for long names)
   let specificStores = [];
   if (allStoreNames.length > 0) {
     specificStores = allStoreNames.filter(storeName => {
       const sLower = storeName.toLowerCase();
-      // Match full name, or first significant word (≥4 chars) of the store name
+      // First: skip any store the user said to exclude
+      if (promptExclusions.some(excl => sLower.includes(excl) || excl.includes(sLower.split(" ")[0]))) return false;
+      // Then: match stores the user mentioned
       if (q.includes(sLower)) return true;
-      // Try matching first word of store name if it's meaningful
       const firstWord = sLower.split(/\s+/)[0];
       if (firstWord.length >= 4 && q.includes(firstWord)) return true;
-      // Try matching any significant token (≥5 chars) from store name
       const tokens = sLower.split(/\s+/).filter(t => t.length >= 5 && !/^(donuts?|llc|inc|corp|group|street|avenue|place)$/i.test(t));
       return tokens.some(t => q.includes(t));
     });
@@ -1323,17 +1366,18 @@ function parseUserIntent(userQuestion, allStoreNames = []) {
   const isRanking        = /top|bottom|rank|best|worst|highest|lowest/.test(q);
   const isComparison     = /compar|vs|versus|against|yoy|year.on.year|last year/.test(q);
   const wantsYoY         = isComparison || /yoy|year.on.year|last year|vs.*last|compared to/.test(q);
-  // EBITDA ranking explicitly requested
   const wantsEbitdaRank  = /top.*ebid?ta|bottom.*ebid?ta|ebid?ta.*top|ebid?ta.*bottom|ebid?ta.*rank|rank.*ebid?ta|best.*ebid?ta|worst.*ebid?ta/.test(q);
-  // All-store analysis (no specific store, not a ranking, not a single store)
   const isAllStoreAnalysis = !isSpecificStore && !storeFilter && !isRanking;
 
+  console.log("🎯 Intent: kpiLimit=" + kpiLimit + ", stores=" + JSON.stringify(specificStores) + ", deep=" + isDeepAnalysis);
+
   return {
-    kpiLimit, specificStores, isSpecificStore,
+    kpiLimit, specificStores, isSpecificStore, promptExclusions,
     storeFilter, isRanking, isComparison, wantsYoY,
     isDeepAnalysis, wantsEbitdaRank, isAllStoreAnalysis
   };
 }
+
 
 /**
  * Build the KPI display order respecting the user's depth limit.
@@ -1368,17 +1412,23 @@ function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedR
   if (kpiScope.includes("GROSS_PROFIT")) tableCols.splice(2, 0, "GP%");
   if (kpiScope.includes("EBITDA"))       tableCols.push("EBITDA%");
 
+  const exclusionNote = intent.promptExclusions?.length > 0
+    ? ` EXCLUDE the following from analysis: ${intent.promptExclusions.join("; ")} — do NOT mention them anywhere.`
+    : "";
+
   let scopeNote = intent.kpiLimit
     ? `Analysis limited to KPIs up to and including: ${intent.kpiLimit}.`
     : "Full P&L analysis.";
   if (isSpecific) scopeNote += ` Focus ONLY on: ${intent.specificStores.join(", ")}.`;
+  if (exclusionNote) scopeNote += exclusionNote;
 
   let instructions = `The user asked: "${scopeNote}"
 
 SCOPE CONSTRAINTS:
 1. KPI scope: [${kpiScopeStr}] — do NOT include KPIs outside this list.
-2. Store scope: ${isSpecific ? `ONLY the following stores: ${intent.specificStores.join(", ")}. Do NOT include totality figures for all 22 stores.` : "All stores."}
-${isDeep ? "3. DEEP ANALYSIS requested: discuss every line item in the data block, not just headline KPIs. Flag anomalies, unusual ratios, and unexpected figures." : ""}
+2. Store scope: ${isSpecific ? `ONLY the following stores: ${intent.specificStores.join(", ")}. Do NOT include totality figures for all stores.` : "All stores."}
+${intent.promptExclusions?.length > 0 ? `3. EXCLUDED from analysis: ${intent.promptExclusions.join("; ")} — do NOT reference these anywhere in your response, not even to say they were excluded. Just omit them completely.` : ""}
+${isDeep ? `${intent.promptExclusions?.length > 0 ? "4" : "3"}. DEEP ANALYSIS requested: discuss every line item in the data block. Flag anomalies, unusual ratios, and unexpected figures.` : ""}
 
 Write a detailed MIS P&L commentary with these sections:
 
