@@ -70,7 +70,7 @@ async function runAnalysis(fileId,userPrompt){
       Authorization:`Bearer ${apiKey}`
     },
     body:JSON.stringify({
-      model:"gpt-5-mini-2025-08-07",
+      model:"o3-2025-04-16",
       input:`
 User requirement:
 ${userPrompt}
