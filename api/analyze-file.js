@@ -1406,6 +1406,7 @@ function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedR
   const isDeep           = intent.isDeepAnalysis;
   const showEbitdaRank   = (!isSpecific && intent.isAllStoreAnalysis) || intent.wantsEbitdaRank || intent.storeFilter;
   const storeLabel       = isSpecific ? `for: ${intent.specificStores.join(", ")}` : "all stores";
+  const totalStores      = computedResults?.stores?.length || 0;
 
   // Table columns
   const tableKPIs = kpiScope.filter(k => ["REVENUE","GROSS_PROFIT","EBITDA","NET_PROFIT"].includes(k));
@@ -1427,18 +1428,21 @@ function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedR
 
   let instructions = `The user asked: "${scopeNote}"
 
+TABLE COMPLETENESS RULE: There are ${totalStores} stores in this analysis. Every markdown table MUST have exactly ${totalStores} data rows. NEVER use "..." or skip any store. If a value is genuinely missing, write "N/A" for that cell.
+
 SCOPE CONSTRAINTS:
 1. KPI scope: [${kpiScopeStr}] — do NOT include KPIs outside this list.
-2. Store scope: ${isSpecific ? `ONLY the following stores: ${intent.specificStores.join(", ")}. Do NOT include totality figures for all stores.` : "All stores."}
-${intent.promptExclusions?.length > 0 ? `3. EXCLUDED from analysis: ${intent.promptExclusions.join("; ")} — do NOT reference these anywhere in your response, not even to say they were excluded. Just omit them completely.` : ""}
-${isDeep ? `${intent.promptExclusions?.length > 0 ? "4" : "3"}. DEEP ANALYSIS requested: discuss every line item in the data block. Flag anomalies, unusual ratios, and unexpected figures.` : ""}
+2. Store scope: ${isSpecific ? `ONLY these stores: ${intent.specificStores.join(", ")}. Do NOT include all-store totals.` : `All ${totalStores} stores.`}
+${intent.promptExclusions?.length > 0 ? `3. EXCLUDED: ${intent.promptExclusions.join("; ")} — omit completely, do not mention anywhere.` : ""}
+${isDeep ? `${intent.promptExclusions?.length > 0 ? "4" : "3"}. DEEP ANALYSIS: cover every line item in the data block. Flag anomalies, unusual ratios, unexpected figures.` : ""}
 
 Write a detailed MIS P&L commentary with these sections:
 
 ## Executive Summary
-(3-4 sentences. Cover ${isSpecific ? "performance of the specified store(s)" : "overall portfolio"} within KPI scope.${hasLY ? " Include YoY direction." : ""})
+(3-4 sentences. Cover ${isSpecific ? "the specified store(s)" : "overall portfolio"} within KPI scope.${hasLY ? " Include YoY direction." : ""})
 
 `;
+
 
   if (isSpecific) {
     instructions += `## Store Performance — ${intent.specificStores.join(" & ")}
@@ -1536,12 +1540,16 @@ async function step3_generateCommentary(computedResults, userQuestion) {
 
   // Pass intent into data block so it can filter stores and include deep line items
   const dataBlock = buildDataBlockForAI(computedResults, userQuestion, kpiScope, intent);
-  console.log(`📦 Data block: ${dataBlock.length} chars | Intent: kpiLimit=${intent.kpiLimit}, specificStores=${JSON.stringify(intent.specificStores)}, deep=${intent.isDeepAnalysis}, ebitdaRank=${intent.wantsEbitdaRank}`);
+  console.log(`📦 Data block: ${dataBlock.length} chars | stores=${computedResults.stores?.length} | Intent: kpiLimit=${intent.kpiLimit}, specificStores=${JSON.stringify(intent.specificStores)}, deep=${intent.isDeepAnalysis}`);
 
   // Build dynamic analysis instructions based on what the user actually asked
   const analysisInstructions = buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults);
 
-  const messages = [
+  // gpt-4o-mini supports up to 16,384 output tokens
+  // Use maximum to avoid mid-table truncation with 22+ stores
+  const MAX_TOKENS = 16000;
+
+  const buildMessages = (compact = false) => [
     {
       role: "system",
       content: `You are an expert P&L financial analyst writing detailed MIS commentary for senior management.
@@ -1553,29 +1561,57 @@ ABSOLUTE RULES — NEVER BREAK:
 4. NUMBER FORMAT — amounts: whole numbers with US commas, NO decimal places (1,234,567).
 5. PERCENTAGE FORMAT — always 1 decimal place (12.3%).
 6. DO NOT write a Recommendations section.
-7. FOLLOW THE USER QUESTION SCOPE: if the user asks for analysis only up to a certain KPI (e.g. "till EBITDA"), DO NOT include any deeper KPIs (Depreciation, EBIT, Net Profit etc.) anywhere in your response — not in tables, not in paragraphs, not in observations.
-8. Be specific — always name the store and exact figure together.`
+7. FOLLOW THE USER QUESTION SCOPE: if asked for analysis only up to a certain KPI (e.g. "till EBITDA"), DO NOT include any deeper KPIs anywhere — not in tables, not in paragraphs, not in observations.
+8. Be specific — always name the store and exact figure together.
+9. COMPLETE ALL TABLES FULLY — never use "..." or truncate table rows. Every store must appear with its actual values.${compact ? "\n10. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise completeness of tables over length of prose." : ""}`
     },
     {
       role: "user",
-      content: `${dataBlock}
-
-${analysisInstructions}`
+      content: `${dataBlock}\n\n${analysisInstructions}`
     }
   ];
 
-  console.log("✍️  Step 3: Generating commentary...");
-  const r = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
-    body: JSON.stringify({ model: "gpt-4o-mini", messages, temperature: 0, max_tokens: 4000, frequency_penalty: 0.05 })
-  });
-  const data = await r.json();
-  if (data.error) return { reply: null, error: data.error.message };
-  console.log("✅ Step 3. Tokens:", data?.usage);
-  let reply = data?.choices?.[0]?.message?.content || null;
-  if (reply) reply = reply.replace(/^```(?:markdown|json)?\s*\n/gm,"").replace(/\n```\s*$/gm,"").trim();
-  return { reply, httpStatus: r.status, finishReason: data?.choices?.[0]?.finish_reason, tokenUsage: data?.usage };
+  const callModel = async (compact = false) => {
+    console.log(`✍️  Step 3: Generating commentary... (compact=${compact})`);
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: buildMessages(compact),
+        temperature: 0,
+        max_tokens: MAX_TOKENS,
+        frequency_penalty: 0.05
+      })
+    });
+    const data = await r.json();
+    if (data.error) return { reply: null, error: data.error.message, finishReason: null };
+    const finishReason = data?.choices?.[0]?.finish_reason;
+    console.log(`✅ Step 3. Finish: ${finishReason} | Tokens:`, data?.usage);
+    let reply = data?.choices?.[0]?.message?.content || null;
+    if (reply) reply = reply.replace(/^```(?:markdown|json)?\s*\n/gm,"").replace(/\n```\s*$/gm,"").trim();
+    return { reply, httpStatus: r.status, finishReason, tokenUsage: data?.usage };
+  };
+
+  // First attempt — full output
+  let result = await callModel(false);
+
+  // If truncated (finish_reason === "length"), retry in compact mode
+  // This trades some prose length for complete tables
+  if (result.finishReason === "length" && result.reply) {
+    console.warn("⚠️ Response was truncated (hit token limit). Retrying in compact mode...");
+    const retryResult = await callModel(true);
+    if (retryResult.reply && retryResult.finishReason !== "length") {
+      console.log("✅ Compact retry succeeded — full response received.");
+      return retryResult;
+    }
+    // If still truncated, return original (at least partial is better than nothing)
+    console.warn("⚠️ Compact retry also truncated — returning best available response.");
+    // Append a note so the user knows
+    result.reply = result.reply + "\n\n> ⚠️ **Note:** The response was very long and may be incomplete. Try narrowing your query (e.g. fewer KPIs, specific stores, or ask for a summary).";
+  }
+
+  return result;
 }
 
 // ─────────────────────────────────────────────
