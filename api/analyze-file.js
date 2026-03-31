@@ -1360,9 +1360,8 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   }
 
   b += `\n▶ USER QUESTION: "${userQuestion || "Full P&L analysis"}"\n`;
-  // Return both the data block string and the active store count for instructions
-  b._activeStoreCount = activeStores.length;
-  return b;
+  // Return object so we can pass both the text and the active store count cleanly
+  return { text: b, activeStoreCount: activeStores.length };
 }
 
 // ─────────────────────────────────────────────
@@ -1591,11 +1590,13 @@ async function step3_generateCommentary(computedResults, userQuestion) {
   const hasEbitda = computedResults.ebitdaRanking.length > 0;
 
   // Pass intent into data block so it can filter stores and include deep line items
-  const dataBlock = buildDataBlockForAI(computedResults, userQuestion, kpiScope, intent);
-  console.log(`📦 Data block: ${dataBlock.length} chars | stores=${computedResults.stores?.length} | Intent: kpiLimit=${intent.kpiLimit}, specificStores=${JSON.stringify(intent.specificStores)}, deep=${intent.isDeepAnalysis}`);
+  const dataBlockResult  = buildDataBlockForAI(computedResults, userQuestion, kpiScope, intent);
+  const dataBlock        = dataBlockResult.text;           // the text string sent to AI
+  const activeStoreCount = dataBlockResult.activeStoreCount;
+  console.log(`📦 Data block: ${dataBlock.length} chars | activeStores=${activeStoreCount} | Intent: kpiLimit=${intent.kpiLimit}, specificStores=${JSON.stringify(intent.specificStores)}, deep=${intent.isDeepAnalysis}`);
 
   // Build dynamic analysis instructions based on what the user actually asked
-  const analysisInstructions = buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults, dataBlock._activeStoreCount);
+  const analysisInstructions = buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults, activeStoreCount);
 
   // gpt-4o-mini supports up to 16,384 output tokens
   // Use maximum to avoid mid-table truncation with 22+ stores
