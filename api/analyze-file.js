@@ -291,31 +291,106 @@ function safeDivide(num, den) {
 // then fall back to GROSS_REVENUE. Both map to the REVENUE KPI slot,
 // but net takes precedence in computeKPIsFromLineItems().
 const KPI_PATTERNS = {
-  // NET revenue patterns — checked FIRST (higher priority)
-  NET_REVENUE:  ["net revenue","total net revenue","net sales","total net sales","net income from sales",
-                 "net turnover","revenue (net)","sales (net)"],
-  // GROSS revenue patterns — only used if no net revenue found
-  GROSS_REVENUE:["gross revenue","gross sales","total revenue","total sales","revenue","sales","turnover","total income"],
-  COGS:         ["cost of goods sold","cost of sales","cogs","direct cost","cost of revenue",
-                 "cost of material","material cost","food cost","beverage cost","cost of food"],
-  GROSS_PROFIT: ["gross profit","gross margin amount","gross margin","gross income"],
-  STAFF_COST:   ["staff cost","employee cost","payroll","salary","wages","personnel cost",
-                 "labour cost","labor cost","total labor","total labour","payroll expense"],
-  RENT:         ["rent","lease","occupancy cost","rent & occupancy","rent and occupancy","occupancy"],
-  MARKETING:    ["marketing","advertising","promotion","ad spend","marketing expense"],
-  OTHER_OPEX:   ["other operating expense","other expense","other opex","miscellaneous expense",
-                 "general & admin","general and admin","g&a","admin expense","overhead"],
-  TOTAL_OPEX:   ["total operating expense","total opex","operating expense","total overhead",
-                 "total indirect cost","total expense","total overheads","total fixed cost","total costs"],
-  EBITDA:       ["ebitda","ebidta","earnings before interest tax depreciation",
-                 "ebitda (a-b)","ebitda (a - b)","profit before dep","profit before depreciation","operating ebitda"],
-  DEPRECIATION: ["depreciation","amortisation","amortization","d&a","dep & amortisation","depreciation & amortization"],
-  EBIT:         ["ebit","operating profit","profit from operations","profit before interest"],
-  INTEREST:     ["interest","finance cost","finance charge","interest expense","borrowing cost"],
-  PBT:          ["profit before tax","pbt","pre-tax profit","profit/(loss) before tax","earnings before tax"],
-  TAX:          ["income tax","tax expense","provision for tax","taxation"],
-  NET_PROFIT:   ["net profit","pat","profit after tax","net income","net earnings",
-                 "profit/(loss) after tax","net profit/(loss)","net loss","profit / (loss)"]
+  // ── Revenue (NET checked first — always wins over GROSS) ──
+  NET_REVENUE:  [
+    "net revenue","total net revenue","net sales","total net sales","net income from sales",
+    "net turnover","revenue (net)","sales (net)"
+  ],
+  GROSS_REVENUE:[
+    "gross revenue","gross sales","total revenue","total sales","revenue dd","revenue br",
+    "revenue","sales","turnover","total income"
+  ],
+
+  // ── Cost of Goods Sold ──
+  COGS: [
+    "cost of goods sold","cost of sales","cogs","direct cost","cost of revenue",
+    "cost of material","material cost","food cost","beverage cost","cost of food",
+    "food and supplies","total cogs","total cost of goods","food & supplies"
+  ],
+
+  // ── Gross Profit ──
+  GROSS_PROFIT: [
+    "gross profit","gross margin amount","gross margin","gross income"
+  ],
+
+  // ── Staff / Labour ──
+  STAFF_COST: [
+    "staff cost","employee cost","payroll","salary","wages","personnel cost",
+    "labour cost","labor cost","total labor","total labour","payroll expense",
+    "operational payroll","operational payroll expenses","total payroll"
+  ],
+
+  // ── Rent & Occupancy ──
+  RENT: [
+    "total rent","total nnn","rent","lease","occupancy cost","rent & occupancy",
+    "rent and occupancy","occupancy","nnn","storage rent","parking"
+  ],
+
+  // ── Marketing ──
+  MARKETING: [
+    "marketing","advertising","advertising/marketing","promotion","ad spend",
+    "marketing expense","db advertising","br advertising","advertising expense"
+  ],
+
+  // ── Controllable / Other OpEx ──
+  OTHER_OPEX: [
+    "controllable expenses","controlable expenses","other operating expense","other expense",
+    "other opex","miscellaneous expense","miscellaneous","general & admin",
+    "general and admin","g&a","admin expense","overhead","other (excluding management"
+  ],
+
+  // ── Total Operating Expenses ──
+  TOTAL_OPEX: [
+    "total operating expense","total operating expenses","total opex","operating expense",
+    "total overhead","total indirect cost","total expense","total overheads",
+    "total fixed cost","total costs"
+  ],
+
+  // ── EBITDA (many variant names across different franchise groups) ──
+  EBITDA: [
+    "ebitda","ebidta","earnings before interest tax depreciation",
+    "ebitda (a-b)","ebitda (a - b)","profit before dep","profit before depreciation",
+    "operating ebitda","ebitda before pre-opening","ebitda addback",
+    "total operating profit","total operating profit (loss)"
+  ],
+
+  // ── Depreciation & Amortisation ──
+  DEPRECIATION: [
+    "depreciation","amortisation","amortization","d&a","dep & amortisation",
+    "depreciation & amortization","depreciation expense","amortization expense",
+    "total depreciation","depreciation and amortization"
+  ],
+
+  // ── EBIT / Operating Profit ──
+  EBIT: [
+    "ebit","operating profit","profit from operations","profit before interest",
+    "net operating income","net operating profit"
+  ],
+
+  // ── Interest ──
+  INTEREST: [
+    "interest","finance cost","finance charge","interest expense","borrowing cost",
+    "total interest","interest expense (net)"
+  ],
+
+  // ── PBT ──
+  PBT: [
+    "profit before tax","pbt","pre-tax profit","profit/(loss) before tax",
+    "earnings before tax","income before tax"
+  ],
+
+  // ── Tax ──
+  TAX: [
+    "income tax","tax expense","provision for tax","taxation","taxes",
+    "real property taxes","personal property taxes","total taxes"
+  ],
+
+  // ── Net Profit / Net Income ──
+  NET_PROFIT: [
+    "net profit","pat","profit after tax","net income","net earnings",
+    "profit/(loss) after tax","net profit/(loss)","net loss","profit / (loss)",
+    "net income (loss)","net profit before tax","net profit/loss"
+  ]
 };
 
 function matchKPI(description) {
@@ -705,21 +780,39 @@ function parseInlineYearSheet(sheet, inlineInfo) {
 // ─────────────────────────────────────────────
 
 async function step1_understandQueryAndStructure(sheets, userQuestion) {
-  // Send first 12 rows of each sheet (enough to see full header structure)
+  // Build a smart file sample:
+  // - ALL header rows (first ~8 rows) in full to map structure + column positions
+  // - ALL line item descriptions from col 0 (so we can see every P&L row name)
+  // This solves the problem where files have unusual KPI names that differ from defaults
   const fileSample = sheets.slice(0, 4).map(sheet => {
     const ra = sheet.rawArray || [];
     if (!ra.length) return `Sheet: "${sheet.name}" (empty)`;
-    const sample = ra.slice(0, 12).map((row, i) =>
+
+    // Part 1: First 8 rows in full (captures all header rows with column positions)
+    const headerRows = ra.slice(0, 8).map((row, i) =>
       `Row${i}: ${(row || []).map((c, j) => `[${j}]${String(c ?? "").slice(0, 28)}`).join(" | ")}`
     ).join("\n");
-    return `=== Sheet: "${sheet.name}" (${ra.length}r × ${ra[0]?.length || 0}c) ===\n${sample}`;
+
+    // Part 2: All row labels from col 0 (captures every P&L line item name)
+    const allLineItems = [];
+    ra.slice(8).forEach((row, i) => {
+      const desc = String(row?.[0] ?? "").trim();
+      if (desc && !/^[=\d]/.test(desc)) { // skip formula cells and blank
+        allLineItems.push(`  row${i+8}: "${desc}"`);
+      }
+    });
+    const lineItemSummary = allLineItems.length
+      ? `\nALL LINE ITEM NAMES (col 0):\n${allLineItems.join("\n")}`
+      : "";
+
+    return `=== Sheet: "${sheet.name}" (${ra.length}r × ${ra[0]?.length || 0}c) ===\n${headerRows}${lineItemSummary}`;
   }).join("\n\n");
 
   const messages = [
     { role: "system", content: "You are a financial spreadsheet structure analyzer. Return ONLY valid JSON. No markdown, no explanation, no backticks." },
     {
       role: "user",
-      content: `File sample (first 12 rows of ALL sheets):
+      content: `File sample:
 ${fileSample}
 
 User question: "${userQuestion || "Full P&L analysis"}"
@@ -744,21 +837,29 @@ Return JSON:
   "line_item_column_index": 0,
   "store_columns": [{ "name": "Store Name as in header", "index": 2 }],
   "consolidated_column_indices": [],
-  "data_start_row": 1,
-  "analysis_type": "FULL_ANALYSIS"
+  "data_start_row": 5,
+  "analysis_type": "FULL_ANALYSIS",
+  "kpi_name_mapping": {
+    "REVENUE": "exact row label used for net revenue in this file",
+    "COGS": "exact row label used for total COGS in this file",
+    "GROSS_PROFIT": "exact row label used for gross profit in this file",
+    "EBITDA": "exact row label used for EBITDA in this file",
+    "NET_PROFIT": "exact row label used for net profit/net income in this file"
+  }
 }
 
 RULES:
-- store_columns: ALL individual stores. EXCLUDE by name: Benchmark, Target, Budget, Plan, Consolidated, Total, Grand Total, All Stores, Overall — put their indices in consolidated_column_indices
-- data_start_row: first row index with actual P&L data (Revenue, Sales, COGS etc.) — after ALL header rows
-- List ALL stores`
+- store_columns: ALL individual stores. EXCLUDE: Benchmark, Target, Budget, Plan, Consolidated, Total, Grand Total, Same Store, Same Store Comparison, All Stores, Overall — put those indices in consolidated_column_indices
+- data_start_row: the exact row index where the first P&L data row starts (Revenue/Sales line), AFTER all title and header rows
+- kpi_name_mapping: look at the LINE ITEM NAMES list and identify the exact label used for each key KPI. Use "null" if not found.
+- List ALL individual store columns`
     }
   ];
   console.log("🔍 Step 1: Analysing file structure...");
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
-    body: JSON.stringify({ model: "gpt-4o-mini", messages, temperature: 0, max_tokens: 1200, response_format: { type: "json_object" } })
+    body: JSON.stringify({ model: "gpt-4o-mini", messages, temperature: 0, max_tokens: 2000, response_format: { type: "json_object" } })
   });
   const data = await r.json();
   if (data.error) throw new Error(`Step 1 failed: ${data.error.message}`);
@@ -775,13 +876,27 @@ RULES:
  * Given a dict of { storeName: { lineItemDesc: value } },
  * match KPIs and compute all % metrics in code.
  */
-function computeKPIsFromLineItems(lineItemDict, storeNames) {
+function computeKPIsFromLineItems(lineItemDict, storeNames, overrideKpiNames = {}) {
   const kpiMapping = {};
   const allDescs = [...new Set(Object.values(lineItemDict).flatMap(d => Object.keys(d)))];
+
+  // Apply overrides from Step 1 kpi_name_mapping FIRST (highest priority)
+  // e.g. { REVENUE: "Net Revenue", EBITDA: "EBITDA Before Pre-Opening Expenses" }
+  Object.entries(overrideKpiNames).forEach(([kpi, desc]) => {
+    if (desc && desc !== "null" && allDescs.includes(desc)) {
+      // Map known KPI names to internal keys
+      const internalKey = kpi === "REVENUE" ? "NET_REVENUE" : kpi;
+      kpiMapping[internalKey] = desc;
+      console.log(`🎯 KPI override applied: ${internalKey} → "${desc}"`);
+    }
+  });
+
+  // Then fall back to pattern matching for any KPI not covered by overrides
   for (const desc of allDescs) {
     const kpi = matchKPI(desc);
-    if (kpi) setKPIMapping(kpiMapping, kpi, desc);
+    if (kpi && !kpiMapping[kpi]) setKPIMapping(kpiMapping, kpi, desc);
   }
+
   // FIX: resolve NET vs GROSS — net always wins
   resolveRevenueKPI(kpiMapping, lineItemDict);
   console.log("📊 KPIs matched (after revenue resolution):", kpiMapping);
@@ -944,12 +1059,16 @@ function step2_extractAndCompute(sheets, querySchema) {
 
   if (!storeNames.length) return null;
 
+  // Pass kpi_name_mapping from Step 1 as overrides — allows files with non-standard
+  // KPI names (e.g. "EBITDA Before Pre-Opening Expenses") to be matched correctly
+  const kpiOverrides = querySchema?.kpi_name_mapping || {};
+
   // ── Compute KPIs ──
-  const { storeMetrics: cyMetrics, kpiMapping } = computeKPIsFromLineItems(cyLineItemDict, storeNames);
+  const { storeMetrics: cyMetrics, kpiMapping } = computeKPIsFromLineItems(cyLineItemDict, storeNames, kpiOverrides);
   let lyMetrics = null, lyStoreNames = [];
   if (Object.keys(lyLineItemDict).length) {
     lyStoreNames = Object.keys(lyLineItemDict).filter(n => !isConsolidatedColumn(n));
-    const { storeMetrics: ly } = computeKPIsFromLineItems(lyLineItemDict, lyStoreNames);
+    const { storeMetrics: ly } = computeKPIsFromLineItems(lyLineItemDict, lyStoreNames, kpiOverrides);
     lyMetrics = ly;
   }
 
