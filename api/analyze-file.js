@@ -263,8 +263,15 @@ function formatNum(n) {
   return Math.round(Number(n)).toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
-// Percentage to 1 decimal: +12.3%  /  -4.5%
+// Percentage to 1 decimal: 12.3%  /  -4.5%  (no + prefix — avoids -+ conflicts)
 function formatPct(n) {
+  if (n === undefined || n === null || !isFinite(n)) return "N/A";
+  const r = Math.round(Number(n) * 10) / 10;
+  return `${r.toFixed(1)}%`;
+}
+
+// Delta percentage with explicit + for positive (used only in YoY Δ% fields)
+function formatDeltaPct(n) {
   if (n === undefined || n === null || !isFinite(n)) return "N/A";
   const r = Math.round(Number(n) * 10) / 10;
   return `${r >= 0 ? "+" : ""}${r.toFixed(1)}%`;
@@ -975,15 +982,59 @@ function step2_extractAndCompute(sheets, querySchema) {
     .filter(x => x.revenue !== null)
     .sort((a, b) => b.revenue - a.revenue);
 
+
+/**
+ * Match a CY store name to its LY equivalent.
+ * Priority: exact → normalized exact → longest common token → first significant token
+ */
+function matchLYStore(cyStoreName, lyStoreNames) {
+  if (!cyStoreName || !lyStoreNames.length) return null;
+
+  // 1. Exact match
+  if (lyStoreNames.includes(cyStoreName)) return cyStoreName;
+
+  const cyNorm = cyStoreName.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  // 2. Normalized exact (strip non-alphanumeric)
+  const normMatch = lyStoreNames.find(ls =>
+    ls.toLowerCase().replace(/[^a-z0-9]/g, "") === cyNorm
+  );
+  if (normMatch) return normMatch;
+
+  // 3. One contains the other (handles "100 Chambers" vs "100 Chambers Donuts LLC")
+  const containsMatch = lyStoreNames.find(ls => {
+    const lsNorm = ls.toLowerCase().replace(/[^a-z0-9]/g, "");
+    return cyNorm.includes(lsNorm) || lsNorm.includes(cyNorm);
+  });
+  if (containsMatch) return containsMatch;
+
+  // 4. Meaningful token match — use tokens of ≥4 chars, skip generic words
+  const SKIP_TOKENS = new Set(["donut","donuts","llc","inc","corp","group","street","ferry","hall","city"]);
+  const cyTokens = cyStoreName.toLowerCase().split(/\s+/)
+    .filter(t => t.length >= 4 && !SKIP_TOKENS.has(t));
+
+  if (cyTokens.length > 0) {
+    const tokenMatch = lyStoreNames.find(ls => {
+      const lsTokens = ls.toLowerCase().split(/\s+/)
+        .filter(t => t.length >= 4 && !SKIP_TOKENS.has(t));
+      return cyTokens.some(ct => lsTokens.some(lt => ct === lt || lt.startsWith(ct) || ct.startsWith(lt)));
+    });
+    if (tokenMatch) return tokenMatch;
+  }
+
+  return null; // no match found
+}
+
   // ── YoY per store ──
   // Use resolvedKpiKeys (declared above in totals block) — matches actual storeMetrics keys.
   const yoyComparisons = {};
   if (lyMetrics) {
     storeNames.forEach(store => {
-      const lyStore = lyStoreNames.includes(store)
-        ? store
-        : lyStoreNames.find(ls => ls.toLowerCase().replace(/\s+/g,"").includes(store.toLowerCase().replace(/\s+/g,"").slice(0,5)));
-      if (!lyStore) return;
+      const lyStore = matchLYStore(store, lyStoreNames);
+      if (!lyStore) {
+        console.log(`⚠️ No LY match for CY store: "${store}"`);
+        return;
+      }
       yoyComparisons[store] = {};
       resolvedKpiKeys.forEach(kpi => {
         const cy = cyMetrics[store]?.[kpi];
@@ -1105,8 +1156,7 @@ function step2_fallback(sheets) {
       // Recompute YoY
       const kpiKeys = Object.keys(KPI_PATTERNS);
       cyResult.stores.forEach(store => {
-        const lyStore = lyResult.stores.includes(store) ? store
-          : lyResult.stores.find(ls => ls.toLowerCase().replace(/\s+/g,"").includes(store.toLowerCase().replace(/\s+/g,"").slice(0,5)));
+        const lyStore = matchLYStore(store, lyResult.stores);
         if (!lyStore) return;
         cyResult.yoyComparisons[store] = {};
         kpiKeys.forEach(kpi => {
@@ -1211,7 +1261,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
       const cy     = formatNum(scopedTotals[kpi]);
       // Portfolio YoY only shown for all-store analysis
       const yoy    = (!inp.isSpecificStore) ? portfolioYoY[kpi] : null;
-      const yoyStr = yoy ? `  |  LY: ${formatNum(yoy.ly)}  |  Δ: ${formatNum(yoy.change)} (${formatPct(yoy.changePct)})` : "";
+      const yoyStr = yoy ? `  |  LY: ${formatNum(yoy.ly)}  |  Δ: ${formatNum(yoy.change)} (${formatDeltaPct(yoy.changePct)})` : "";
       b += `  ${label}: ${cy.padStart(15)}${yoyStr}\n`;
     }
   });
@@ -1280,7 +1330,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
       activeKPIs.forEach(kpi => {
         if (yoy[kpi]) {
           const { cy, ly, change, changePct } = yoy[kpi];
-          b += `  │  ${(KPI_LABELS[kpi]||kpi).padEnd(28)}: CY ${formatNum(cy)} | LY ${formatNum(ly)} | Δ ${formatNum(change)} (${formatPct(changePct)})\n`;
+          b += `  │  ${(KPI_LABELS[kpi]||kpi).padEnd(28)}: CY ${formatNum(cy)} | LY ${formatNum(ly)} | Δ ${formatNum(change)} (${formatDeltaPct(changePct)})\n`;
         }
       });
     }
@@ -1310,6 +1360,8 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   }
 
   b += `\n▶ USER QUESTION: "${userQuestion || "Full P&L analysis"}"\n`;
+  // Return both the data block string and the active store count for instructions
+  b._activeStoreCount = activeStores.length;
   return b;
 }
 
@@ -1400,13 +1452,13 @@ function getKPIOrderForIntent(intent) {
  * Dynamically build the analysis instructions for Step 3
  * based on what the user actually asked for.
  */
-function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults) {
+function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults, activeStoreCount) {
   const kpiScopeStr      = kpiScope.join(", ");
   const isSpecific       = intent.isSpecificStore && intent.specificStores?.length > 0;
   const isDeep           = intent.isDeepAnalysis;
   const showEbitdaRank   = (!isSpecific && intent.isAllStoreAnalysis) || intent.wantsEbitdaRank || intent.storeFilter;
   const storeLabel       = isSpecific ? `for: ${intent.specificStores.join(", ")}` : "all stores";
-  const totalStores      = computedResults?.stores?.length || 0;
+  const totalStores      = activeStoreCount ?? (computedResults?.stores?.length || 0);
 
   // Table columns
   const tableKPIs = kpiScope.filter(k => ["REVENUE","GROSS_PROFIT","EBITDA","NET_PROFIT"].includes(k));
@@ -1428,11 +1480,11 @@ function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedR
 
   let instructions = `The user asked: "${scopeNote}"
 
-TABLE COMPLETENESS RULE: There are ${totalStores} stores in this analysis. Every markdown table MUST have exactly ${totalStores} data rows. NEVER use "..." or skip any store. If a value is genuinely missing, write "N/A" for that cell.
+TABLE COMPLETENESS RULE: There are exactly ${totalStores} stores with data in this analysis. Every table MUST have exactly ${totalStores} data rows. NEVER add extra rows or use "..." placeholders. Only write rows for stores that appear in the data block above.
 
 SCOPE CONSTRAINTS:
 1. KPI scope: [${kpiScopeStr}] — do NOT include KPIs outside this list.
-2. Store scope: ${isSpecific ? `ONLY these stores: ${intent.specificStores.join(", ")}. Do NOT include all-store totals.` : `All ${totalStores} stores.`}
+2. Store scope: ${isSpecific ? `ONLY these stores: ${intent.specificStores.join(", ")}. Do NOT include all-store totals.` : `All ${totalStores} stores — list them all in every table.`}
 ${intent.promptExclusions?.length > 0 ? `3. EXCLUDED: ${intent.promptExclusions.join("; ")} — omit completely, do not mention anywhere.` : ""}
 ${isDeep ? `${intent.promptExclusions?.length > 0 ? "4" : "3"}. DEEP ANALYSIS: cover every line item in the data block. Flag anomalies, unusual ratios, unexpected figures.` : ""}
 
@@ -1543,7 +1595,7 @@ async function step3_generateCommentary(computedResults, userQuestion) {
   console.log(`📦 Data block: ${dataBlock.length} chars | stores=${computedResults.stores?.length} | Intent: kpiLimit=${intent.kpiLimit}, specificStores=${JSON.stringify(intent.specificStores)}, deep=${intent.isDeepAnalysis}`);
 
   // Build dynamic analysis instructions based on what the user actually asked
-  const analysisInstructions = buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults);
+  const analysisInstructions = buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults, dataBlock._activeStoreCount);
 
   // gpt-4o-mini supports up to 16,384 output tokens
   // Use maximum to avoid mid-table truncation with 22+ stores
@@ -1559,7 +1611,7 @@ ABSOLUTE RULES — NEVER BREAK:
 2. NEVER calculate, estimate, or derive any number yourself.
 3. Negative numbers MUST remain negative. Write them with a minus sign: -1,234.
 4. NUMBER FORMAT — amounts: whole numbers with US commas, NO decimal places (1,234,567).
-5. PERCENTAGE FORMAT — always 1 decimal place (12.3%).
+5. PERCENTAGE FORMAT — always 1 decimal place. Margins like GP%, EBITDA% show as 12.3% or -4.5%. YoY change % shows as +12.3% or -4.5%.
 6. DO NOT write a Recommendations section.
 7. FOLLOW THE USER QUESTION SCOPE: if asked for analysis only up to a certain KPI (e.g. "till EBITDA"), DO NOT include any deeper KPIs anywhere — not in tables, not in paragraphs, not in observations.
 8. Be specific — always name the store and exact figure together.
