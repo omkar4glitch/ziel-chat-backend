@@ -1741,13 +1741,24 @@ Write a detailed MIS P&L commentary with these sections:
 `;
   } else {
     // All-store analysis
-    if (hasLY && intent.wantsYoY) {
-      instructions += `## Year-on-Year Analysis — Portfolio
-(Portfolio-level CY vs LY for every KPI in scope. For each KPI show: CY total, LY total, Δ amount, Δ%. Use ONLY the portfolio YoY data from the data block. Present as a clear bullet-point list, NOT a table.)
-
-`;
-    }
-
+    if (hasLY) {
+          instructions += `## Year-on-Year Analysis — Portfolio
+    Present this section as a **markdown table** with exactly these columns:
+    
+    | KPI | CY Total | LY Total | Δ Amount | Δ % |
+    |-----|----------|----------|----------|-----|
+    
+    Rules for the table:
+    - Include a row for EVERY KPI in scope that has portfolio YoY data in the data block, in the order they appear in the data block.
+    - CY Total and LY Total: whole numbers with US commas, no decimals (e.g. 4,481,955).
+    - Δ Amount: whole number with US commas, negative if CY < LY (e.g. -10,229).
+    - Δ %: one decimal place, with + prefix for positive (e.g. +4.9%, -18.2%).
+    - Use ONLY the portfolio YoY data from the "PORTFOLIO TOTALS" section of the data block. Do NOT recalculate.
+    - Highlight rows in red (bold the KPI name) where Δ% is worse than -10% or cost growth exceeds +10%.
+    - Place this table immediately after the Executive Summary, before any other section.
+    
+    `;
+        }
 
     if (showEbitdaRank && hasEbitda && kpiScope.includes("EBITDA")) {
       instructions += `## EBITDA Analysis
