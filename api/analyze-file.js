@@ -144,24 +144,37 @@ async function extractImage(_buf, fileType) {
 }
 
 /**
- * XLSX extraction — uses raw:true so Excel numeric cells arrive as JS Numbers.
- * This is the key fix for negative numbers: Excel stores -1234 as the Number -1234,
- * and raw:true passes it through directly without converting to a string like "1234"
- * (which was the cause of missing negatives in the previous version).
+ * XLSX extraction.
+ *
+ * IMPORTANT - two modes to handle all file types correctly:
+ *
+ * Mode 1 (raw:false, default): Returns CACHED CALCULATED VALUES for formula cells.
+ *   → Needed for files like Prell where every data cell is a formula (=L8-L13 etc.)
+ *   → raw:false returns the stored result of the formula, not the formula string
+ *   → Numbers come as JS Number type with sign preserved
+ *
+ * Mode 2 (raw:true): Returns formula STRINGS for formula cells (breaks formula-heavy files).
+ *   → Was originally used to preserve negative signs, but raw:false also preserves them
+ *   → We no longer need raw:true since parseAmount handles negative numbers from raw:false
+ *
+ * Using raw:false solves both problems:
+ *   ✓ Formula-based files (Prell): returns calculated values, not "=L8-L13"
+ *   ✓ Direct-value files (Dunkin): returns numbers directly with sign preserved
  */
 function extractXlsx(buffer) {
   try {
     const wb = XLSX.read(buffer, {
       type: "buffer",
       cellDates: false,
-      raw: true,      // ← CRITICAL: preserves sign of numeric cells
+      raw: false,     // false = return cached calculated values (works for formula cells too)
       defval: null
     });
     if (!wb.SheetNames.length) return { type: "xlsx", sheets: [] };
     const sheets = wb.SheetNames.map(name => {
       const ws = wb.Sheets[name];
-      const rawArray = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, blankrows: false, raw: true });
-      const jsonRows = XLSX.utils.sheet_to_json(ws, { defval: null, blankrows: false, raw: true });
+      // raw:false returns calculated values for ALL cells including formulas
+      const rawArray = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, blankrows: false, raw: false });
+      const jsonRows = XLSX.utils.sheet_to_json(ws, { defval: null, blankrows: false, raw: false });
       console.log(`Sheet "${name}": ${rawArray.length}r × ${rawArray[0]?.length || 0}c`);
       return { name, rows: jsonRows, rawArray, rowCount: jsonRows.length };
     });
@@ -207,7 +220,7 @@ function parseCSV(csvText) {
 // ─────────────────────────────────────────────
 
 function parseAmount(raw) {
-  // Case 1: Already a JS number (Excel raw:true mode) — trust it completely
+  // Case 1: JS number — can happen with raw:false for some cell types — trust it directly
   if (typeof raw === "number") return isFinite(raw) ? raw : null;
 
   if (raw === null || raw === undefined) return null;
@@ -684,17 +697,19 @@ function parseInlineYearSheet(sheet, inlineInfo) {
     if (lastStore) storeByCol[colIdx] = lastStore;
   });
 
-  // Forward-fill year labels — but ONLY within a valid store's column group.
-  // Reset lastYear whenever storeByCol has no entry (meaning we're in a gap/consolidated group).
+  // Forward-fill year labels.
+  // KEY RULE: Always update lastYear when we see a year value (even in consolidated/gap cols).
+  // Only ASSIGN yearByCol for columns that have a valid store.
+  // This ensures stores after a consolidated gap still get the correct year.
   const yearByCol = {};
   let lastYear = null;
   yearRow.forEach((cell, colIdx) => {
     if (colIdx === 0) return;
-    // If this column has no valid store, reset the year bleed
-    if (!storeByCol[colIdx]) { lastYear = null; return; }
     const s = String(cell ?? "").trim();
+    // Always capture year values regardless of which group they appear in
     if (/^(20\d{2}|FY\s*\d{2,4})$/i.test(s)) lastYear = s;
-    if (lastYear) yearByCol[colIdx] = lastYear;
+    // Only assign to valid store columns (skip consolidated/gap cols)
+    if (lastYear && storeByCol[colIdx]) yearByCol[colIdx] = lastYear;
   });
 
   // ── B. Find Amount sub-header row ──
@@ -780,33 +795,49 @@ function parseInlineYearSheet(sheet, inlineInfo) {
 // ─────────────────────────────────────────────
 
 async function step1_understandQueryAndStructure(sheets, userQuestion) {
-  // Build a smart file sample:
-  // - ALL header rows (first ~8 rows) in full to map structure + column positions
-  // - ALL line item descriptions from col 0 (so we can see every P&L row name)
-  // This solves the problem where files have unusual KPI names that differ from defaults
+  // Build a comprehensive structural summary of each sheet:
+  // 1. Header rows (first 8) with column positions — to identify stores and years
+  // 2. ALL line item names from col 0 — to identify every KPI regardless of naming convention
+  // 3. Pre-detected store names and year labels — to help AI confirm structure
   const fileSample = sheets.slice(0, 4).map(sheet => {
     const ra = sheet.rawArray || [];
     if (!ra.length) return `Sheet: "${sheet.name}" (empty)`;
 
-    // Part 1: First 8 rows in full (captures all header rows with column positions)
+    // ── Part 1: Header rows with column positions ──
     const headerRows = ra.slice(0, 8).map((row, i) =>
-      `Row${i}: ${(row || []).map((c, j) => `[${j}]${String(c ?? "").slice(0, 28)}`).join(" | ")}`
+      `Row${i}: ${(row || []).map((c, j) => {
+        const v = String(c ?? "").trim();
+        return v ? `[${j}]${v.slice(0, 25)}` : "";
+      }).filter(Boolean).join(" | ")}`
     ).join("\n");
 
-    // Part 2: All row labels from col 0 (captures every P&L line item name)
-    const allLineItems = [];
-    ra.slice(8).forEach((row, i) => {
+    // ── Part 2: All line item names from col 0 (skip empty and formula strings) ──
+    const lineItems = [];
+    ra.slice(0).forEach((row, i) => {
       const desc = String(row?.[0] ?? "").trim();
-      if (desc && !/^[=\d]/.test(desc)) { // skip formula cells and blank
-        allLineItems.push(`  row${i+8}: "${desc}"`);
+      // Skip blank, formula strings, title rows
+      if (desc && !desc.startsWith("=") && desc.length > 1 && !/^\d+$/.test(desc)) {
+        lineItems.push(`row${i}:"${desc}"`);
       }
     });
-    const lineItemSummary = allLineItems.length
-      ? `\nALL LINE ITEM NAMES (col 0):\n${allLineItems.join("\n")}`
-      : "";
 
-    return `=== Sheet: "${sheet.name}" (${ra.length}r × ${ra[0]?.length || 0}c) ===\n${headerRows}${lineItemSummary}`;
-  }).join("\n\n");
+    // ── Part 3: Pre-detect non-empty store-name row (helps AI identify header row) ──
+    const storeNameRow = ra.slice(0, 8).map((row, i) => {
+      const nonEmptyTextCols = (row || []).filter((c, j) => {
+        if (j === 0) return false;
+        const s = String(c ?? "").trim();
+        return s && !/^[=\d.%]/.test(s) && !/^(20\d{2})$/.test(s) && s !== "Amount" && s !== "%";
+      });
+      return nonEmptyTextCols.length >= 2 ? `Row${i} has ${nonEmptyTextCols.length} store-like names` : null;
+    }).filter(Boolean).join("; ");
+
+    return [
+      `=== Sheet: "${sheet.name}" (${ra.length}r × ${ra[0]?.length || 0}c) ===`,
+      `HEADER ROWS:\n${headerRows}`,
+      `STORE DETECTION: ${storeNameRow || "not detected"}`,
+      `ALL LINE ITEMS (col 0):\n${lineItems.join("\n")}`
+    ].join("\n\n");
+  }).join("\n\n---\n\n");
 
   const messages = [
     { role: "system", content: "You are a financial spreadsheet structure analyzer. Return ONLY valid JSON. No markdown, no explanation, no backticks." },
