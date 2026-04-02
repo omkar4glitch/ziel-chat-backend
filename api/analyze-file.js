@@ -87,7 +87,7 @@ Rules:
 // ─────────────────────────────────────────────
 
 async function executePython(code, fileUrl) {
-  const res = await fetch("https://your-python.onrender.com/execute", {
+  const res = await fetch("https://ziel-chat-backend.onrender.com", {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
