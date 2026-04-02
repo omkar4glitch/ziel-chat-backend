@@ -1563,9 +1563,10 @@ Present as a markdown table with the following EXACT columns:
 
 MANDATORY TABLE RULES:
 - Include ALL ${totalStores} stores — one row per store. NO truncation, NO "...", NO "Other stores" placeholder.
+- Strickly should include all the data no data should be missed.
 - Pull all figures EXACTLY from the "STORE-WISE YoY DATA" section in the data block.
 - Rev CY / Rev LY / GP CY / GP LY / EBITDA CY / EBITDA LY: whole numbers with US commas, no decimals.
-- Rev Δ% and EBITDA Δ%: 1 decimal with sign e.g. +14.5% or -45.3%. Write "N/A" if LY data unavailable.
+- Rev Δ% and EBITDA Δ%: 1 decimal with sign e.g. +14.5% or -45.3%. Write "-" if LY data unavailable.
 - Do NOT add any extra columns. Do NOT omit any store.
 - Negatives must show as negative numbers: -9,006 not (9,006).
 
@@ -1591,10 +1592,10 @@ For EACH expense head, your subsection MUST cover ALL THREE of the following:
 - Use the BENCHMARK COLUMN values from the data block as the industry reference.
 - State the benchmark figure and the portfolio average / typical store figure.
 - Identify if stores are above or below benchmark and by how much.
-- If no benchmark data is available for this head, state "Benchmark not available in report."
+- If no benchmark data is available for this head, then don't provide any comment for that particular head."
 
 **b) Comparison Among All Stores**
-- List the highest and lowest spending stores (by % of revenue) for this cost head.
+- List the highest and lowest spending stores (by % of revenue) for this cost head, make sure you take the lowest last store not 2nd or 3 rd lowest.
 - Highlight any stores with notably high or low ratios and quantify the variance.
 - Note any clusters or patterns across stores.
 
@@ -1689,7 +1690,7 @@ ABSOLUTE RULES — NEVER BREAK:
 9. FOLLOW THE USER QUESTION SCOPE: if asked for analysis only up to a certain KPI, DO NOT include deeper KPIs.
 10. Be specific — always name the store and exact figure together.
 11. COMPLETE ALL TABLES FULLY — never use "..." or truncate. Every store must appear with actual values.
-12. STORE-WISE YOY TABLE: Must include ALL stores — no exceptions, no truncation.
+12. STORE-WISE YOY TABLE: Must include ALL stores — no exceptions, no truncation no blanks, only with actual accurate numbers.
 13. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |).
 14. COST STRUCTURE ANALYSIS: For each expense head, cover (a) benchmark comparison (b) inter-store comparison (c) observation. Follow the exact order specified.${compact ? "\n15. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
     },
