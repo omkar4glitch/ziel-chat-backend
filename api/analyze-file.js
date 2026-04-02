@@ -1741,24 +1741,23 @@ Write a detailed MIS P&L commentary with these sections:
 `;
   } else {
     // All-store analysis
+    // Always show YoY table when LY data is available (not just when user asks "yoy")
     if (hasLY) {
-          instructions += `## Year-on-Year Analysis — Portfolio
-    Present this section as a **markdown table** with exactly these columns:
-    
-    | KPI | CY Total | LY Total | Δ Amount | Δ % |
-    |-----|----------|----------|----------|-----|
-    
-    Rules for the table:
-    - Include a row for EVERY KPI in scope that has portfolio YoY data in the data block, in the order they appear in the data block.
-    - CY Total and LY Total: whole numbers with US commas, no decimals (e.g. 4,481,955).
-    - Δ Amount: whole number with US commas, negative if CY < LY (e.g. -10,229).
-    - Δ %: one decimal place, with + prefix for positive (e.g. +4.9%, -18.2%).
-    - Use ONLY the portfolio YoY data from the "PORTFOLIO TOTALS" section of the data block. Do NOT recalculate.
-    - Highlight rows in red (bold the KPI name) where Δ% is worse than -10% or cost growth exceeds +10%.
-    - Place this table immediately after the Executive Summary, before any other section.
-    
-    `;
-        }
+      instructions += `## Year-on-Year Analysis — Portfolio
+Present this as a markdown table with columns: | KPI | CY Total | LY Total | Δ Amount | Δ% |
+
+MANDATORY TABLE RULES:
+- Include EVERY KPI that has data in the PORTFOLIO TOTALS section of the data block, in the same order they appear
+- Do NOT skip any KPI row. Do NOT add rows not present in the data block.
+- KPI column: use the display name exactly as it appears in the data block label (e.g. "Net Revenue", "Food and Supplies", "Total COGS", "Gross Margin", "EBITDA" etc.)
+- CY Total: whole number, US commas, no decimals. Negatives show as -1,234
+- LY Total: same format. Write "N/A" only if genuinely absent from the data block.
+- Δ Amount: CY minus LY. Negative stays negative.
+- Δ%: 1 decimal place with sign, e.g. +4.9% or -18.2%. Write "N/A" if LY is N/A.
+
+`;
+    }
+
 
     if (showEbitdaRank && hasEbitda && kpiScope.includes("EBITDA")) {
       instructions += `## EBITDA Analysis
@@ -1784,8 +1783,17 @@ Write a detailed MIS P&L commentary with these sections:
 `;
     }
 
-    instructions += `## Key Observations
-(5-7 bullet points. Each must cite a store name and exact figure.)
+    instructions += `## Store Performance Review
+Write a detailed paragraph for EACH store in the data block. For every store you MUST:
+1. Name the store explicitly at the start of its paragraph
+2. State its Net Revenue, Total COGS (or Gross Margin), EBITDA, and Net Profit with exact figures
+3. Note YoY movement for key KPIs if LY data is available (quote Δ amount and Δ%)
+4. Highlight any notable strength or concern (e.g. high rent, negative EBITDA, strong margin)
+
+MANDATORY: Every single store in the data block MUST get its own paragraph. Do NOT group stores together. Do NOT skip any store. Do NOT summarise multiple stores in one paragraph.
+
+## Key Observations
+(Write 8-12 specific bullet observations. Each must name a specific store and quote exact figures from the data block. Cover: top and bottom performers, notable YoY changes, cost anomalies, margin outliers.)
 
 `;
   }
@@ -1839,7 +1847,9 @@ ABSOLUTE RULES — NEVER BREAK:
 6. DO NOT write a Recommendations section.
 7. FOLLOW THE USER QUESTION SCOPE: if asked for analysis only up to a certain KPI (e.g. "till EBITDA"), DO NOT include any deeper KPIs anywhere — not in tables, not in paragraphs, not in observations.
 8. Be specific — always name the store and exact figure together.
-9. COMPLETE ALL TABLES FULLY — never use "..." or truncate table rows. Every store must appear with its actual values.${compact ? "\n10. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise completeness of tables over length of prose." : ""}`
+9. COMPLETE ALL TABLES FULLY — never use "..." or truncate table rows. Every store must appear with its actual values.
+10. COVER EVERY STORE — when writing store performance review, every single store in the data block must get its own dedicated paragraph. Missing even one store is a critical failure.
+11. YoY TABLE FORMAT — when writing the Year-on-Year Analysis Portfolio section, it MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |), not bullet points. Include every KPI row from the Portfolio Totals data.${compact ? "\n10. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise completeness of tables over length of prose." : ""}`
     },
     {
       role: "user",
