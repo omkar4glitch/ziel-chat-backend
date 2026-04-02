@@ -1300,46 +1300,87 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     });
   }
 
-  // ── Per-store YoY data for Store-wise YoY table ──
+// ── Per-store YoY data for Store-wise YoY table ──
+  // CY values always come from storeMetrics (never null if store exists).
+  // LY values come from yoyComparisons where available; show "-" if no LY match.
+  // Δ% is shown only when both CY and LY exist.
   b += `\n▶ STORE-WISE YoY DATA (for Store-wise Year-on-Year Comparison Table)\n${"─".repeat(58)}\n`;
-  b += `  Columns: Store | Rev CY | Rev LY | Rev Δ% | GP CY | GP LY | EBITDA CY | EBITDA LY | EBITDA Δ%\n`;
+  b += `  CRITICAL: Copy every value EXACTLY as shown below into the table. Do NOT skip any store or leave any CY cell blank.\n`;
+  b += `  Columns: Store | Rev CY | Rev LY | Rev Δ% | Gross Profit CY | GP LY | EBITDA CY | EBITDA LY | EBITDA Δ%\n`;
   activeStores.forEach(store => {
     const m   = storeMetrics[store];
     const yoy = yoyComparisons[store];
-    const revCY = m?.REVENUE ?? null;
-    const revLY = yoy?.REVENUE?.ly ?? null;
-    const revDeltaPct = yoy?.REVENUE?.changePct ?? null;
-    const gpCY = m?.GROSS_PROFIT ?? null;
-    const gpLY = yoy?.GROSS_PROFIT?.ly ?? null;
-    const ebitdaCY = m?.EBITDA ?? null;
-    const ebitdaLY = yoy?.EBITDA?.ly ?? null;
-    const ebitdaDeltaPct = yoy?.EBITDA?.changePct ?? null;
-    b += `  ${store} | RevCY:${formatNum(revCY)} | RevLY:${formatNum(revLY)} | RevΔ%:${revDeltaPct !== null ? formatDeltaPct(revDeltaPct) : "N/A"} | GPCY:${formatNum(gpCY)} | GPLY:${formatNum(gpLY)} | EBITDACY:${formatNum(ebitdaCY)} | EBITDALY:${formatNum(ebitdaLY)} | EBITDAΔ%:${ebitdaDeltaPct !== null ? formatDeltaPct(ebitdaDeltaPct) : "N/A"}\n`;
-  });
 
-  // ── Per-store Cost Structure data for Cost Structure Analysis ──
+    // CY values — always from storeMetrics, show as "-" only if genuinely null in the file
+    const revCY      = (m?.REVENUE       !== null && m?.REVENUE       !== undefined && isFinite(m.REVENUE))       ? formatNum(m.REVENUE)       : "-";
+    const gpCY       = (m?.GROSS_PROFIT  !== null && m?.GROSS_PROFIT  !== undefined && isFinite(m.GROSS_PROFIT))  ? formatNum(m.GROSS_PROFIT)  : "-";
+    const ebitdaCY   = (m?.EBITDA        !== null && m?.EBITDA        !== undefined && isFinite(m.EBITDA))        ? formatNum(m.EBITDA)        : "-";
+
+    // LY values — from yoyComparisons; "-" if no LY data for this store
+    const revLY      = (yoy?.REVENUE?.ly      !== null && yoy?.REVENUE?.ly      !== undefined && isFinite(yoy.REVENUE.ly))      ? formatNum(yoy.REVENUE.ly)      : "-";
+    const gpLY       = (yoy?.GROSS_PROFIT?.ly !== null && yoy?.GROSS_PROFIT?.ly !== undefined && isFinite(yoy.GROSS_PROFIT.ly)) ? formatNum(yoy.GROSS_PROFIT.ly) : "-";
+    const ebitdaLY   = (yoy?.EBITDA?.ly       !== null && yoy?.EBITDA?.ly       !== undefined && isFinite(yoy.EBITDA.ly))       ? formatNum(yoy.EBITDA.ly)       : "-";
+
+    // Δ% only when both CY and LY exist
+    const revDeltaPct    = (yoy?.REVENUE?.changePct    !== null && yoy?.REVENUE?.changePct    !== undefined) ? formatDeltaPct(yoy.REVENUE.changePct)    : "-";
+    const ebitdaDeltaPct = (yoy?.EBITDA?.changePct     !== null && yoy?.EBITDA?.changePct     !== undefined) ? formatDeltaPct(yoy.EBITDA.changePct)     : "-";
+
+    b += `  ${store} | RevCY:${revCY} | RevLY:${revLY} | RevΔ%:${revDeltaPct} | GPCY:${gpCY} | GPLY:${gpLY} | EBITDACY:${ebitdaCY} | EBITDALY:${ebitdaLY} | EBITDAΔ%:${ebitdaDeltaPct}\n`;
+  });
+// ── Per-store Cost Structure data for Cost Structure Analysis ──
+  // Also pre-computes TOP 3 HIGHEST and BOTTOM 3 LOWEST (non-zero) stores per cost head
+  // so the AI cannot accidentally pick zero/null stores as "lowest".
   b += `\n▶ STORE-WISE COST STRUCTURE (% of Revenue — for Cost Structure Analysis)\n${"─".repeat(58)}\n`;
+  b += `  NOTE: TOP 3 HIGHEST and BOTTOM 3 LOWEST are pre-computed below each head.\n`;
+  b += `  The AI MUST use these exact pre-computed rankings — do NOT re-derive them.\n`;
   const costKPIs = [
-    { kpi: "FOOD_SUPPLIES",      pct: "FOOD_SUPPLIES_PCT",        label: "Food and Supplies" },
-    { kpi: "STAFF_COST",         pct: "STAFF_PCT",                label: "Operational Payroll Expenses" },
-    { kpi: "RENT",               pct: "RENT_PCT",                 label: "Rent" },
-    { kpi: "FRANCHISE_FEES",     pct: "FRANCHISE_FEES_PCT",       label: "Franchise Fees" },
-    { kpi: "UTILITIES",          pct: "UTILITIES_PCT",            label: "Utilities" },
-    { kpi: "REPAIRS_MAINTENANCE",pct: "REPAIRS_MAINTENANCE_PCT",  label: "Total Repairs and Maintenance" },
-    { kpi: "OTHER_EXPENSES",     pct: "OTHER_EXPENSES_PCT",       label: "Total Other Expenses" },
-    { kpi: "INTEREST_EXPENSE",   pct: "INTEREST_EXPENSE_PCT",     label: "Interest Expense" },
-    { kpi: "DEPRECIATION_EXP",   pct: "DEPRECIATION_EXP_PCT",     label: "Depreciation Expense" },
-    { kpi: "AMORTIZATION_EXP",   pct: "AMORTIZATION_EXP_PCT",     label: "Amortization Expense" },
+    { kpi: "FOOD_SUPPLIES",       pct: "FOOD_SUPPLIES_PCT",       label: "Food and Supplies" },
+    { kpi: "STAFF_COST",          pct: "STAFF_PCT",               label: "Operational Payroll Expenses" },
+    { kpi: "RENT",                pct: "RENT_PCT",                label: "Rent" },
+    { kpi: "FRANCHISE_FEES",      pct: "FRANCHISE_FEES_PCT",      label: "Franchise Fees" },
+    { kpi: "UTILITIES",           pct: "UTILITIES_PCT",           label: "Utilities" },
+    { kpi: "REPAIRS_MAINTENANCE", pct: "REPAIRS_MAINTENANCE_PCT", label: "Total Repairs and Maintenance" },
+    { kpi: "OTHER_EXPENSES",      pct: "OTHER_EXPENSES_PCT",      label: "Total Other Expenses" },
+    { kpi: "INTEREST_EXPENSE",    pct: "INTEREST_EXPENSE_PCT",    label: "Interest Expense" },
+    { kpi: "DEPRECIATION_EXP",    pct: "DEPRECIATION_EXP_PCT",    label: "Depreciation Expense" },
+    { kpi: "AMORTIZATION_EXP",    pct: "AMORTIZATION_EXP_PCT",    label: "Amortization Expense" },
   ];
   costKPIs.forEach(({ kpi, pct, label }) => {
     b += `\n  [${label}]\n`;
-    activeStores.forEach(store => {
-      const amt = storeMetrics[store]?.[kpi];
-      const pctVal = storeMetrics[store]?.[pct];
-      if (amt !== null && amt !== undefined) {
-        b += `    ${store.padEnd(36)}: ${formatNum(amt).padStart(12)}  (${pctVal !== null && pctVal !== undefined ? formatPct(pctVal) : "N/A"})\n`;
-      }
+
+    // Collect all stores that have BOTH a valid amount AND a valid non-zero % for this head
+    const storesWithData = activeStores
+      .map(store => ({
+        store,
+        amt:    storeMetrics[store]?.[kpi],
+        pctVal: storeMetrics[store]?.[pct]
+      }))
+      .filter(x =>
+        x.amt    !== null && x.amt    !== undefined && isFinite(x.amt) &&
+        x.pctVal !== null && x.pctVal !== undefined && isFinite(x.pctVal) && x.pctVal !== 0
+      );
+
+    // Print all stores
+    storesWithData.forEach(({ store, amt, pctVal }) => {
+      b += `    ${store.padEnd(36)}: ${formatNum(amt).padStart(12)}  (${formatPct(pctVal)})\n`;
     });
+
+    // Pre-compute TOP 3 HIGHEST (by % descending) — for costs, higher % = more expensive
+    const sortedDesc = [...storesWithData].sort((a, b) => b.pctVal - a.pctVal);
+    const top3 = sortedDesc.slice(0, 3);
+
+    // Pre-compute BOTTOM 3 LOWEST (by % ascending, strictly positive/non-zero)
+    const sortedAsc = [...storesWithData].sort((a, b) => a.pctVal - b.pctVal);
+    const bottom3 = sortedAsc.slice(0, 3);
+
+    if (top3.length > 0) {
+      b += `    ▲ TOP 3 HIGHEST ${label} (use these EXACTLY in analysis):\n`;
+      top3.forEach((x, i) => b += `      #${i+1} ${x.store}: ${formatPct(x.pctVal)} (${formatNum(x.amt)})\n`);
+    }
+    if (bottom3.length > 0) {
+      b += `    ▼ BOTTOM 3 LOWEST ${label} (use these EXACTLY in analysis):\n`;
+      bottom3.forEach((x, i) => b += `      #${i+1} ${x.store}: ${formatPct(x.pctVal)} (${formatNum(x.amt)})\n`);
+    }
   });
 
   // ── Per-store detail ──
