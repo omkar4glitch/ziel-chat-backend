@@ -466,6 +466,8 @@ function resolveRevenueKPI(kpiMapping, lineItemDict) {
 //  CONSOLIDATED COLUMN DETECTION
 // ─────────────────────────────────────────────
 
+// Patterns that exclude a column from being treated as a store in P&L analysis.
+// "benchmark" is intentionally kept here so it never appears as a store column.
 const EXCLUDED_COLUMN_PATTERNS = [
   "total","consolidated","grand total","all stores","overall","company total",
   "aggregate","sum","portfolio","net total",
@@ -477,6 +479,13 @@ const EXCLUDED_COLUMN_PATTERNS = [
 function isConsolidatedColumn(name) {
   const n = String(name || "").toLowerCase().trim();
   return EXCLUDED_COLUMN_PATTERNS.some(p => n === p || n.startsWith(p) || n.includes(p));
+}
+
+// isBenchmarkColumn — identifies the Benchmark column specifically.
+// Used to EXTRACT its data rather than exclude it.
+function isBenchmarkColumn(name) {
+  const n = String(name || "").toLowerCase().trim();
+  return n === "benchmark" || n.startsWith("benchmark");
 }
 
 function parseExclusionsFromPrompt(userQuestion) {
@@ -1043,26 +1052,43 @@ function step2_extractAndCompute(sheets, querySchema) {
     });
   }
 
-  // ── Extract Benchmark column data (column labelled "Benchmark" in the sheet) ──
-  // This is extracted separately for use in Cost Structure Analysis
+  // ── Extract Benchmark column data ──
+  // Scans ALL header rows (0-9) independently of layout detection so it works
+  // for both separate-sheet and inline layouts. "benchmark" stays excluded from
+  // store columns but its data is extracted here for Cost Structure Analysis.
   const benchmarkData = {};
   try {
     const primaryRaw = primarySheet.rawArray || [];
-    // Find header row
-    const sepDetect = detectSeparateSheetLayout(primaryRaw);
-    const headerRowIdx = sepDetect.isSeparateSheet ? sepDetect.headerRowIdx : 0;
-    const headerRow = primaryRaw[headerRowIdx] || [];
-    // Find benchmark column index
-    const benchmarkColIdx = headerRow.findIndex(c => /^benchmark$/i.test(String(c ?? "").trim()));
-    if (benchmarkColIdx >= 0 && sepDetect.isSeparateSheet) {
-      const dataStart = sepDetect.dataStartRow;
-      for (let r = dataStart; r < primaryRaw.length; r++) {
+    let benchmarkColIdx = -1;
+    let bmDataStartRow = 1;
+
+    // Search first 10 rows for a "Benchmark" header cell
+    for (let rowIdx = 0; rowIdx < Math.min(10, primaryRaw.length); rowIdx++) {
+      const row = primaryRaw[rowIdx] || [];
+      const colIdx = row.findIndex(c => isBenchmarkColumn(String(c ?? "").trim()));
+      if (colIdx >= 0) {
+        benchmarkColIdx = colIdx;
+        // Find the first row AFTER this header that has numeric data in the benchmark col
+        bmDataStartRow = rowIdx + 1;
+        for (let r = rowIdx + 1; r < Math.min(rowIdx + 6, primaryRaw.length); r++) {
+          const v = parseAmount((primaryRaw[r] || [])[colIdx]);
+          if (v !== null) { bmDataStartRow = r; break; }
+        }
+        console.log(`📊 Benchmark column found at header row ${rowIdx}, col index ${benchmarkColIdx}, data starts row ${bmDataStartRow}`);
+        break;
+      }
+    }
+
+    if (benchmarkColIdx >= 0) {
+      for (let r = bmDataStartRow; r < primaryRaw.length; r++) {
         const row = primaryRaw[r] || [];
         const desc = String(row[0] ?? "").trim();
         const val = parseAmount(row[benchmarkColIdx]);
         if (desc && val !== null) benchmarkData[desc] = val;
       }
-      console.log(`📊 Benchmark column found at index ${benchmarkColIdx}, ${Object.keys(benchmarkData).length} items extracted`);
+      console.log(`📊 Benchmark extracted: ${Object.keys(benchmarkData).length} line items`);
+    } else {
+      console.log("📊 No Benchmark column found in primary sheet headers");
     }
   } catch (e) {
     console.warn("⚠️ Benchmark extraction failed:", e.message);
@@ -1290,14 +1316,40 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   }
 
   // ── Benchmark data block ──
+  // Benchmark values from the report's Benchmark column are shown here in TWO forms:
+  // 1. Raw amount (absolute figure as stored in the file)
+  // 2. % of Benchmark Revenue (so the AI can compare cost ratios to benchmark ratios)
   if (benchmarkData && Object.keys(benchmarkData).length > 0) {
-    b += `\n▶ BENCHMARK COLUMN (from report — use for Cost Structure Analysis comparisons)\n${"─".repeat(58)}\n`;
-    // Map benchmark values through KPI patterns
+    b += `\n▶ BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE\n`;
+    b += `   (These are the real benchmark figures from the "Benchmark" column — NOT portfolio averages)\n`;
+    b += `${"─".repeat(58)}\n`;
+
+    // Find benchmark revenue to compute benchmark %s
+    let benchmarkRevenue = null;
+    for (const [desc, val] of Object.entries(benchmarkData)) {
+      const kpi = matchKPI(desc);
+      if (kpi === "REVENUE" || kpi === "NET_REVENUE" || kpi === "GROSS_REVENUE") {
+        benchmarkRevenue = val;
+        break;
+      }
+    }
+    if (benchmarkRevenue) {
+      b += `  Benchmark Revenue: ${formatNum(benchmarkRevenue)}\n\n`;
+    }
+
     Object.entries(benchmarkData).forEach(([desc, val]) => {
       const kpi = matchKPI(desc);
       const label = kpi ? (KPI_LABELS[kpi] || kpi) : desc;
-      b += `  ${label.padEnd(36)}: ${formatNum(val)}\n`;
+      let pctStr = "";
+      if (benchmarkRevenue && benchmarkRevenue !== 0) {
+        const pct = safeDivide(val, benchmarkRevenue);
+        if (pct !== null) pctStr = `  (${formatPct(pct)} of benchmark revenue)`;
+      }
+      b += `  ${label.padEnd(36)}: ${formatNum(val)}${pctStr}\n`;
     });
+    b += `\n  ⚑ USE THESE BENCHMARK VALUES (not portfolio averages) for Cost Structure Analysis benchmark comparisons.\n`;
+  } else {
+    b += `\n▶ BENCHMARK COLUMN: Not found in this file. Use portfolio averages for comparisons.\n`;
   }
 
   // ── Per-store YoY data for Store-wise YoY table ──
@@ -1588,19 +1640,22 @@ ${costHeadsInOrder.map((h, i) => `${i+1}. ${h}`).join("\n")}
 For EACH expense head, your subsection MUST cover ALL THREE of the following:
 
 **a) Comparison with Industry Standards / Benchmark**
-- Use the BENCHMARK COLUMN values from the data block as the industry reference.
-- State the benchmark figure and the portfolio average / typical store figure.
-- Identify if stores are above or below benchmark and by how much.
-- If no benchmark data is available for this head, state "Benchmark not available in report."
+CRITICAL: The data block contains a section called "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE".
+These are the REAL benchmark figures extracted directly from the "Benchmark" column in the uploaded file.
+- You MUST use ONLY these values as the benchmark reference — do NOT use portfolio averages as benchmark.
+- State the benchmark amount AND its % of benchmark revenue (both are provided in the data block).
+- Compare each store's % to the benchmark % and state the variance (e.g. "Store X is at 32.4% vs benchmark of 28.0% — 4.4pp above benchmark").
+- If the benchmark section shows "Not found in this file", state "Benchmark not available in report."
 
 **b) Comparison Among All Stores**
-- List the highest and lowest spending stores (by % of revenue) for this cost head.
-- Highlight any stores with notably high or low ratios and quantify the variance.
-- Note any clusters or patterns across stores.
+- From the "STORE-WISE COST STRUCTURE" section in the data block, identify the store with the HIGHEST % and the store with the LOWEST % for this expense head.
+- State both the amount and % of revenue for those stores.
+- Highlight any stores with notably outlier ratios (>2pp above or below the median) and name them with exact figures.
+- Note any meaningful clusters or patterns.
 
 **c) Suggestive Measures / Observations**
-- Based on (a) and (b), note any actionable observation or concern.
-- Keep this brief (1-2 sentences).
+- Based on (a) and (b), note any actionable observation or concern (1-2 sentences).
+- If a store is significantly above benchmark, call it out specifically.
 
 After covering all the above heads, add:
 
@@ -1691,7 +1746,8 @@ ABSOLUTE RULES — NEVER BREAK:
 11. COMPLETE ALL TABLES FULLY — never use "..." or truncate. Every store must appear with actual values.
 12. STORE-WISE YOY TABLE: Must include ALL stores — no exceptions, no truncation.
 13. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |).
-14. COST STRUCTURE ANALYSIS: For each expense head, cover (a) benchmark comparison (b) inter-store comparison (c) observation. Follow the exact order specified.${compact ? "\n15. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
+14. COST STRUCTURE ANALYSIS: For each expense head, cover (a) benchmark comparison (b) inter-store comparison (c) observation. Follow the exact order specified.
+15. BENCHMARK SOURCE: The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section in the data block contains the REAL benchmark values from the file. ALWAYS use those — NEVER substitute portfolio averages as the benchmark.${compact ? "\n15. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
     },
     {
       role: "user",
