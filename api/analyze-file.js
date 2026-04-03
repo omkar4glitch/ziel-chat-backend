@@ -1351,42 +1351,12 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     b += `   (These are the real benchmark figures from the "Benchmark" column — NOT portfolio averages)\n`;
     b += `${"─".repeat(58)}\n`;
 
-    // Find benchmark revenue to compute benchmark %s
-    let benchmarkRevenue = null;
-    for (const [desc, val] of Object.entries(benchmarkData)) {
-      const kpi = matchKPI(desc);
-      if (kpi === "REVENUE" || kpi === "NET_REVENUE" || kpi === "GROSS_REVENUE") {
-        benchmarkRevenue = val;
-        break;
-      }
-    }
-    if (benchmarkRevenue) {
-      b += `  Benchmark Revenue: ${formatNum(benchmarkRevenue)}\n\n`;
-    }
+    // Find benchmark revenue to compute benchmark %s(no okay)
 
-    // Build a lookup: KPI → benchmark % of revenue (the only form the AI should use)
-    const benchmarkPctByKpi = {};
-    Object.entries(benchmarkData).forEach(([desc, val]) => {
-      const kpi = matchKPI(desc);
-      if (!kpi) return;
-      if (benchmarkRevenue && benchmarkRevenue !== 0) {
-        const pct = safeDivide(val, benchmarkRevenue);
-        if (pct !== null) benchmarkPctByKpi[kpi] = pct;
-      }
+
     });
 
-    // Only show the % form (not raw amount, not "of benchmark revenue" label)
-    Object.entries(benchmarkData).forEach(([desc, val]) => {
-      const kpi = matchKPI(desc);
-      const label = kpi ? (KPI_LABELS[kpi] || kpi) : desc;
-      if (benchmarkPctByKpi[kpi] !== undefined) {
-        b += `  ${label.padEnd(36)}: ${formatPct(benchmarkPctByKpi[kpi])}\n`;
-      } else if (!benchmarkRevenue) {
-        // No revenue found — show raw amount as fallback
-        b += `  ${label.padEnd(36)}: ${formatNum(val)} (raw — no benchmark revenue found)\n`;
-      }
-      // If revenue exists but this KPI has no benchmark entry, skip it (handled below)
-    });
+
 
     // List which cost KPIs have NO benchmark (so AI knows to use portfolio avg for those)
     const costKpiKeys = ["FOOD_SUPPLIES","STAFF_COST","RENT","FRANCHISE_FEES","UTILITIES",
