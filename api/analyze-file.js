@@ -1300,87 +1300,46 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     });
   }
 
-// ── Per-store YoY data for Store-wise YoY table ──
-  // CY values always come from storeMetrics (never null if store exists).
-  // LY values come from yoyComparisons where available; show "-" if no LY match.
-  // Δ% is shown only when both CY and LY exist.
+  // ── Per-store YoY data for Store-wise YoY table ──
   b += `\n▶ STORE-WISE YoY DATA (for Store-wise Year-on-Year Comparison Table)\n${"─".repeat(58)}\n`;
-  b += `  CRITICAL: Copy every value EXACTLY as shown below into the table. Do NOT skip any store or leave any CY cell blank.\n`;
-  b += `  Columns: Store | Rev CY | Rev LY | Rev Δ% | Gross Profit CY | GP LY | EBITDA CY | EBITDA LY | EBITDA Δ%\n`;
+  b += `  Columns: Store | Rev CY | Rev LY | Rev Δ% | GP CY | GP LY | EBITDA CY | EBITDA LY | EBITDA Δ%\n`;
   activeStores.forEach(store => {
     const m   = storeMetrics[store];
     const yoy = yoyComparisons[store];
-
-    // CY values — always from storeMetrics, show as "-" only if genuinely null in the file
-    const revCY      = (m?.REVENUE       !== null && m?.REVENUE       !== undefined && isFinite(m.REVENUE))       ? formatNum(m.REVENUE)       : "-";
-    const gpCY       = (m?.GROSS_PROFIT  !== null && m?.GROSS_PROFIT  !== undefined && isFinite(m.GROSS_PROFIT))  ? formatNum(m.GROSS_PROFIT)  : "-";
-    const ebitdaCY   = (m?.EBITDA        !== null && m?.EBITDA        !== undefined && isFinite(m.EBITDA))        ? formatNum(m.EBITDA)        : "-";
-
-    // LY values — from yoyComparisons; "-" if no LY data for this store
-    const revLY      = (yoy?.REVENUE?.ly      !== null && yoy?.REVENUE?.ly      !== undefined && isFinite(yoy.REVENUE.ly))      ? formatNum(yoy.REVENUE.ly)      : "-";
-    const gpLY       = (yoy?.GROSS_PROFIT?.ly !== null && yoy?.GROSS_PROFIT?.ly !== undefined && isFinite(yoy.GROSS_PROFIT.ly)) ? formatNum(yoy.GROSS_PROFIT.ly) : "-";
-    const ebitdaLY   = (yoy?.EBITDA?.ly       !== null && yoy?.EBITDA?.ly       !== undefined && isFinite(yoy.EBITDA.ly))       ? formatNum(yoy.EBITDA.ly)       : "-";
-
-    // Δ% only when both CY and LY exist
-    const revDeltaPct    = (yoy?.REVENUE?.changePct    !== null && yoy?.REVENUE?.changePct    !== undefined) ? formatDeltaPct(yoy.REVENUE.changePct)    : "-";
-    const ebitdaDeltaPct = (yoy?.EBITDA?.changePct     !== null && yoy?.EBITDA?.changePct     !== undefined) ? formatDeltaPct(yoy.EBITDA.changePct)     : "-";
-
-    b += `  ${store} | RevCY:${revCY} | RevLY:${revLY} | RevΔ%:${revDeltaPct} | GPCY:${gpCY} | GPLY:${gpLY} | EBITDACY:${ebitdaCY} | EBITDALY:${ebitdaLY} | EBITDAΔ%:${ebitdaDeltaPct}\n`;
+    const revCY = m?.REVENUE ?? null;
+    const revLY = yoy?.REVENUE?.ly ?? null;
+    const revDeltaPct = yoy?.REVENUE?.changePct ?? null;
+    const gpCY = m?.GROSS_PROFIT ?? null;
+    const gpLY = yoy?.GROSS_PROFIT?.ly ?? null;
+    const ebitdaCY = m?.EBITDA ?? null;
+    const ebitdaLY = yoy?.EBITDA?.ly ?? null;
+    const ebitdaDeltaPct = yoy?.EBITDA?.changePct ?? null;
+    b += `  ${store} | RevCY:${formatNum(revCY)} | RevLY:${formatNum(revLY)} | RevΔ%:${revDeltaPct !== null ? formatDeltaPct(revDeltaPct) : "N/A"} | GPCY:${formatNum(gpCY)} | GPLY:${formatNum(gpLY)} | EBITDACY:${formatNum(ebitdaCY)} | EBITDALY:${formatNum(ebitdaLY)} | EBITDAΔ%:${ebitdaDeltaPct !== null ? formatDeltaPct(ebitdaDeltaPct) : "N/A"}\n`;
   });
-// ── Per-store Cost Structure data for Cost Structure Analysis ──
-  // Also pre-computes TOP 3 HIGHEST and BOTTOM 3 LOWEST (non-zero) stores per cost head
-  // so the AI cannot accidentally pick zero/null stores as "lowest".
+
+  // ── Per-store Cost Structure data for Cost Structure Analysis ──
   b += `\n▶ STORE-WISE COST STRUCTURE (% of Revenue — for Cost Structure Analysis)\n${"─".repeat(58)}\n`;
-  b += `  NOTE: TOP 3 HIGHEST and BOTTOM 3 LOWEST are pre-computed below each head.\n`;
-  b += `  The AI MUST use these exact pre-computed rankings — do NOT re-derive them.\n`;
   const costKPIs = [
-    { kpi: "FOOD_SUPPLIES",       pct: "FOOD_SUPPLIES_PCT",       label: "Food and Supplies" },
-    { kpi: "STAFF_COST",          pct: "STAFF_PCT",               label: "Operational Payroll Expenses" },
-    { kpi: "RENT",                pct: "RENT_PCT",                label: "Rent" },
-    { kpi: "FRANCHISE_FEES",      pct: "FRANCHISE_FEES_PCT",      label: "Franchise Fees" },
-    { kpi: "UTILITIES",           pct: "UTILITIES_PCT",           label: "Utilities" },
-    { kpi: "REPAIRS_MAINTENANCE", pct: "REPAIRS_MAINTENANCE_PCT", label: "Total Repairs and Maintenance" },
-    { kpi: "OTHER_EXPENSES",      pct: "OTHER_EXPENSES_PCT",      label: "Total Other Expenses" },
-    { kpi: "INTEREST_EXPENSE",    pct: "INTEREST_EXPENSE_PCT",    label: "Interest Expense" },
-    { kpi: "DEPRECIATION_EXP",    pct: "DEPRECIATION_EXP_PCT",    label: "Depreciation Expense" },
-    { kpi: "AMORTIZATION_EXP",    pct: "AMORTIZATION_EXP_PCT",    label: "Amortization Expense" },
+    { kpi: "FOOD_SUPPLIES",      pct: "FOOD_SUPPLIES_PCT",        label: "Food and Supplies" },
+    { kpi: "STAFF_COST",         pct: "STAFF_PCT",                label: "Operational Payroll Expenses" },
+    { kpi: "RENT",               pct: "RENT_PCT",                 label: "Rent" },
+    { kpi: "FRANCHISE_FEES",     pct: "FRANCHISE_FEES_PCT",       label: "Franchise Fees" },
+    { kpi: "UTILITIES",          pct: "UTILITIES_PCT",            label: "Utilities" },
+    { kpi: "REPAIRS_MAINTENANCE",pct: "REPAIRS_MAINTENANCE_PCT",  label: "Total Repairs and Maintenance" },
+    { kpi: "OTHER_EXPENSES",     pct: "OTHER_EXPENSES_PCT",       label: "Total Other Expenses" },
+    { kpi: "INTEREST_EXPENSE",   pct: "INTEREST_EXPENSE_PCT",     label: "Interest Expense" },
+    { kpi: "DEPRECIATION_EXP",   pct: "DEPRECIATION_EXP_PCT",     label: "Depreciation Expense" },
+    { kpi: "AMORTIZATION_EXP",   pct: "AMORTIZATION_EXP_PCT",     label: "Amortization Expense" },
   ];
   costKPIs.forEach(({ kpi, pct, label }) => {
     b += `\n  [${label}]\n`;
-
-    // Collect all stores that have BOTH a valid amount AND a valid non-zero % for this head
-    const storesWithData = activeStores
-      .map(store => ({
-        store,
-        amt:    storeMetrics[store]?.[kpi],
-        pctVal: storeMetrics[store]?.[pct]
-      }))
-      .filter(x =>
-        x.amt    !== null && x.amt    !== undefined && isFinite(x.amt) &&
-        x.pctVal !== null && x.pctVal !== undefined && isFinite(x.pctVal) && x.pctVal !== 0
-      );
-
-    // Print all stores
-    storesWithData.forEach(({ store, amt, pctVal }) => {
-      b += `    ${store.padEnd(36)}: ${formatNum(amt).padStart(12)}  (${formatPct(pctVal)})\n`;
+    activeStores.forEach(store => {
+      const amt = storeMetrics[store]?.[kpi];
+      const pctVal = storeMetrics[store]?.[pct];
+      if (amt !== null && amt !== undefined) {
+        b += `    ${store.padEnd(36)}: ${formatNum(amt).padStart(12)}  (${pctVal !== null && pctVal !== undefined ? formatPct(pctVal) : "N/A"})\n`;
+      }
     });
-
-    // Pre-compute TOP 3 HIGHEST (by % descending) — for costs, higher % = more expensive
-    const sortedDesc = [...storesWithData].sort((a, b) => b.pctVal - a.pctVal);
-    const top3 = sortedDesc.slice(0, 3);
-
-    // Pre-compute BOTTOM 3 LOWEST (by % ascending, strictly positive/non-zero)
-    const sortedAsc = [...storesWithData].sort((a, b) => a.pctVal - b.pctVal);
-    const bottom3 = sortedAsc.slice(0, 3);
-
-    if (top3.length > 0) {
-      b += `    ▲ TOP 3 HIGHEST ${label} (use these EXACTLY in analysis):\n`;
-      top3.forEach((x, i) => b += `      #${i+1} ${x.store}: ${formatPct(x.pctVal)} (${formatNum(x.amt)})\n`);
-    }
-    if (bottom3.length > 0) {
-      b += `    ▼ BOTTOM 3 LOWEST ${label} (use these EXACTLY in analysis):\n`;
-      bottom3.forEach((x, i) => b += `      #${i+1} ${x.store}: ${formatPct(x.pctVal)} (${formatNum(x.amt)})\n`);
-    }
   });
 
   // ── Per-store detail ──
@@ -1604,10 +1563,9 @@ Present as a markdown table with the following EXACT columns:
 
 MANDATORY TABLE RULES:
 - Include ALL ${totalStores} stores — one row per store. NO truncation, NO "...", NO "Other stores" placeholder.
-- Strickly should include all the data no data should be missed.
 - Pull all figures EXACTLY from the "STORE-WISE YoY DATA" section in the data block.
 - Rev CY / Rev LY / GP CY / GP LY / EBITDA CY / EBITDA LY: whole numbers with US commas, no decimals.
-- Rev Δ% and EBITDA Δ%: 1 decimal with sign e.g. +14.5% or -45.3%. Write "-" if LY data unavailable.
+- Rev Δ% and EBITDA Δ%: 1 decimal with sign e.g. +14.5% or -45.3%. Write "N/A" if LY data unavailable.
 - Do NOT add any extra columns. Do NOT omit any store.
 - Negatives must show as negative numbers: -9,006 not (9,006).
 
@@ -1633,10 +1591,10 @@ For EACH expense head, your subsection MUST cover ALL THREE of the following:
 - Use the BENCHMARK COLUMN values from the data block as the industry reference.
 - State the benchmark figure and the portfolio average / typical store figure.
 - Identify if stores are above or below benchmark and by how much.
-- If no benchmark data is available for this head, then don't provide any comment for that particular head."
+- If no benchmark data is available for this head, state "Benchmark not available in report."
 
 **b) Comparison Among All Stores**
-- List the highest and lowest spending stores (by % of revenue) for this cost head, make sure you take the lowest last store not 2nd or 3 rd lowest.
+- List the highest and lowest spending stores (by % of revenue) for this cost head.
 - Highlight any stores with notably high or low ratios and quantify the variance.
 - Note any clusters or patterns across stores.
 
@@ -1731,7 +1689,7 @@ ABSOLUTE RULES — NEVER BREAK:
 9. FOLLOW THE USER QUESTION SCOPE: if asked for analysis only up to a certain KPI, DO NOT include deeper KPIs.
 10. Be specific — always name the store and exact figure together.
 11. COMPLETE ALL TABLES FULLY — never use "..." or truncate. Every store must appear with actual values.
-12. STORE-WISE YOY TABLE: Must include ALL stores — no exceptions, no truncation no blanks, only with actual accurate numbers.
+12. STORE-WISE YOY TABLE: Must include ALL stores — no exceptions, no truncation.
 13. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |).
 14. COST STRUCTURE ANALYSIS: For each expense head, cover (a) benchmark comparison (b) inter-store comparison (c) observation. Follow the exact order specified.${compact ? "\n15. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
     },
