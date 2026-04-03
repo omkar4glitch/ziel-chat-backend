@@ -959,20 +959,47 @@ function step2_extractAndCompute(sheets, querySchema) {
   const totals = {};
   resolvedKpiKeys.forEach(kpi => {
     const vals = storeNames.map(s => cyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
-    if (vals.length) totals[kpi] = roundTo2(vals.reduce((a,b) => a+b, 0));
+    // Use Math.round to get exact integer totals — avoids floating-point 1-3 dollar drift
+    if (vals.length) totals[kpi] = Math.round(vals.reduce((a,b) => a+b, 0));
   });
 
-  const pctKpis = [
-    "GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT",
-    "STAFF_PCT","FOOD_SUPPLIES_PCT","RENT_PCT","FRANCHISE_FEES_PCT",
-    "RENT_FRANCHISE_PCT","UTILITIES_PCT","REPAIRS_MAINTENANCE_PCT",
-    "INTEREST_EXPENSE_PCT","DEPRECIATION_EXP_PCT","AMORTIZATION_EXP_PCT",
-    "OTHER_EXPENSES_PCT","OTHER_INCOME_PCT"
-  ];
+  // Portfolio averages — computed as WEIGHTED average: total cost / total revenue
+  // (not a simple average of per-store %, which gives wrong results when stores differ in size)
+  const pctKpiToBaseKpi = {
+    "GROSS_MARGIN_PCT":       ["GROSS_PROFIT",  "REVENUE"],
+    "EBITDA_MARGIN_PCT":      ["EBITDA",        "REVENUE"],
+    "NET_MARGIN_PCT":         ["NET_PROFIT",    "REVENUE"],
+    "COGS_PCT":               ["COGS",          "REVENUE"],
+    "FOOD_SUPPLIES_PCT":      ["FOOD_SUPPLIES", "REVENUE"],
+    "STAFF_PCT":              ["STAFF_COST",    "REVENUE"],
+    "RENT_PCT":               ["RENT",          "REVENUE"],
+    "FRANCHISE_FEES_PCT":     ["FRANCHISE_FEES","REVENUE"],
+    "RENT_FRANCHISE_PCT":     ["RENT_FRANCHISE_TOTAL","REVENUE"],
+    "UTILITIES_PCT":          ["UTILITIES",     "REVENUE"],
+    "REPAIRS_MAINTENANCE_PCT":["REPAIRS_MAINTENANCE","REVENUE"],
+    "INTEREST_EXPENSE_PCT":   ["INTEREST_EXPENSE","REVENUE"],
+    "DEPRECIATION_EXP_PCT":   ["DEPRECIATION_EXP","REVENUE"],
+    "AMORTIZATION_EXP_PCT":   ["AMORTIZATION_EXP","REVENUE"],
+    "OTHER_EXPENSES_PCT":     ["OTHER_EXPENSES","REVENUE"],
+    "OTHER_INCOME_PCT":       ["OTHER_INCOME",  "REVENUE"],
+  };
   const averages = {};
-  pctKpis.forEach(kpi => {
-    const vals = storeNames.map(s => cyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
-    if (vals.length) averages[kpi] = roundTo2(vals.reduce((a,b) => a+b, 0) / vals.length);
+  Object.entries(pctKpiToBaseKpi).forEach(([pctKpi, [numKpi, denKpi]]) => {
+    // Sum numerator and denominator across all stores that have BOTH values
+    let totalNum = 0, totalDen = 0, count = 0;
+    storeNames.forEach(s => {
+      const num = cyMetrics[s]?.[numKpi];
+      const den = cyMetrics[s]?.[denKpi];
+      if (num !== null && num !== undefined && isFinite(num) &&
+          den !== null && den !== undefined && isFinite(den) && den !== 0) {
+        totalNum += num;
+        totalDen += den;
+        count++;
+      }
+    });
+    if (count > 0 && totalDen !== 0) {
+      averages[pctKpi] = roundTo2((totalNum / totalDen) * 100);
+    }
   });
 
   const ebitdaRanking = storeNames
@@ -1337,17 +1364,40 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
       b += `  Benchmark Revenue: ${formatNum(benchmarkRevenue)}\n\n`;
     }
 
+    // Build a lookup: KPI → benchmark % of revenue (the only form the AI should use)
+    const benchmarkPctByKpi = {};
+    Object.entries(benchmarkData).forEach(([desc, val]) => {
+      const kpi = matchKPI(desc);
+      if (!kpi) return;
+      if (benchmarkRevenue && benchmarkRevenue !== 0) {
+        const pct = safeDivide(val, benchmarkRevenue);
+        if (pct !== null) benchmarkPctByKpi[kpi] = pct;
+      }
+    });
+
+    // Only show the % form (not raw amount, not "of benchmark revenue" label)
     Object.entries(benchmarkData).forEach(([desc, val]) => {
       const kpi = matchKPI(desc);
       const label = kpi ? (KPI_LABELS[kpi] || kpi) : desc;
-      let pctStr = "";
-      if (benchmarkRevenue && benchmarkRevenue !== 0) {
-        const pct = safeDivide(val, benchmarkRevenue);
-        if (pct !== null) pctStr = `  (${formatPct(pct)} of benchmark revenue)`;
+      if (benchmarkPctByKpi[kpi] !== undefined) {
+        b += `  ${label.padEnd(36)}: ${formatPct(benchmarkPctByKpi[kpi])}\n`;
+      } else if (!benchmarkRevenue) {
+        // No revenue found — show raw amount as fallback
+        b += `  ${label.padEnd(36)}: ${formatNum(val)} (raw — no benchmark revenue found)\n`;
       }
-      b += `  ${label.padEnd(36)}: ${formatNum(val)}${pctStr}\n`;
+      // If revenue exists but this KPI has no benchmark entry, skip it (handled below)
     });
-    b += `\n  ⚑ USE THESE BENCHMARK VALUES (not portfolio averages) for Cost Structure Analysis benchmark comparisons.\n`;
+
+    // List which cost KPIs have NO benchmark (so AI knows to use portfolio avg for those)
+    const costKpiKeys = ["FOOD_SUPPLIES","STAFF_COST","RENT","FRANCHISE_FEES","UTILITIES",
+                         "REPAIRS_MAINTENANCE","OTHER_EXPENSES","INTEREST_EXPENSE",
+                         "DEPRECIATION_EXP","AMORTIZATION_EXP"];
+    const missingBenchmark = costKpiKeys.filter(k => benchmarkPctByKpi[k] === undefined);
+    if (missingBenchmark.length > 0) {
+      b += `\n  ⚠ NO BENCHMARK for: ${missingBenchmark.map(k => KPI_LABELS[k]||k).join(", ")}\n`;
+      b += `    → For these heads, use portfolio weighted average % and highest/lowest store instead.\n`;
+    }
+    b += `\n  ⚑ BENCHMARK % values above are pre-computed % of benchmark revenue. Use them directly.\n`;
   } else {
     b += `\n▶ BENCHMARK COLUMN: Not found in this file. Use portfolio averages for comparisons.\n`;
   }
@@ -1384,13 +1434,46 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     { kpi: "AMORTIZATION_EXP",   pct: "AMORTIZATION_EXP_PCT",     label: "Amortization Expense" },
   ];
   costKPIs.forEach(({ kpi, pct, label }) => {
+    // Collect all stores that have data for this cost head
+    const storeEntries = activeStores
+      .map(store => ({
+        store,
+        amt: storeMetrics[store]?.[kpi],
+        pctVal: storeMetrics[store]?.[pct]
+      }))
+      .filter(e => e.amt !== null && e.amt !== undefined && isFinite(e.amt));
+
+    if (storeEntries.length === 0) return;
+
+    // Sort by % descending to find highest/lowest reliably
+    const sorted = [...storeEntries].sort((a, b) => {
+      const pa = (a.pctVal !== null && a.pctVal !== undefined) ? a.pctVal : -Infinity;
+      const pb = (b.pctVal !== null && b.pctVal !== undefined) ? b.pctVal : -Infinity;
+      return pb - pa;
+    });
+
+    const highest = sorted[0];
+
+    // Lowest: skip stores with 0% (or null %) — use 2nd lowest if lowest is 0%
+    // Filter to stores with a meaningful positive % > 0
+    const nonZeroEntries = sorted.filter(e =>
+      e.pctVal !== null && e.pctVal !== undefined && isFinite(e.pctVal) && e.pctVal > 0
+    );
+    // The true lowest is the last entry in nonZeroEntries (sorted desc → last = smallest positive)
+    const lowest = nonZeroEntries.length > 0 ? nonZeroEntries[nonZeroEntries.length - 1] : null;
+
     b += `\n  [${label}]\n`;
-    activeStores.forEach(store => {
-      const amt = storeMetrics[store]?.[kpi];
-      const pctVal = storeMetrics[store]?.[pct];
-      if (amt !== null && amt !== undefined) {
-        b += `    ${store.padEnd(36)}: ${formatNum(amt).padStart(12)}  (${pctVal !== null && pctVal !== undefined ? formatPct(pctVal) : "N/A"})\n`;
-      }
+    b += `  HIGHEST: ${highest.store} — ${formatNum(highest.amt)} (${highest.pctVal !== null ? formatPct(highest.pctVal) : "N/A"})\n`;
+    if (lowest) {
+      b += `  LOWEST (excl. 0%): ${lowest.store} — ${formatNum(lowest.amt)} (${formatPct(lowest.pctVal)})\n`;
+    } else {
+      b += `  LOWEST: No stores with positive % found\n`;
+    }
+    b += `  Portfolio weighted avg: ${averages[pct] !== undefined ? formatPct(averages[pct]) : "N/A"}\n`;
+    b += `  All stores (sorted high→low %):\n`;
+    sorted.forEach(e => {
+      const flag = e === highest ? " ← HIGHEST" : (e === lowest ? " ← LOWEST (excl. 0%)" : "");
+      b += `    ${e.store.padEnd(36)}: ${formatNum(e.amt).padStart(12)}  (${e.pctVal !== null && e.pctVal !== undefined ? formatPct(e.pctVal) : "N/A"})${flag}\n`;
     });
   });
 
@@ -1640,22 +1723,32 @@ ${costHeadsInOrder.map((h, i) => `${i+1}. ${h}`).join("\n")}
 For EACH expense head, your subsection MUST cover ALL THREE of the following:
 
 **a) Comparison with Industry Standards / Benchmark**
-CRITICAL: The data block contains a section called "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE".
-These are the REAL benchmark figures extracted directly from the "Benchmark" column in the uploaded file.
-- You MUST use ONLY these values as the benchmark reference — do NOT use portfolio averages as benchmark.
-- State the benchmark amount AND its % of benchmark revenue (both are provided in the data block).
-- Compare each store's % to the benchmark % and state the variance (e.g. "Store X is at 32.4% vs benchmark of 28.0% — 4.4pp above benchmark").
-- If the benchmark section shows "Not found in this file", state "Benchmark not available in report."
+The data block has a "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE" section. Each line shows the benchmark as a pre-computed % of benchmark revenue (e.g. "Food and Supplies: 28.0%").
+
+RULES:
+- If the benchmark % for this expense head IS listed in the data block:
+  → State the benchmark % (use the exact figure from the data block, 1 decimal).
+  → Compare the portfolio weighted average to that benchmark %.
+  → Name any stores that are significantly above or below benchmark, with their % and the pp variance.
+  → Do NOT mention raw dollar amounts for benchmark — only the %.
+- If the data block says "⚠ NO BENCHMARK for: [this head]" OR the head is not listed:
+  → State: "No benchmark available in the report for this head."
+  → Then provide the portfolio weighted average % (from "Portfolio weighted avg" in the data block).
+  → Do NOT invent a benchmark or use an industry guess.
 
 **b) Comparison Among All Stores**
-- From the "STORE-WISE COST STRUCTURE" section in the data block, identify the store with the HIGHEST % and the store with the LOWEST % for this expense head.
-- State both the amount and % of revenue for those stores.
-- Highlight any stores with notably outlier ratios (>2pp above or below the median) and name them with exact figures.
-- Note any meaningful clusters or patterns.
+The data block "STORE-WISE COST STRUCTURE" section lists stores sorted HIGH → LOW % for each head,
+and explicitly labels "HIGHEST" and "LOWEST (excl. 0%)".
+
+RULES:
+- State the HIGHEST store and its % — use the store labelled "← HIGHEST" in the data block.
+- State the LOWEST store and its % — use the store labelled "← LOWEST (excl. 0%)" in the data block.
+  NEVER pick a store at 0% as the lowest. The data block already excludes 0% entries for you.
+- State the portfolio weighted average % (labelled "Portfolio weighted avg" in the data block).
+- Mention any other stores that stand out as notably high or low (>3pp from the avg).
 
 **c) Suggestive Measures / Observations**
-- Based on (a) and (b), note any actionable observation or concern (1-2 sentences).
-- If a store is significantly above benchmark, call it out specifically.
+- 1-2 sentences on what the above means operationally and what warrants attention.
 
 After covering all the above heads, add:
 
@@ -1747,7 +1840,8 @@ ABSOLUTE RULES — NEVER BREAK:
 12. STORE-WISE YOY TABLE: Must include ALL stores — no exceptions, no truncation.
 13. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |).
 14. COST STRUCTURE ANALYSIS: For each expense head, cover (a) benchmark comparison (b) inter-store comparison (c) observation. Follow the exact order specified.
-15. BENCHMARK SOURCE: The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section in the data block contains the REAL benchmark values from the file. ALWAYS use those — NEVER substitute portfolio averages as the benchmark.${compact ? "\n15. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
+15. BENCHMARK SOURCE: The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section shows benchmark as pre-computed % of benchmark revenue. Use ONLY that % — never the raw amount, never 'X% of benchmark revenue' phrasing. If a head has no benchmark (marked '⚠ NO BENCHMARK'), say so and use the portfolio weighted average instead.
+16. COST STRUCTURE HIGHEST/LOWEST: Always use the store explicitly labelled '← HIGHEST' and '← LOWEST (excl. 0%)' in the data block. NEVER pick a 0% store as the lowest.${compact ? "\n15. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
     },
     {
       role: "user",
