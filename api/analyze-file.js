@@ -1354,7 +1354,6 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     // Find benchmark revenue to compute benchmark %s(no okay)
 
 
-    });
 
 
 
