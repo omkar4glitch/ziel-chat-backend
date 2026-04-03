@@ -1351,13 +1351,27 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     b += `   (These are the real benchmark figures from the "Benchmark" column — NOT portfolio averages)\n`;
     b += `${"─".repeat(58)}\n`;
 
-    // Find benchmark revenue to compute benchmark %s(no okay)
+    // Find benchmark revenue to compute benchmark %s
+    // The benchmark column in the file stores values AS percentages already (e.g. 28.1 = 28.1%).
+    // Do NOT divide by revenue — just display the raw value directly via formatPct.
+    const benchmarkPctByKpi = {};
+    Object.entries(benchmarkData).forEach(([desc, val]) => {
+      const kpi = matchKPI(desc);
+      if (!kpi) return;
+      // val is already a percentage figure from the file (e.g. 28.1 means 28.1%)
+      benchmarkPctByKpi[kpi] = val;
+    });
 
+    // Display: one line per KPI, showing the % exactly as stored in the file
+    Object.entries(benchmarkData).forEach(([desc, val]) => {
+      const kpi = matchKPI(desc);
+      const label = kpi ? (KPI_LABELS[kpi] || kpi) : desc;
+      if (kpi && benchmarkPctByKpi[kpi] !== undefined) {
+        b += `  ${label.padEnd(36)}: ${formatPct(val)}\n`;
+      }
+    });
 
-
-
-
-    // List which cost KPIs have NO benchmark (so AI knows to use portfolio avg for those)
+    // Flag cost heads that have NO benchmark entry so AI falls back to portfolio avg
     const costKpiKeys = ["FOOD_SUPPLIES","STAFF_COST","RENT","FRANCHISE_FEES","UTILITIES",
                          "REPAIRS_MAINTENANCE","OTHER_EXPENSES","INTEREST_EXPENSE",
                          "DEPRECIATION_EXP","AMORTIZATION_EXP"];
@@ -1366,7 +1380,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
       b += `\n  ⚠ NO BENCHMARK for: ${missingBenchmark.map(k => KPI_LABELS[k]||k).join(", ")}\n`;
       b += `    → For these heads, use portfolio weighted average % and highest/lowest store instead.\n`;
     }
-    b += `\n  ⚑ BENCHMARK % values above are pre-computed % of benchmark revenue. Use them directly.\n`;
+    b += `\n  ⚑ These % values are taken directly from the file's Benchmark column — use as-is.\n`;
   } else {
     b += `\n▶ BENCHMARK COLUMN: Not found in this file. Use portfolio averages for comparisons.\n`;
   }
@@ -1692,14 +1706,13 @@ ${costHeadsInOrder.map((h, i) => `${i+1}. ${h}`).join("\n")}
 For EACH expense head, your subsection MUST cover ALL THREE of the following:
 
 **a) Comparison with Industry Standards / Benchmark**
-The data block has a "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE" section. Each line shows the benchmark as a pre-computed % of benchmark revenue (e.g. "Food and Supplies: 28.0%").
+The data block has a "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE" section. Each line shows the benchmark % exactly as it appears in the file (e.g. "Food and Supplies: 28.0%").
 
 RULES:
 - If the benchmark % for this expense head IS listed in the data block:
-  → State the benchmark % (use the exact figure from the data block, 1 decimal).
-  → Compare the portfolio weighted average to that benchmark %.
-  → Name any stores that are significantly above or below benchmark, with their % and the pp variance.
-  → Do NOT mention raw dollar amounts for benchmark — only the %.
+  → State the benchmark % using the exact figure from the data block (1 decimal, e.g. 28.0%).
+  → Compare the portfolio weighted average % to that benchmark %.
+  → Do NOT compute or mention pp variances. Do NOT mention raw dollar amounts.
 - If the data block says "⚠ NO BENCHMARK for: [this head]" OR the head is not listed:
   → State: "No benchmark available in the report for this head."
   → Then provide the portfolio weighted average % (from "Portfolio weighted avg" in the data block).
@@ -1809,7 +1822,7 @@ ABSOLUTE RULES — NEVER BREAK:
 12. STORE-WISE YOY TABLE: Must include ALL stores — no exceptions, no truncation.
 13. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |).
 14. COST STRUCTURE ANALYSIS: For each expense head, cover (a) benchmark comparison (b) inter-store comparison (c) observation. Follow the exact order specified.
-15. BENCHMARK SOURCE: The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section shows benchmark as pre-computed % of benchmark revenue. Use ONLY that % — never the raw amount, never 'X% of benchmark revenue' phrasing. If a head has no benchmark (marked '⚠ NO BENCHMARK'), say so and use the portfolio weighted average instead.
+15. BENCHMARK SOURCE: The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section shows the benchmark % exactly as stored in the file. Use ONLY that % value — never compute or mention pp variances, never mention raw amounts. If a head has no benchmark (marked '⚠ NO BENCHMARK'), say so and use the portfolio weighted average instead.
 16. COST STRUCTURE HIGHEST/LOWEST: Always use the store explicitly labelled '← HIGHEST' and '← LOWEST (excl. 0%)' in the data block. NEVER pick a 0% store as the lowest.${compact ? "\n15. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
     },
     {
