@@ -1354,7 +1354,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     const missingBenchmark = costKpiKeys.filter(k => benchmarkPctByKpi[k] === undefined);
     if (missingBenchmark.length > 0) {
       b += `\n  ⚠ NO BENCHMARK for: ${missingBenchmark.map(k => KPI_LABELS[k]||k).join(", ")}\n`;
-      b += `    → For these heads, use portfolio weighted average % and highest/lowest store instead.\n`;
+      b += `    → For these heads, use portfolio simple average % and highest/lowest store instead.\n`;
     }
     b += `\n  ⚑ These % values are taken directly from the file's Benchmark column — use as-is.\n`;
   } else {
@@ -1429,7 +1429,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     } else {
       b += `  LOWEST: No stores with positive % found\n`;
     }
-    b += `  Portfolio weighted avg: ${averages[pct] !== undefined ? formatPct(averages[pct]) : "N/A"}\n`;
+    b += `  Portfolio simple avg: ${averages[pct] !== undefined ? formatPct(averages[pct]) : "N/A"}\n`;
     b += `  All stores (sorted high→low %):\n`;
     sorted.forEach(e => {
       const flag = e === highest ? " ← HIGHEST" : (e === lowest ? " ← LOWEST (excl. 0%)" : "");
@@ -1689,11 +1689,11 @@ The data block has a "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE" secti
 RULES:
 - If the benchmark % for this expense head IS listed in the data block:
   → State the benchmark % using the exact figure from the data block (1 decimal, e.g. 28.0%).
-  → Compare the portfolio weighted average % to that benchmark %.
+  → Compare the portfolio simple average % to that benchmark %.
   → Do NOT compute or mention pp variances. Do NOT mention raw dollar amounts.
 - If the data block says "⚠ NO BENCHMARK for: [this head]" OR the head is not listed:
   → State: "No benchmark available in the report for this head."
-  → Then provide the portfolio weighted average % (from "Portfolio weighted avg" in the data block).
+  → Then provide the portfolio simple average % (from "Portfolio simple avg" in the data block).
   → Do NOT invent a benchmark or use an industry guess.
 
 **b) Comparison Among All Stores**
@@ -1704,7 +1704,7 @@ RULES:
 - State the HIGHEST store and its % — use the store labelled "← HIGHEST" in the data block.
 - State the LOWEST store and its % — use the store labelled "← LOWEST (excl. 0%)" in the data block.
   NEVER pick a store at 0% as the lowest. The data block already excludes 0% entries for you.
-- State the portfolio weighted average % (labelled "Portfolio weighted avg" in the data block).
+- State the portfolio simple average % (labelled "Portfolio simple avg" in the data block).
 - Mention any other stores that stand out as notably high or low (>3pp from the avg).
 
 **c) Suggestive Measures / Observations**
@@ -1800,7 +1800,7 @@ ABSOLUTE RULES — NEVER BREAK:
 12. STORE-WISE YOY TABLE: Must include ALL stores — no exceptions, no truncation.
 13. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |).
 14. COST STRUCTURE ANALYSIS: For each expense head, cover (a) benchmark comparison (b) inter-store comparison (c) observation. Follow the exact order specified.
-15. BENCHMARK SOURCE: The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section shows the benchmark % exactly as stored in the file. Use ONLY that % value — never compute or mention pp variances, never mention raw amounts. If a head has no benchmark (marked '⚠ NO BENCHMARK'), say so and use the portfolio weighted average instead.
+15. BENCHMARK SOURCE: The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section shows the benchmark % exactly as stored in the file. Use ONLY that % value — never compute or mention pp variances, never mention raw amounts. If a head has no benchmark (marked '⚠ NO BENCHMARK'), say so and use the portfolio simple average instead.
 16. COST STRUCTURE HIGHEST/LOWEST: Always use the store explicitly labelled '← HIGHEST' and '← LOWEST (excl. 0%)' in the data block. NEVER pick a 0% store as the lowest.${compact ? "\n15. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
     },
     {
