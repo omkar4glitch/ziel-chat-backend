@@ -963,43 +963,19 @@ function step2_extractAndCompute(sheets, querySchema) {
     if (vals.length) totals[kpi] = Math.round(vals.reduce((a,b) => a+b, 0));
   });
 
-  // Portfolio averages — computed as WEIGHTED average: total cost / total revenue
-  // (not a simple average of per-store %, which gives wrong results when stores differ in size)
-  const pctKpiToBaseKpi = {
-    "GROSS_MARGIN_PCT":       ["GROSS_PROFIT",  "REVENUE"],
-    "EBITDA_MARGIN_PCT":      ["EBITDA",        "REVENUE"],
-    "NET_MARGIN_PCT":         ["NET_PROFIT",    "REVENUE"],
-    "COGS_PCT":               ["COGS",          "REVENUE"],
-    "FOOD_SUPPLIES_PCT":      ["FOOD_SUPPLIES", "REVENUE"],
-    "STAFF_PCT":              ["STAFF_COST",    "REVENUE"],
-    "RENT_PCT":               ["RENT",          "REVENUE"],
-    "FRANCHISE_FEES_PCT":     ["FRANCHISE_FEES","REVENUE"],
-    "RENT_FRANCHISE_PCT":     ["RENT_FRANCHISE_TOTAL","REVENUE"],
-    "UTILITIES_PCT":          ["UTILITIES",     "REVENUE"],
-    "REPAIRS_MAINTENANCE_PCT":["REPAIRS_MAINTENANCE","REVENUE"],
-    "INTEREST_EXPENSE_PCT":   ["INTEREST_EXPENSE","REVENUE"],
-    "DEPRECIATION_EXP_PCT":   ["DEPRECIATION_EXP","REVENUE"],
-    "AMORTIZATION_EXP_PCT":   ["AMORTIZATION_EXP","REVENUE"],
-    "OTHER_EXPENSES_PCT":     ["OTHER_EXPENSES","REVENUE"],
-    "OTHER_INCOME_PCT":       ["OTHER_INCOME",  "REVENUE"],
-  };
+  // Portfolio averages — simple average of each store's individual % value
+  const pctKpis = [
+    "GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT",
+    "FOOD_SUPPLIES_PCT","STAFF_PCT","RENT_PCT","FRANCHISE_FEES_PCT",
+    "RENT_FRANCHISE_PCT","UTILITIES_PCT","REPAIRS_MAINTENANCE_PCT",
+    "INTEREST_EXPENSE_PCT","DEPRECIATION_EXP_PCT","AMORTIZATION_EXP_PCT",
+    "OTHER_EXPENSES_PCT","OTHER_INCOME_PCT"
+  ];
   const averages = {};
-  Object.entries(pctKpiToBaseKpi).forEach(([pctKpi, [numKpi, denKpi]]) => {
-    // Sum numerator and denominator across all stores that have BOTH values
-    let totalNum = 0, totalDen = 0, count = 0;
-    storeNames.forEach(s => {
-      const num = cyMetrics[s]?.[numKpi];
-      const den = cyMetrics[s]?.[denKpi];
-      if (num !== null && num !== undefined && isFinite(num) &&
-          den !== null && den !== undefined && isFinite(den) && den !== 0) {
-        totalNum += num;
-        totalDen += den;
-        count++;
-      }
-    });
-    if (count > 0 && totalDen !== 0) {
-      averages[pctKpi] = roundTo2((totalNum / totalDen) * 100);
-    }
+  pctKpis.forEach(pctKpi => {
+    const vals = storeNames.map(s => cyMetrics[s]?.[pctKpi])
+      .filter(v => v !== null && v !== undefined && isFinite(v));
+    if (vals.length) averages[pctKpi] = roundTo2(vals.reduce((a, b) => a + b, 0) / vals.length);
   });
 
   const ebitdaRanking = storeNames
@@ -1387,10 +1363,11 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
 
   // ── Per-store YoY data for Store-wise YoY table ──
   b += `\n▶ STORE-WISE YoY DATA (for Store-wise Year-on-Year Comparison Table)\n${"─".repeat(58)}\n`;
-  b += `  Columns: Store | Rev CY | Rev LY | Rev Δ% | GP CY | GP LY | EBITDA CY | EBITDA LY | EBITDA Δ%\n`;
-  activeStores.forEach(store => {
+  b += `  Columns: Sr.No | Store | Rev CY | Rev LY | Rev Δ% | GP CY | GP LY | EBITDA CY | EBITDA LY | EBITDA Δ%\n`;
+  activeStores.forEach((store, idx) => {
     const m   = storeMetrics[store];
     const yoy = yoyComparisons[store];
+    const srNo = idx + 1;
     const revCY = m?.REVENUE ?? null;
     const revLY = yoy?.REVENUE?.ly ?? null;
     const revDeltaPct = yoy?.REVENUE?.changePct ?? null;
@@ -1399,7 +1376,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     const ebitdaCY = m?.EBITDA ?? null;
     const ebitdaLY = yoy?.EBITDA?.ly ?? null;
     const ebitdaDeltaPct = yoy?.EBITDA?.changePct ?? null;
-    b += `  ${store} | RevCY:${formatNum(revCY)} | RevLY:${formatNum(revLY)} | RevΔ%:${revDeltaPct !== null ? formatDeltaPct(revDeltaPct) : "N/A"} | GPCY:${formatNum(gpCY)} | GPLY:${formatNum(gpLY)} | EBITDACY:${formatNum(ebitdaCY)} | EBITDALY:${formatNum(ebitdaLY)} | EBITDAΔ%:${ebitdaDeltaPct !== null ? formatDeltaPct(ebitdaDeltaPct) : "N/A"}\n`;
+    b += `  Sr.No:${srNo} | ${store} | RevCY:${formatNum(revCY)} | RevLY:${formatNum(revLY)} | RevΔ%:${revDeltaPct !== null ? formatDeltaPct(revDeltaPct) : "N/A"} | GPCY:${formatNum(gpCY)} | GPLY:${formatNum(gpLY)} | EBITDACY:${formatNum(ebitdaCY)} | EBITDALY:${formatNum(ebitdaLY)} | EBITDAΔ%:${ebitdaDeltaPct !== null ? formatDeltaPct(ebitdaDeltaPct) : "N/A"}\n`;
   });
 
   // ── Per-store Cost Structure data for Cost Structure Analysis ──
@@ -1677,11 +1654,12 @@ MANDATORY TABLE RULES:
     instructions += `## Store-wise Year-on-Year Comparison
 
 Present as a markdown table with the following EXACT columns:
-| Store | Rev CY | Rev LY | Rev Δ% | Gross Profit CY | GP LY | EBITDA CY | EBITDA LY | EBITDA Δ% |
+| Sr.No | Store | Rev CY | Rev LY | Rev Δ% | Gross Profit CY | GP LY | EBITDA CY | EBITDA LY | EBITDA Δ% |
 
 MANDATORY TABLE RULES:
 - Include ALL ${totalStores} stores — one row per store. NO truncation, NO "...", NO "Other stores" placeholder.
 - Pull all figures EXACTLY from the "STORE-WISE YoY DATA" section in the data block.
+- Sr.No column: sequential number starting at 1, matching the order in the data block (use the "Sr.No:N" prefix on each data row).
 - Rev CY / Rev LY / GP CY / GP LY / EBITDA CY / EBITDA LY: whole numbers with US commas, no decimals.
 - Rev Δ% and EBITDA Δ%: 1 decimal with sign e.g. +14.5% or -45.3%. Write "N/A" if LY data unavailable.
 - Do NOT add any extra columns. Do NOT omit any store.
