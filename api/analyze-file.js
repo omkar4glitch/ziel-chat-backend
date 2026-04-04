@@ -1362,22 +1362,36 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   }
 
   // ── Per-store YoY data for Store-wise YoY table ──
-  b += `\n▶ STORE-WISE YoY DATA (for Store-wise Year-on-Year Comparison Table)\n${"─".repeat(58)}\n`;
-  b += `  Columns: Sr.No | Store | Rev CY | Rev LY | Rev Δ% | GP CY | GP LY | EBITDA CY | EBITDA LY | EBITDA Δ%\n`;
-  activeStores.forEach((store, idx) => {
-    const m   = storeMetrics[store];
-    const yoy = yoyComparisons[store];
-    const srNo = idx + 1;
-    const revCY = m?.REVENUE ?? null;
-    const revLY = yoy?.REVENUE?.ly ?? null;
-    const revDeltaPct = yoy?.REVENUE?.changePct ?? null;
-    const gpCY = m?.GROSS_PROFIT ?? null;
-    const gpLY = yoy?.GROSS_PROFIT?.ly ?? null;
-    const ebitdaCY = m?.EBITDA ?? null;
-    const ebitdaLY = yoy?.EBITDA?.ly ?? null;
-    const ebitdaDeltaPct = yoy?.EBITDA?.changePct ?? null;
-    b += `  Sr.No:${srNo} | ${store} | RevCY:${formatNum(revCY)} | RevLY:${formatNum(revLY)} | RevΔ%:${revDeltaPct !== null ? formatDeltaPct(revDeltaPct) : "N/A"} | GPCY:${formatNum(gpCY)} | GPLY:${formatNum(gpLY)} | EBITDACY:${formatNum(ebitdaCY)} | EBITDALY:${formatNum(ebitdaLY)} | EBITDAΔ%:${ebitdaDeltaPct !== null ? formatDeltaPct(ebitdaDeltaPct) : "N/A"}\n`;
-  });
+  // ── Pre-build the complete Store-wise YoY markdown table in CODE ──
+  // Injected as a ready-made table so the AI copies it verbatim — no token cost for generation,
+  // no risk of truncation or missing rows regardless of store count.
+  {
+    const cols = ["Sr.No", "Store", "Rev CY", "Rev LY", "Rev Δ%", "Gross Profit CY", "GP LY", "EBITDA CY", "EBITDA LY", "EBITDA Δ%"];
+    const rows = activeStores.map((store, idx) => {
+      const m   = storeMetrics[store];
+      const yoy = yoyComparisons[store];
+      return [
+        String(idx + 1),
+        store,
+        formatNum(m?.REVENUE ?? null),
+        formatNum(yoy?.REVENUE?.ly ?? null),
+        yoy?.REVENUE?.changePct != null ? formatDeltaPct(yoy.REVENUE.changePct) : "N/A",
+        formatNum(m?.GROSS_PROFIT ?? null),
+        formatNum(yoy?.GROSS_PROFIT?.ly ?? null),
+        formatNum(m?.EBITDA ?? null),
+        formatNum(yoy?.EBITDA?.ly ?? null),
+        yoy?.EBITDA?.changePct != null ? formatDeltaPct(yoy.EBITDA.changePct) : "N/A",
+      ];
+    });
+    // Build markdown table string
+    const sep = cols.map(() => "---").join(" | ");
+    const header = cols.join(" | ");
+    const body = rows.map(r => r.join(" | ")).join("\n");
+    b += `\n▶ STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)\n`;
+    b += `${"─".repeat(58)}\n`;
+    b += `${header}\n${sep}\n${body}\n`;
+    b += `(${activeStores.length} stores total — all rows above are complete)\n`;
+  }
 
   // ── Per-store Cost Structure data for Cost Structure Analysis ──
   b += `\n▶ STORE-WISE COST STRUCTURE (% of Revenue — for Cost Structure Analysis)\n${"─".repeat(58)}\n`;
@@ -1653,17 +1667,11 @@ MANDATORY TABLE RULES:
     // ── Store-wise YoY Comparison Table (replaces Store Performance Review) ──
     instructions += `## Store-wise Year-on-Year Comparison
 
-Present as a markdown table with the following EXACT columns:
-| Sr.No | Store | Rev CY | Rev LY | Rev Δ% | Gross Profit CY | GP LY | EBITDA CY | EBITDA LY | EBITDA Δ% |
+The data block contains a section called "STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)".
+This is a fully pre-built markdown table with all ${totalStores} stores and all columns already filled in.
 
-MANDATORY TABLE RULES:
-- Include ALL ${totalStores} stores — one row per store. NO truncation, NO "...", NO "Other stores" placeholder.
-- Pull all figures EXACTLY from the "STORE-WISE YoY DATA" section in the data block.
-- Sr.No column: sequential number starting at 1, matching the order in the data block (use the "Sr.No:N" prefix on each data row).
-- Rev CY / Rev LY / GP CY / GP LY / EBITDA CY / EBITDA LY: whole numbers with US commas, no decimals.
-- Rev Δ% and EBITDA Δ%: 1 decimal with sign e.g. +14.5% or -45.3%. Write "N/A" if LY data unavailable.
-- Do NOT add any extra columns. Do NOT omit any store.
-- Negatives must show as negative numbers: -9,006 not (9,006).
+YOUR ONLY JOB: Copy that table EXACTLY as-is — every row, every value, every column — with NO changes, NO omissions, NO reformatting.
+Do NOT skip any rows. Do NOT add "..." or "Other stores". Do NOT reformat any numbers.
 
 `;
 
@@ -1797,7 +1805,7 @@ ABSOLUTE RULES — NEVER BREAK:
 9. FOLLOW THE USER QUESTION SCOPE: if asked for analysis only up to a certain KPI, DO NOT include deeper KPIs.
 10. Be specific — always name the store and exact figure together.
 11. COMPLETE ALL TABLES FULLY — never use "..." or truncate. Every store must appear with actual values.
-12. STORE-WISE YOY TABLE: Must include ALL stores — no exceptions, no truncation.
+12. STORE-WISE YOY TABLE: The data block contains a fully pre-built markdown table labelled 'STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)'. Copy it exactly — every row, every value. Do NOT regenerate it, do NOT skip rows, do NOT add '...'.
 13. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |).
 14. COST STRUCTURE ANALYSIS: For each expense head, cover (a) benchmark comparison (b) inter-store comparison (c) observation. Follow the exact order specified.
 15. BENCHMARK SOURCE: The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section shows the benchmark % exactly as stored in the file. Use ONLY that % value — never compute or mention pp variances, never mention raw amounts. If a head has no benchmark (marked '⚠ NO BENCHMARK'), say so and use the portfolio simple average instead.
