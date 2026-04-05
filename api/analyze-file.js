@@ -1500,7 +1500,6 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
       b += `  #${String(i+1).padStart(2)} ${x.store.padEnd(34)} ${formatNum(x.revenue)}\n`);
   }
 
-  b += `\n▶ USER QUESTION: "${userQuestion || "Full P&L analysis"}"\n`;
   return { text: b, activeStoreCount: activeStores.length };
 }
 
@@ -1582,7 +1581,7 @@ function getKPIOrderForIntent(intent) {
   return FULL_ORDER.slice(0, limitIdx + 1);
 }
 
-function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults, activeStoreCount) {
+function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults, activeStoreCount, userQuestion) {
   const kpiScopeStr    = kpiScope.join(", ");
   const isSpecific     = intent.isSpecificStore && intent.specificStores?.length > 0;
   const isDeep         = intent.isDeepAnalysis;
@@ -1630,7 +1629,22 @@ function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedR
     return kpiScope.includes(kpiMap[h]);
   });
 
-  let instructions = `The user asked: "${scopeNote}"
+  const rawQuestion = userQuestion && userQuestion.trim() ? userQuestion.trim() : "Full P&L analysis";
+
+  let instructions = `════════════════════════════════════════
+USER'S ACTUAL QUESTION (read carefully before writing):
+"${rawQuestion}"
+════════════════════════════════════════
+
+UNDERSTAND THE QUESTION FIRST:
+- Read the question above and make sure your entire response directly addresses what the user is asking.
+- If the user asks about a specific store, focus on that store.
+- If the user asks about a specific KPI or metric, prioritise that.
+- If the user asks for a comparison, ensure comparisons are clearly presented.
+- If the user asks something not covered by the standard sections below, add a dedicated section at the top answering it directly before the standard report.
+- The standard report sections that follow are the BASE output — always produce them — but the user's question takes priority and must be answered explicitly.
+
+SCOPE DERIVED FROM QUESTION: ${scopeNote}
 
 TABLE COMPLETENESS RULE: There are exactly ${totalStores} stores with data in this analysis. Every table MUST have exactly ${totalStores} data rows. NEVER use "..." placeholders. Only write rows for stores that appear in the data block above.
 
@@ -1785,13 +1799,15 @@ async function step3_generateCommentary(computedResults, userQuestion) {
   const activeStoreCount = dataBlockResult.activeStoreCount;
   console.log(`📦 Data block: ${dataBlock.length} chars | activeStores=${activeStoreCount} | Intent: kpiLimit=${intent.kpiLimit}, specificStores=${JSON.stringify(intent.specificStores)}, deep=${intent.isDeepAnalysis}`);
 
-  const analysisInstructions = buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults, activeStoreCount);
+  const analysisInstructions = buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults, activeStoreCount, userQuestion);
   const MAX_TOKENS = 16000;
 
   const buildMessages = (compact = false) => [
     {
       role: "system",
       content: `You are an expert P&L financial analyst writing detailed MIS commentary for senior management.
+
+FIRST AND MOST IMPORTANT: Read the USER'S ACTUAL QUESTION at the top of the instructions carefully. Your response must directly and explicitly answer what the user asked. If they asked something specific, address it. Do not just produce a generic report and ignore the question.
 
 ABSOLUTE RULES — NEVER BREAK:
 1. Use ONLY numbers from the pre-computed data block. Every figure must appear exactly in the data block.
