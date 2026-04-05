@@ -1549,12 +1549,16 @@ function parseUserIntent(userQuestion, allStoreNames = []) {
   const wantsEbitdaRank  = /top.*ebid?ta|bottom.*ebid?ta|ebid?ta.*top|ebid?ta.*bottom|ebid?ta.*rank|rank.*ebid?ta|best.*ebid?ta|worst.*ebid?ta/.test(q);
   const isAllStoreAnalysis = !isSpecificStore && !storeFilter && !isRanking;
 
-  console.log("🎯 Intent: kpiLimit=" + kpiLimit + ", stores=" + JSON.stringify(specificStores) + ", deep=" + isDeepAnalysis);
+  // Brand report detection — if user says "brand", "brands", "brand report", "brand data" etc.
+  const isBrandReport = /\bbrand\b|\bbrands\b|brand report|brand data|brand.?wise|brand analysis/i.test(q);
+
+  console.log("🎯 Intent: kpiLimit=" + kpiLimit + ", stores=" + JSON.stringify(specificStores) + ", deep=" + isDeepAnalysis + ", isBrandReport=" + isBrandReport);
 
   return {
     kpiLimit, specificStores, isSpecificStore, promptExclusions,
     storeFilter, isRanking, isComparison, wantsYoY,
-    isDeepAnalysis, wantsEbitdaRank, isAllStoreAnalysis
+    isDeepAnalysis, wantsEbitdaRank, isAllStoreAnalysis,
+    isBrandReport
   };
 }
 
@@ -1630,6 +1634,14 @@ function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedR
   });
 
   const rawQuestion = userQuestion && userQuestion.trim() ? userQuestion.trim() : "Full P&L analysis";
+  const isBrand = !!intent.isBrandReport;
+
+  // Dynamic terminology: "store" for store reports, "brand" for brand reports
+  const unitWord     = isBrand ? "brand"     : "store";
+  const unitWordCap  = isBrand ? "Brand"     : "Store";
+  const unitWordPl   = isBrand ? "brands"    : "stores";
+  const unitWordPlCap= isBrand ? "Brands"    : "Stores";
+  const portfolioWord= isBrand ? "portfolio of brands" : "portfolio";
 
   let instructions = `════════════════════════════════════════
 USER'S ACTUAL QUESTION (read carefully before writing):
@@ -1638,25 +1650,26 @@ USER'S ACTUAL QUESTION (read carefully before writing):
 
 UNDERSTAND THE QUESTION FIRST:
 - Read the question above and make sure your entire response directly addresses what the user is asking.
-- If the user asks about a specific store, focus on that store.
+- If the user asks about a specific ${unitWord}, focus on that ${unitWord}.
 - If the user asks about a specific KPI or metric, prioritise that.
 - If the user asks for a comparison, ensure comparisons are clearly presented.
 - If the user asks something not covered by the standard sections below, add a dedicated section at the top answering it directly before the standard report.
 - The standard report sections that follow are the BASE output — always produce them — but the user's question takes priority and must be answered explicitly.
+${isBrand ? `- THIS IS A BRAND REPORT: Replace all references to "store/stores" with "brand/brands" throughout the entire response.` : ""}
 
 SCOPE DERIVED FROM QUESTION: ${scopeNote}
 
-TABLE COMPLETENESS RULE: There are exactly ${totalStores} stores with data in this analysis. Every table MUST have exactly ${totalStores} data rows. NEVER use "..." placeholders. Only write rows for stores that appear in the data block above.
+TABLE COMPLETENESS RULE: There are exactly ${totalStores} ${unitWordPl} with data in this analysis. Every table MUST have exactly ${totalStores} data rows. NEVER use "..." placeholders.
 
 SCOPE CONSTRAINTS:
 1. KPI scope: [${kpiScopeStr}] — do NOT include KPIs outside this list.
-2. Store scope: ${isSpecific ? `ONLY these stores: ${intent.specificStores.join(", ")}.` : `All ${totalStores} stores — list them all in every table.`}
+2. ${unitWordCap} scope: ${isSpecific ? `ONLY these ${unitWordPl}: ${intent.specificStores.join(", ")}.` : `All ${totalStores} ${unitWordPl} — list them all in every table.`}
 ${intent.promptExclusions?.length > 0 ? `3. EXCLUDED: ${intent.promptExclusions.join("; ")} — omit completely.` : ""}
 
 Write a detailed MIS P&L commentary with these sections IN THIS EXACT ORDER:
 
 ## Executive Summary
-(3-4 sentences. Cover ${isSpecific ? "the specified store(s)" : "overall portfolio"} within KPI scope.${hasLY ? " Include YoY direction." : ""})
+(3-4 sentences. Cover ${isSpecific ? `the specified ${unitWord}(s)` : `overall ${portfolioWord}`} within KPI scope.${hasLY ? " Include YoY direction." : ""})
 
 `;
 
@@ -1664,7 +1677,7 @@ Write a detailed MIS P&L commentary with these sections IN THIS EXACT ORDER:
     // ── ALL-STORE ANALYSIS ──
 
     if (hasLY) {
-      instructions += `## Year-on-Year Analysis — Portfolio
+      instructions += `## Year-on-Year Analysis — ${isBrand ? "All Brands" : "Portfolio"}
 Present as a markdown table with columns: | KPI | CY Total | LY Total | Δ Amount | Δ% |
 
 MANDATORY TABLE RULES:
@@ -1679,13 +1692,14 @@ MANDATORY TABLE RULES:
     }
 
     // ── Store-wise YoY Comparison Table (replaces Store Performance Review) ──
-    instructions += `## Store-wise Year-on-Year Comparison
+    instructions += `## ${unitWordCap}-wise Year-on-Year Comparison
 
 The data block contains a section called "STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)".
-This is a fully pre-built markdown table with all ${totalStores} stores and all columns already filled in.
+This is a fully pre-built markdown table with all ${totalStores} ${unitWordPl} and all columns already filled in.
 
 YOUR ONLY JOB: Copy that table EXACTLY as-is — every row, every value, every column — with NO changes, NO omissions, NO reformatting.
-Do NOT skip any rows. Do NOT add "..." or "Other stores". Do NOT reformat any numbers.
+Do NOT skip any rows. Do NOT add "..." or "Other ${unitWordPl}". Do NOT reformat any numbers.
+${isBrand ? `NOTE: The "Store" column header in the table should be relabelled "Brand" when copying.` : ""}
 
 `;
 
@@ -1698,7 +1712,39 @@ Do NOT skip any rows. Do NOT add "..." or "Other stores". Do NOT reformat any nu
 
     // ── Cost Structure Analysis (expanded, following required head order) ──
     if (costHeadsInOrder.length > 0) {
-      instructions += `## Cost Structure Analysis
+      if (isBrand) {
+        // ── BRAND REPORT: no benchmark — compare brands against each other ──
+        instructions += `## Cost Structure Analysis
+
+For each of the following expense heads (IN THIS ORDER), write a dedicated subsection:
+${costHeadsInOrder.map((h, i) => `${i+1}. ${h}`).join("\n")}
+
+For EACH expense head, your subsection MUST cover ALL TWO of the following:
+
+**a) Comparison Among All Brands**
+The data block "STORE-WISE COST STRUCTURE" section lists brands sorted HIGH → LOW % for each head,
+and explicitly labels "HIGHEST" and "LOWEST (excl. 0%)".
+
+RULES:
+- State the HIGHEST brand and its % — use the brand labelled "← HIGHEST" in the data block.
+- State the LOWEST brand and its % — use the brand labelled "← LOWEST (excl. 0%)" in the data block.
+  NEVER pick a brand at 0% as the lowest.
+- State the portfolio simple average % (labelled "Portfolio simple avg" in the data block).
+- Mention any other brands that stand out as notably high or low (>3pp from the avg).
+- No benchmark comparison — different brands have different cost structures by nature.
+
+**b) Observations**
+- 1-2 sentences on what the spread across brands means and what warrants attention.
+
+After covering all the above heads, add:
+
+## Other Anomalies
+(If any other financial anomaly — not covered above — is noticed in the data, mention it here with specific brand names and figures. If none, write "No additional anomalies noted.")
+
+`;
+      } else {
+        // ── STORE REPORT: full benchmark + inter-store comparison ──
+        instructions += `## Cost Structure Analysis
 
 For each of the following expense heads (IN THIS ORDER), write a dedicated subsection:
 ${costHeadsInOrder.map((h, i) => `${i+1}. ${h}`).join("\n")}
@@ -1738,35 +1784,36 @@ After covering all the above heads, add:
 (If any other financial anomaly — not covered above — is noticed in the data, mention it here with specific store names and figures. If none, write "No additional anomalies noted.")
 
 `;
+      }
     }
 
     if (isSpecific) {
-      instructions += `## Store Performance — ${intent.specificStores.join(" & ")}
-(Detailed paragraph for each specified store. Cover all KPIs in scope with exact figures.)
+      instructions += `## ${unitWordCap} Performance — ${intent.specificStores.join(" & ")}
+(Detailed paragraph for each specified ${unitWord}. Cover all KPIs in scope with exact figures.)
 
 `;
       if (hasLY && intent.wantsYoY) {
         instructions += `## Year-on-Year Analysis
-(CY vs LY for the specified store(s). For every KPI in scope, show: CY value, LY value, Δ amount, Δ%.)
+(CY vs LY for the specified ${unitWord}(s). For every KPI in scope, show: CY value, LY value, Δ amount, Δ%.)
 
 `;
       }
     }
 
   } else {
-    // ── SPECIFIC STORE ANALYSIS ──
-    instructions += `## Store Performance — ${intent.specificStores.join(" & ")}
-(Detailed paragraph for each specified store. Cover all KPIs in scope with exact figures.)
+    // ── SPECIFIC STORE/BRAND ANALYSIS ──
+    instructions += `## ${unitWordCap} Performance — ${intent.specificStores.join(" & ")}
+(Detailed paragraph for each specified ${unitWord}. Cover all KPIs in scope with exact figures.)
 
 `;
     if (hasLY && intent.wantsYoY) {
       instructions += `## Year-on-Year Analysis
-(CY vs LY for specified store(s). Show: CY value, LY value, Δ amount, Δ% for every KPI in scope.)
+(CY vs LY for specified ${unitWord}(s). Show: CY value, LY value, Δ amount, Δ% for every KPI in scope.)
 
 `;
     }
     instructions += `## Key Observations
-(5-7 specific bullet observations with exact figures for the specified store(s).)
+(5-7 specific bullet observations with exact figures for the specified ${unitWord}(s).)
 
 `;
   }
@@ -1779,7 +1826,8 @@ After covering all the above heads, add:
 - All percentages are pre-rounded half-up in the data block — use them as-is, do NOT re-round.
 - Negatives stay negative.
 - No Recommendations section.
-- Store-wise YoY table must include ALL ${totalStores} stores with no truncation.`;
+- ${unitWordCap}-wise YoY table must include ALL ${totalStores} ${unitWordPl} with no truncation.
+${isBrand ? "- This is a BRAND report: use the word 'brand/brands' everywhere, NOT 'store/stores'." : ""}`;
 
   if (showEbitdaRank && kpiScope.includes("EBITDA") && !isSpecific) {
     instructions += `\n- Top 5 / Bottom 5 must match EBITDA RANKING in data block exactly.`;
