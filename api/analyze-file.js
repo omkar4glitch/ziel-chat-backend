@@ -220,43 +220,32 @@ function roundTo2(n) {
   return Math.round(n * 100) / 100;
 }
 
-// US-style WHOLE numbers: 1,234,567 | Negatives: -1,234,567 (no decimals on amounts)
 function formatNum(n) {
   if (n === undefined || n === null || !isFinite(n)) return "N/A";
   return Math.round(Number(n)).toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
-// ─────────────────────────────────────────────
-//  FIX: Percentage rounding — always rounds HALF-UP (away from zero)
-//  e.g. 4.65 → 4.7 (not 4.6 as JS default banker's rounding may give)
-//  e.g. -4.65 → -4.7 (magnitude rounds up, sign preserved)
-// ─────────────────────────────────────────────
 function roundHalfUp(n, decimals = 1) {
   if (n === null || n === undefined || !isFinite(n)) return null;
   const factor = Math.pow(10, decimals);
-  // Use sign-preserving half-up: multiply by factor, round positively, divide back
   const sign = n < 0 ? -1 : 1;
   return sign * Math.floor(Math.abs(n) * factor + 0.5) / factor;
 }
 
-// Percentage to 1 decimal: 12.3% / -4.5%
 function formatPct(n) {
   if (n === undefined || n === null || !isFinite(n)) return "N/A";
   const r = roundHalfUp(Number(n), 1);
   return `${r.toFixed(1)}%`;
 }
 
-// Delta percentage with explicit + for positive
 function formatDeltaPct(n) {
   if (n === undefined || n === null || !isFinite(n)) return "N/A";
   const r = roundHalfUp(Number(n), 1);
   return `${r >= 0 ? "+" : ""}${r.toFixed(1)}%`;
 }
 
-// safeDivide returns rounded-half-up percentage value (stored at 2dp for precision)
 function safeDivide(num, den) {
   if (!den || den === 0) return null;
-  // Store at full precision internally; formatPct/formatDeltaPct do the display rounding
   return roundTo2((num / den) * 100);
 }
 
@@ -265,7 +254,6 @@ function safeDivide(num, den) {
 // ─────────────────────────────────────────────
 
 const KPI_PATTERNS = {
-  // ── Revenue ──
   NET_REVENUE:  [
     "net revenue","total net revenue","net sales","total net sales","net income from sales",
     "net turnover","revenue (net)","sales (net)"
@@ -274,156 +262,59 @@ const KPI_PATTERNS = {
     "gross revenue","gross sales","total revenue","total sales","revenue dd","revenue br",
     "revenue","sales","turnover","total income"
   ],
-
-  // ── Discounts, Coupons & Refunds (Prell) ──
-  DISCOUNTS: [
-    "total discounts, coupons & refunds","total discounts coupons and refunds",
-    "discounts, coupons & refunds","discounts coupons & refunds",
-    "discounts and refunds","discounts","coupons & refunds","total discounts"
-  ],
-
-  // ── Food & Supplies ──
   FOOD_SUPPLIES: [
     "food and supplies","food & supplies","food cost","food and supply"
   ],
-
-  // ── Operational Payroll ──
   STAFF_COST: [
     "operational payroll expenses","operational payroll","staff cost","employee cost",
     "payroll","salary","wages","personnel cost","labour cost","labor cost",
     "total labor","total labour","payroll expense","total payroll"
   ],
-
-  // ── Total COGS ──
   COGS: [
     "total cogs","cost of goods sold","cost of sales","cogs","direct cost",
     "cost of revenue","cost of material","material cost","total cost of goods"
   ],
-
-  // ── Gross Margin / Gross Profit ──
   GROSS_PROFIT: [
     "gross margin","gross profit","gross margin amount","gross income"
   ],
-
-  // ── Controllable Expenses (Prell) ──
-  CONTROLLABLE_EXP: [
-    "controllable expenses","controlable expenses","total controllable expenses",
-    "total controlable expenses","controllable exp"
-  ],
-
-  // ── Delivery Commission (Prell) ──
-  DELIVERY_COMMISSION: [
-    "delivery commission","delivery commissions","delivery fee","third party delivery",
-    "online delivery commission","delivery platform fee"
-  ],
-
-  // ── Advertising / Marketing (Prell) ──
-  ADVERTISING: [
-    "advertising/marketing","advertising & marketing","advertising and marketing",
-    "advertising","marketing expense","marketing","ad spend","total advertising"
-  ],
-
-  // ── Total Financial Expenses (Prell) ──
-  FINANCIAL_EXPENSES: [
-    "total financial expenses","financial expenses","total financial expense",
-    "financial expense","bank charges","total bank & financial charges"
-  ],
-
-  // ── Chargebacks (Prell) ──
-  CHARGEBACKS: [
-    "chargebacks","chargeback","charge backs","charge back"
-  ],
-
-  // ── Rent ──
   RENT: [
     "rent"
   ],
-
-  // ── Franchise Fees ──
   FRANCHISE_FEES: [
     "franchise fees","franchise fee","franchising fees","royalty fees","franchise royalty"
   ],
-
-  // ── Total Rent & Franchise Fees ──
   RENT_FRANCHISE_TOTAL: [
     "total rent & franchise fees","total rent and franchise fees",
     "rent & franchise fees","rent and franchise fees",
     "total nnn","total rent","rent & franchise"
   ],
-
-  // ── Utilities ──
   UTILITIES: [
     "utilities","total utilities","utility expense","utility"
   ],
-
-  // ── Total Repairs & Maintenance ──
   REPAIRS_MAINTENANCE: [
     "total repairs and maintenance","total repairs & maintenance",
     "repairs and maintenance","repairs & maintenance","total r&m"
   ],
-
-  // ── Insurance (Prell) ──
-  INSURANCE: [
-    "total insurance","insurance expense","insurance","total insurance expense"
-  ],
-
-  // ── Licenses and Permits (Prell) ──
-  LICENSES_PERMITS: [
-    "licenses and permits","licences and permits","license & permits","licenses & permits",
-    "permits and licenses","total licenses and permits"
-  ],
-
-  // ── Professional Fees (Prell) ──
-  PROFESSIONAL_FEES: [
-    "professional fees","professional fee","accounting fees","legal fees",
-    "consulting fees","total professional fees"
-  ],
-
-  // ── Taxes (Prell — appears as an opex line, not income tax) ──
-  OPEX_TAXES: [
-    "taxes","total taxes","real property taxes","personal property taxes",
-    "property tax","payroll taxes","local taxes","state taxes"
-  ],
-
-  // ── Total Other Expenses ──
   OTHER_EXPENSES: [
     "total other expenses","total other expense","other expenses",
-    "total other operating expenses"
+    "total controllable expenses","total controlable expenses"
   ],
-
-  // ── Total Operating Expenses (Prell) ──
-  TOTAL_OPEX: [
-    "total operating expenses","total operating expense","total opex",
-    "total operating costs","total expenses"
-  ],
-
-  // ── EBITDA / Total Operating Profit ──
   EBITDA: [
     "ebitda","ebidta","earnings before interest tax depreciation",
     "ebitda (a-b)","ebitda (a - b)","profit before dep","profit before depreciation",
     "operating ebitda","ebitda before pre-opening","ebitda addback",
-    "total operating profit","total operating profit (loss)",
-    "total operating profit/ ebidta","total operating profit/ebidta",
-    "total operating profit / ebidta","total operating profit/ ebitda"
+    "total operating profit","total operating profit (loss)"
   ],
-
-  // ── Interest Expense ──
   INTEREST_EXPENSE: [
     "interest expense","interest expense (net)","interest cost","finance cost",
     "finance charge","borrowing cost"
   ],
-
-  // ── Depreciation Expense ──
   DEPRECIATION_EXP: [
     "depreciation expense","depreciation"
   ],
-
-  // ── Amortization Expense ──
   AMORTIZATION_EXP: [
     "amortization expense","amortisation expense","amortization","amortisation"
   ],
-
-  // ── Total Interest / Depreciation & Amortizations ──
   TOTAL_DEPR_INT: [
     "total interest / depreciation & amortizations",
     "total interest / depreciation and amortizations",
@@ -431,71 +322,49 @@ const KPI_PATTERNS = {
     "total interest, depreciation & amortization",
     "total depreciation and amortization","d&a","total d&a"
   ],
-
-  // ── Operating Income before Mgt Fee & O/H ──
   OPR_INCOME_BEFORE_MGT: [
     "operating income before mgt fee & o/h allocations",
     "operating income before mgt fee",
     "operating income before management fee",
     "ebit","operating profit","profit from operations","profit before interest"
   ],
-
-  // ── Management Fee ──
   MANAGEMENT_FEE: [
     "management fee","management fees","mgmt fee","mgmt fees",
     "management charge","management cost"
   ],
-
-  // ── Administrative Expenses ──
   ADMIN_EXP: [
     "administrative expenses","administrative expense","admin expenses",
     "admin expense","administrative costs","overhead allocation","o/h allocations"
   ],
-
-  // ── Net Operating Income ──
   NET_OPR_INCOME: [
     "net operating income","net operating profit","noi"
   ],
-
-  // ── Other Income ──
   OTHER_INCOME: [
     "other income","other revenue","non-operating income","miscellaneous income",
     "other operating income","additional income","sundry income","non operating income"
   ],
-
-  // ── PBT ──
   PBT: [
     "profit before tax","pbt","pre-tax profit","profit/(loss) before tax",
     "earnings before tax","income before tax"
   ],
-
-  // ── Net Profit / Net Income ──
-  // NOTE: TAX as income tax line is NOT a standalone KPI (belongs inside opex for SLZ).
-  // For Prell, OPEX_TAXES above captures tax as an operating expense line.
   NET_PROFIT: [
     "net profit","pat","profit after tax","net income","net earnings",
     "profit/(loss) after tax","net profit/(loss)","net loss","profit / (loss)",
-    "net income (loss)","net profit before tax","net profit/loss","total net income",
-    "net income after tax"
+    "net income (loss)","net profit before tax","net profit/loss"
   ]
 };
 
 function matchKPI(description) {
   const d = String(description || "").toLowerCase().trim();
-
-  // Pass 1: exact and startsWith matches only
   for (const [kpi, patterns] of Object.entries(KPI_PATTERNS)) {
     for (const p of patterns) {
       if (d === p || d.startsWith(p)) return kpi;
     }
   }
-
-  // Pass 2: NET_REVENUE priority check
   const netPatterns = KPI_PATTERNS["NET_REVENUE"] || [];
   for (const p of netPatterns) {
     if (d.includes(p)) return "NET_REVENUE";
   }
-
   for (const [kpi, patterns] of Object.entries(KPI_PATTERNS)) {
     if (kpi === "NET_REVENUE") continue;
     for (const p of patterns) {
@@ -532,8 +401,6 @@ function resolveRevenueKPI(kpiMapping, lineItemDict) {
 //  CONSOLIDATED COLUMN DETECTION
 // ─────────────────────────────────────────────
 
-// Patterns that exclude a column from being treated as a store in P&L analysis.
-// "benchmark" is intentionally kept here so it never appears as a store column.
 const EXCLUDED_COLUMN_PATTERNS = [
   "total","consolidated","grand total","all stores","overall","company total",
   "aggregate","sum","portfolio","net total",
@@ -547,8 +414,6 @@ function isConsolidatedColumn(name) {
   return EXCLUDED_COLUMN_PATTERNS.some(p => n === p || n.startsWith(p) || n.includes(p));
 }
 
-// isBenchmarkColumn — identifies the Benchmark column specifically.
-// Used to EXTRACT its data rather than exclude it.
 function isBenchmarkColumn(name) {
   const n = String(name || "").toLowerCase().trim();
   return n === "benchmark" || n.startsWith("benchmark");
@@ -835,18 +700,7 @@ Return JSON:
     "ADMIN_EXP": "exact row label for administrative expenses",
     "NET_OPR_INCOME": "exact row label for net operating income",
     "OTHER_INCOME": "exact row label for other income",
-    "NET_PROFIT": "exact row label for net profit/net income",
-    "DISCOUNTS": "exact row label for discounts/coupons/refunds or null",
-    "CONTROLLABLE_EXP": "exact row label for controllable expenses or null",
-    "DELIVERY_COMMISSION": "exact row label for delivery commission or null",
-    "ADVERTISING": "exact row label for advertising/marketing or null",
-    "FINANCIAL_EXPENSES": "exact row label for total financial expenses or null",
-    "CHARGEBACKS": "exact row label for chargebacks or null",
-    "INSURANCE": "exact row label for total insurance or null",
-    "LICENSES_PERMITS": "exact row label for licenses and permits or null",
-    "PROFESSIONAL_FEES": "exact row label for professional fees or null",
-    "OPEX_TAXES": "exact row label for taxes (operating expense line) or null",
-    "TOTAL_OPEX": "exact row label for total operating expenses or null"
+    "NET_PROFIT": "exact row label for net profit/net income"
   }
 }
 
@@ -919,20 +773,8 @@ function computeKPIsFromLineItems(lineItemDict, storeNames, overrideKpiNames = {
       if (m.INTEREST_EXPENSE   !== null) m.INTEREST_EXPENSE_PCT = safeDivide(m.INTEREST_EXPENSE,   rev);
       if (m.DEPRECIATION_EXP   !== null) m.DEPRECIATION_EXP_PCT = safeDivide(m.DEPRECIATION_EXP,  rev);
       if (m.AMORTIZATION_EXP   !== null) m.AMORTIZATION_EXP_PCT = safeDivide(m.AMORTIZATION_EXP,  rev);
-      if (m.OTHER_EXPENSES     !== null) m.OTHER_EXPENSES_PCT       = safeDivide(m.OTHER_EXPENSES,        rev);
-      if (m.OTHER_INCOME       !== null) m.OTHER_INCOME_PCT          = safeDivide(m.OTHER_INCOME,           rev);
-      // ── Prell-specific % computations ──
-      if (m.DISCOUNTS          !== null) m.DISCOUNTS_PCT             = safeDivide(m.DISCOUNTS,              rev);
-      if (m.CONTROLLABLE_EXP   !== null) m.CONTROLLABLE_EXP_PCT      = safeDivide(m.CONTROLLABLE_EXP,       rev);
-      if (m.DELIVERY_COMMISSION!== null) m.DELIVERY_COMMISSION_PCT   = safeDivide(m.DELIVERY_COMMISSION,    rev);
-      if (m.ADVERTISING        !== null) m.ADVERTISING_PCT           = safeDivide(m.ADVERTISING,            rev);
-      if (m.FINANCIAL_EXPENSES !== null) m.FINANCIAL_EXPENSES_PCT    = safeDivide(m.FINANCIAL_EXPENSES,     rev);
-      if (m.CHARGEBACKS        !== null) m.CHARGEBACKS_PCT           = safeDivide(m.CHARGEBACKS,            rev);
-      if (m.INSURANCE          !== null) m.INSURANCE_PCT             = safeDivide(m.INSURANCE,              rev);
-      if (m.LICENSES_PERMITS   !== null) m.LICENSES_PERMITS_PCT      = safeDivide(m.LICENSES_PERMITS,       rev);
-      if (m.PROFESSIONAL_FEES  !== null) m.PROFESSIONAL_FEES_PCT     = safeDivide(m.PROFESSIONAL_FEES,      rev);
-      if (m.OPEX_TAXES         !== null) m.OPEX_TAXES_PCT            = safeDivide(m.OPEX_TAXES,             rev);
-      if (m.TOTAL_OPEX         !== null) m.TOTAL_OPEX_PCT            = safeDivide(m.TOTAL_OPEX,             rev);
+      if (m.OTHER_EXPENSES     !== null) m.OTHER_EXPENSES_PCT = safeDivide(m.OTHER_EXPENSES,        rev);
+      if (m.OTHER_INCOME       !== null) m.OTHER_INCOME_PCT  = safeDivide(m.OTHER_INCOME,           rev);
     }
     storeMetrics[store] = m;
   });
@@ -1048,47 +890,35 @@ function step2_extractAndCompute(sheets, querySchema) {
   const totals = {};
   resolvedKpiKeys.forEach(kpi => {
     const vals = storeNames.map(s => cyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
-    // Use Math.round to get exact integer totals — avoids floating-point 1-3 dollar drift
     if (vals.length) totals[kpi] = Math.round(vals.reduce((a,b) => a+b, 0));
   });
 
-  // ─────────────────────────────────────────────────────────────────────────
-  //  Portfolio averages — simple average of each store's individual % value.
-  //
-  //  SPECIAL RULE for INTEREST_EXPENSE_PCT:
-  //    Many stores genuinely have $0 interest expense (no debt). Including
-  //    them in the average would artificially deflate it and misrepresent the
-  //    true cost burden for stores that actually carry interest expense.
-  //    Therefore, stores with INTEREST_EXPENSE_PCT = 0 (or null) are EXCLUDED
-  //    from the Interest Expense portfolio average calculation.
-  //    All other % KPIs continue to include 0% stores (valid cost = $0).
-  // ─────────────────────────────────────────────────────────────────────────
+  // Portfolio averages — simple average of each store's individual % value
   const pctKpis = [
     "GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT",
     "FOOD_SUPPLIES_PCT","STAFF_PCT","RENT_PCT","FRANCHISE_FEES_PCT",
     "RENT_FRANCHISE_PCT","UTILITIES_PCT","REPAIRS_MAINTENANCE_PCT",
     "INTEREST_EXPENSE_PCT","DEPRECIATION_EXP_PCT","AMORTIZATION_EXP_PCT",
-    "OTHER_EXPENSES_PCT","OTHER_INCOME_PCT",
-    // Prell-specific %s
-    "DISCOUNTS_PCT","CONTROLLABLE_EXP_PCT","DELIVERY_COMMISSION_PCT",
-    "ADVERTISING_PCT","FINANCIAL_EXPENSES_PCT","CHARGEBACKS_PCT",
-    "INSURANCE_PCT","LICENSES_PERMITS_PCT","PROFESSIONAL_FEES_PCT",
-    "OPEX_TAXES_PCT","TOTAL_OPEX_PCT"
+    "OTHER_EXPENSES_PCT","OTHER_INCOME_PCT"
   ];
-
   const averages = {};
   pctKpis.forEach(pctKpi => {
-    const vals = storeNames.map(s => {
-      const v = cyMetrics[s]?.[pctKpi];
-      // INTEREST_EXPENSE_PCT: exclude stores where % is 0 or null (no debt stores)
-      // All other KPIs: include 0 explicitly — isFinite(0) is true and 0 !== null
-      if (pctKpi === "INTEREST_EXPENSE_PCT") {
-        return (v !== null && v !== undefined && isFinite(v) && v > 0) ? v : null;
-      }
-      return (v !== null && v !== undefined && isFinite(v)) ? v : null;
-    }).filter(v => v !== null);
+    const vals = storeNames.map(s => cyMetrics[s]?.[pctKpi])
+      .filter(v => v !== null && v !== undefined && isFinite(v));
     if (vals.length) averages[pctKpi] = roundTo2(vals.reduce((a, b) => a + b, 0) / vals.length);
   });
+
+  // ── FIX: Interest Expense avg excluding stores with 0% ──
+  // Stores where Interest Expense is 0 (or not reported) are excluded from the
+  // portfolio simple average, since 0% indicates no interest-bearing debt rather
+  // than genuinely zero cost. This prevents dilution of the meaningful average.
+  const interestNonZeroVals = storeNames
+    .map(s => cyMetrics[s]?.INTEREST_EXPENSE_PCT)
+    .filter(v => v !== null && v !== undefined && isFinite(v) && v > 0);
+  const interestAvgNonZero = interestNonZeroVals.length
+    ? roundTo2(interestNonZeroVals.reduce((a, b) => a + b, 0) / interestNonZeroVals.length)
+    : null;
+  console.log(`📊 Interest Expense avg (excl 0%): ${interestAvgNonZero} | stores with interest: ${interestNonZeroVals.length}/${storeNames.length}`);
 
   const ebitdaRanking = storeNames
     .map(s => ({ store: s, ebitda: cyMetrics[s]?.EBITDA ?? null, ebitdaMargin: cyMetrics[s]?.EBITDA_MARGIN_PCT ?? null, revenue: cyMetrics[s]?.REVENUE ?? null }))
@@ -1168,22 +998,17 @@ function step2_extractAndCompute(sheets, querySchema) {
   }
 
   // ── Extract Benchmark column data ──
-  // Scans ALL header rows (0-9) independently of layout detection so it works
-  // for both separate-sheet and inline layouts. "benchmark" stays excluded from
-  // store columns but its data is extracted here for Cost Structure Analysis.
   const benchmarkData = {};
   try {
     const primaryRaw = primarySheet.rawArray || [];
     let benchmarkColIdx = -1;
     let bmDataStartRow = 1;
 
-    // Search first 10 rows for a "Benchmark" header cell
     for (let rowIdx = 0; rowIdx < Math.min(10, primaryRaw.length); rowIdx++) {
       const row = primaryRaw[rowIdx] || [];
       const colIdx = row.findIndex(c => isBenchmarkColumn(String(c ?? "").trim()));
       if (colIdx >= 0) {
         benchmarkColIdx = colIdx;
-        // Find the first row AFTER this header that has numeric data in the benchmark col
         bmDataStartRow = rowIdx + 1;
         for (let r = rowIdx + 1; r < Math.min(rowIdx + 6, primaryRaw.length); r++) {
           const v = parseAmount((primaryRaw[r] || [])[colIdx]);
@@ -1209,6 +1034,16 @@ function step2_extractAndCompute(sheets, querySchema) {
     console.warn("⚠️ Benchmark extraction failed:", e.message);
   }
 
+  // ── Determine which KPIs genuinely have a benchmark entry ──
+  // After extracting benchmarkData, map each entry to its KPI key.
+  // This set is used in buildDataBlockForAI to explicitly flag heads
+  // that have NO benchmark (so the AI cannot fabricate one).
+  const benchmarkPctByKpi = {};
+  Object.entries(benchmarkData).forEach(([desc, val]) => {
+    const kpi = matchKPI(desc);
+    if (kpi) benchmarkPctByKpi[kpi] = val;
+  });
+
   console.log(`✅ Step 2 done. ${storeNames.length} stores | EBITDA ranked: ${ebitdaRanking.length} | YoY: ${Object.keys(yoyComparisons).length} stores`);
 
   return {
@@ -1221,10 +1056,14 @@ function step2_extractAndCompute(sheets, querySchema) {
     storeMetrics: cyMetrics,
     lyMetrics, lyStores: lyStoreNames,
     kpiMapping, totals, averages,
+    // FIX: expose the non-zero interest average separately
+    interestAvgNonZero,
+    // expose benchmark kpi map so buildDataBlockForAI can flag missing heads precisely
+    benchmarkPctByKpi,
     ebitdaRanking, revenueRanking,
     yoyComparisons, portfolioYoY,
     allLineItems: cyLineItemDict,
-    benchmarkData    // benchmark column values keyed by line item description
+    benchmarkData
   };
 }
 
@@ -1301,107 +1140,55 @@ function step2_fallback(sheets) {
 // ─────────────────────────────────────────────
 
 const KPI_LABELS = {
-  // ── Core (both groups) ──
   REVENUE:              "Net Revenue",
   FOOD_SUPPLIES:        "Food and Supplies",
   STAFF_COST:           "Operational Payroll Expenses",
   COGS:                 "Total COGS",
-  GROSS_PROFIT:         "Gross Profit",
-  GROSS_MARGIN_PCT:     "Gross Profit%",
-  RENT:                 "TOTAL Rent",
+  GROSS_PROFIT:         "Gross Margin",
+  GROSS_MARGIN_PCT:     "Gross Margin%",
+  RENT:                 "Rent",
   FRANCHISE_FEES:       "Franchise Fees",
   RENT_FRANCHISE_TOTAL: "Total Rent & Franchise Fees",
-  UTILITIES:            "TOTAL Utilities",
-  REPAIRS_MAINTENANCE:  "TOTAL Repairs and Maintenance",
-  OTHER_EXPENSES:       "TOTAL Other Expenses",
-  EBITDA:               "TOTAL Operating Profit / EBITDA",
+  UTILITIES:            "Utilities",
+  REPAIRS_MAINTENANCE:  "Total Repairs and Maintenance",
+  OTHER_EXPENSES:       "Total Other Expenses",
+  EBITDA:               "EBITDA",
   EBITDA_MARGIN_PCT:    "EBITDA%",
   INTEREST_EXPENSE:     "Interest Expense",
   DEPRECIATION_EXP:     "Depreciation Expense",
   AMORTIZATION_EXP:     "Amortization Expense",
   TOTAL_DEPR_INT:       "Total Interest / Depreciation & Amortizations",
   OPR_INCOME_BEFORE_MGT:"Operating Income before Mgt Fee & O/h Allocations",
-  MANAGEMENT_FEE:       "Management Fees",
+  MANAGEMENT_FEE:       "Management Fee",
   ADMIN_EXP:            "Administrative Expenses",
   NET_OPR_INCOME:       "Net Operating Income",
   OTHER_INCOME:         "Other Income",
   PBT:                  "PBT",
-  NET_PROFIT:           "Net Income",
-  NET_MARGIN_PCT:       "Net Margin%",
-  // ── Prell-specific ──
-  DISCOUNTS:            "Total Discounts, Coupons & Refunds",
-  CONTROLLABLE_EXP:     "Controllable Expenses",
-  DELIVERY_COMMISSION:  "Delivery Commission",
-  ADVERTISING:          "Advertising/Marketing",
-  FINANCIAL_EXPENSES:   "TOTAL Financial Expenses",
-  CHARGEBACKS:          "Chargebacks",
-  INSURANCE:            "TOTAL Insurance",
-  LICENSES_PERMITS:     "Licenses and Permits",
-  PROFESSIONAL_FEES:    "Professional Fees",
-  OPEX_TAXES:           "Taxes",
-  TOTAL_OPEX:           "TOTAL Operating Expenses",
+  NET_PROFIT:           "Net Profit Before Tax",
+  NET_MARGIN_PCT:       "Net Margin%"
 };
 
-// ── KPI_ORDER: unified display sequence covering both SLZ and Prell P&L waterfalls ──
 const KPI_ORDER = [
-  // ── Revenue block ──
-  "GROSS_REVENUE",          // Prell: Gross Revenue
-  "DISCOUNTS",              // Prell: Total Discounts, Coupons & Refunds
-  "REVENUE",                // Both:  Net Revenue
-  // ── COGS block ──
-  "FOOD_SUPPLIES",          // Both:  Food and Supplies
-  "STAFF_COST",             // Both:  Operational Payroll Expenses
-  "COGS",                   // Both:  Total COGS
-  // ── Gross Profit ──
-  "GROSS_PROFIT",           // Both:  Gross Profit / Gross Margin
-  // ── Operating Expenses block ──
-  "CONTROLLABLE_EXP",       // Prell: Controllable Expenses
-  "DELIVERY_COMMISSION",    // Prell: Delivery Commission
-  "ADVERTISING",            // Prell: Advertising/Marketing
-  "FINANCIAL_EXPENSES",     // Prell: TOTAL Financial Expenses
-  "CHARGEBACKS",            // Prell: Chargebacks
-  "REPAIRS_MAINTENANCE",    // Both:  TOTAL Repairs and Maintenance
-  "UTILITIES",              // Both:  TOTAL Utilities
-  "INSURANCE",              // Prell: TOTAL Insurance
-  "LICENSES_PERMITS",       // Prell: Licenses and Permits
-  "PROFESSIONAL_FEES",      // Prell: Professional Fees
-  "RENT", "FRANCHISE_FEES", "RENT_FRANCHISE_TOTAL",  // Both
-  "OPEX_TAXES",             // Prell: Taxes (as opex line)
-  "MANAGEMENT_FEE",         // Both:  Management Fees
-  "ADMIN_EXP",              // Both:  Admin / O/H
-  "OTHER_EXPENSES",         // Both:  TOTAL Other Expenses
-  "TOTAL_OPEX",             // Prell: TOTAL Operating Expenses
-  // ── EBITDA ──
-  "EBITDA",                 // Both:  TOTAL Operating Profit / EBITDA
-  // ── Below EBITDA ──
-  "INTEREST_EXPENSE",       // Both:  Interest Expense
-  "DEPRECIATION_EXP",       // SLZ:   Depreciation Expense
-  "AMORTIZATION_EXP",       // SLZ:   Amortization Expense
-  "TOTAL_DEPR_INT",         // SLZ:   Total D&A
-  "OPR_INCOME_BEFORE_MGT",  // SLZ:   Operating Income before Mgt Fee
-  "NET_OPR_INCOME",         // SLZ:   Net Operating Income
-  "OTHER_INCOME",           // Both:  Other Income
-  "PBT",                    // SLZ:   PBT
-  "NET_PROFIT"              // Both:  Net Income / Net Profit
+  "REVENUE",
+  "FOOD_SUPPLIES", "STAFF_COST", "COGS",
+  "GROSS_PROFIT",
+  "RENT", "FRANCHISE_FEES", "RENT_FRANCHISE_TOTAL",
+  "UTILITIES", "REPAIRS_MAINTENANCE", "OTHER_EXPENSES",
+  "EBITDA",
+  "INTEREST_EXPENSE", "DEPRECIATION_EXP", "AMORTIZATION_EXP", "TOTAL_DEPR_INT",
+  "OPR_INCOME_BEFORE_MGT",
+  "MANAGEMENT_FEE", "ADMIN_EXP", "NET_OPR_INCOME",
+  "OTHER_INCOME",
+  "PBT",
+  "NET_PROFIT"
 ];
-
-// ─────────────────────────────────────────────
-//  KPIs that NEVER have a benchmark in any file.
-//  Even if the file's Benchmark column happens to carry a value for these
-//  heads (e.g. as a carry-forward or formula artefact), we treat them as
-//  "no benchmark available" and fall back to portfolio average.
-// ─────────────────────────────────────────────
-const KPI_NO_BENCHMARK = new Set([
-  "INTEREST_EXPENSE",
-  "DEPRECIATION_EXP",
-  "AMORTIZATION_EXP",
-  "TOTAL_DEPR_INT",
-]);
 
 function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   const { storeMetrics, stores, totals, averages, ebitdaRanking, revenueRanking,
           yoyComparisons, portfolioYoY, cyYear, lyYear, cySheetName, lySheetName,
-          storeCount, allLineItems, benchmarkData } = r;
+          storeCount, allLineItems, benchmarkData,
+          // FIX: pull in the non-zero interest average and benchmark kpi map
+          interestAvgNonZero, benchmarkPctByKpi } = r;
 
   const activeKPIs = kpiScope || KPI_ORDER;
   const inp = intent || {};
@@ -1473,81 +1260,67 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     ].filter(k => averages[k] !== undefined);
     if (avgKPIs.length) {
       b += `\n▶ PORTFOLIO AVERAGES (all ${storeCount} stores)\n${"─".repeat(58)}\n`;
-      // ── Note about Interest Expense average ──
-      // Clarify to AI that the Interest Expense avg excludes 0% stores so it
-      // doesn't confuse it with the benchmark or misquote the denominator.
-      const interestAvgStoreCount = stores.filter(s => {
-        const v = storeMetrics[s]?.INTEREST_EXPENSE_PCT;
-        return v !== null && v !== undefined && isFinite(v) && v > 0;
-      }).length;
       avgKPIs.forEach(kpi => {
-        if (averages[kpi] !== undefined) {
-          let note = "";
-          if (kpi === "INTEREST_EXPENSE_PCT" && interestAvgStoreCount < storeCount) {
-            note = ` (avg of ${interestAvgStoreCount} stores with interest expense > 0%; stores at 0% excluded)`;
-          }
-          b += `  ${(KPI_LABELS[kpi]||kpi).padEnd(22)}: ${formatPct(averages[kpi])}${note}\n`;
-        }
+        if (averages[kpi] !== undefined)
+          b += `  ${(KPI_LABELS[kpi]||kpi).padEnd(22)}: ${formatPct(averages[kpi])}\n`;
       });
     }
   }
 
   // ── Benchmark data block ──
-  // Benchmark values from the report's Benchmark column are shown here.
-  // IMPORTANT: Interest Expense, Depreciation Expense, Amortization Expense and
-  // Total D&A are NEVER benchmarked — even if the file's Benchmark column has a
-  // value for them (could be a formula artefact). These heads are explicitly
-  // excluded from the benchmark block and flagged as "NO BENCHMARK" below.
   if (benchmarkData && Object.keys(benchmarkData).length > 0) {
     b += `\n▶ BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE\n`;
     b += `   (These are the real benchmark figures from the "Benchmark" column — NOT portfolio averages)\n`;
-    b += `   ⚠ RULE: Interest Expense, Depreciation Expense, Amortization Expense and Total D&A\n`;
-    b += `     are NEVER benchmarked regardless of what appears in the file column.\n`;
     b += `${"─".repeat(58)}\n`;
 
-    // Build benchmark % by KPI — but EXCLUDE KPI_NO_BENCHMARK heads entirely
-    const benchmarkPctByKpi = {};
-    Object.entries(benchmarkData).forEach(([desc, val]) => {
-      const kpi = matchKPI(desc);
-      if (!kpi) return;
-      // Hard-exclude the no-benchmark KPIs regardless of file value
-      if (KPI_NO_BENCHMARK.has(kpi)) return;
-      if (val !== null && val !== undefined && isFinite(val) && val > 0) {
-        benchmarkPctByKpi[kpi] = val;
-      }
-    });
+    // Rebuild benchmarkPctByKpi locally in case it wasn't passed through (fallback safety)
+    const localBmPctByKpi = benchmarkPctByKpi || {};
+    if (!benchmarkPctByKpi) {
+      Object.entries(benchmarkData).forEach(([desc, val]) => {
+        const kpi = matchKPI(desc);
+        if (kpi) localBmPctByKpi[kpi] = val;
+      });
+    }
 
-    // Display only KPIs that have a valid benchmark and are NOT in KPI_NO_BENCHMARK
     Object.entries(benchmarkData).forEach(([desc, val]) => {
       const kpi = matchKPI(desc);
-      if (!kpi) return;
-      if (KPI_NO_BENCHMARK.has(kpi)) return; // skip — never benchmarked
-      const label = KPI_LABELS[kpi] || kpi;
-      if (benchmarkPctByKpi[kpi] !== undefined) {
+      const label = kpi ? (KPI_LABELS[kpi] || kpi) : desc;
+      if (kpi && localBmPctByKpi[kpi] !== undefined) {
         b += `  ${label.padEnd(36)}: ${formatPct(val)}\n`;
       }
     });
 
-    // Flag cost heads with no benchmark — always includes KPI_NO_BENCHMARK heads
+    // ── FIX: Explicitly flag INTEREST_EXPENSE and DEPRECIATION_EXP as having no benchmark
+    // if they are absent from the benchmark column in the file.
+    // This prevents the AI from treating the portfolio average as a benchmark for these heads.
     const costKpiKeys = ["FOOD_SUPPLIES","STAFF_COST","RENT","FRANCHISE_FEES","UTILITIES",
                          "REPAIRS_MAINTENANCE","OTHER_EXPENSES","INTEREST_EXPENSE",
                          "DEPRECIATION_EXP","AMORTIZATION_EXP"];
-    const missingBenchmark = costKpiKeys.filter(k =>
-      // A KPI is "missing benchmark" if it's in the hard-exclude set OR has no valid value
-      KPI_NO_BENCHMARK.has(k) || benchmarkPctByKpi[k] === undefined
-    );
+    const missingBenchmark = costKpiKeys.filter(k => (benchmarkPctByKpi || localBmPctByKpi)[k] === undefined);
+
     if (missingBenchmark.length > 0) {
-      b += `\n  ⚠ NO BENCHMARK for: ${missingBenchmark.map(k => KPI_LABELS[k]||k).join(", ")}\n`;
-      b += `    → For these heads, use portfolio simple average % and highest/lowest store instead.\n`;
-      b += `    → Interest Expense and Depreciation/Amortization are NEVER industry-benchmarked\n`;
-      b += `       (they are financing/accounting decisions, not operational cost heads).\n`;
+      b += `\n  ⚠ NO BENCHMARK IN FILE for: ${missingBenchmark.map(k => KPI_LABELS[k]||k).join(", ")}\n`;
+      b += `    → For these heads, there is NO industry benchmark in this report.\n`;
+      b += `    → Do NOT use the portfolio average as a substitute benchmark.\n`;
+      b += `    → Simply state "No benchmark available" and present the portfolio average as-is.\n`;
     }
     b += `\n  ⚑ These % values are taken directly from the file's Benchmark column — use as-is.\n`;
   } else {
     b += `\n▶ BENCHMARK COLUMN: Not found in this file. Use portfolio averages for comparisons.\n`;
   }
 
-  // ── Pre-build Store-wise YoY markdown table ──
+  // ── FIX: Inject Interest Expense non-zero average into data block ──
+  // This gives the AI the correct average to use for Interest Expense
+  // (excluding stores with 0% which have no interest-bearing debt).
+  if (interestAvgNonZero !== null && interestAvgNonZero !== undefined) {
+    b += `\n▶ INTEREST EXPENSE — SPECIAL AVERAGE NOTE\n${"─".repeat(58)}\n`;
+    b += `  Portfolio simple avg (ALL stores, incl. 0%): ${averages["INTEREST_EXPENSE_PCT"] !== undefined ? formatPct(averages["INTEREST_EXPENSE_PCT"]) : "N/A"}\n`;
+    b += `  Portfolio avg EXCLUDING stores with 0% interest: ${formatPct(interestAvgNonZero)}\n`;
+    b += `  ⚑ For Interest Expense analysis, USE the "excluding 0%" average.\n`;
+    b += `    Stores at 0% have no interest-bearing debt and should not dilute the average.\n`;
+  }
+
+  // ── Per-store YoY data for Store-wise YoY table ──
   {
     const cols = ["Sr.No", "Store", "Rev CY", "Rev LY", "Rev Δ%", "Gross Profit CY", "GP LY", "EBITDA CY", "EBITDA LY", "EBITDA Δ%"];
     const rows = activeStores.map((store, idx) => {
@@ -1575,29 +1348,19 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     b += `(${activeStores.length} stores total — all rows above are complete)\n`;
   }
 
-  // ── Per-store Cost Structure data ──
+  // ── Per-store Cost Structure data for Cost Structure Analysis ──
   b += `\n▶ STORE-WISE COST STRUCTURE (% of Revenue — for Cost Structure Analysis)\n${"─".repeat(58)}\n`;
   const costKPIs = [
-    { kpi: "FOOD_SUPPLIES",        pct: "FOOD_SUPPLIES_PCT",          label: "Food and Supplies" },
-    { kpi: "STAFF_COST",           pct: "STAFF_PCT",                  label: "Operational Payroll Expenses" },
-    { kpi: "CONTROLLABLE_EXP",     pct: "CONTROLLABLE_EXP_PCT",       label: "Controllable Expenses" },
-    { kpi: "DELIVERY_COMMISSION",  pct: "DELIVERY_COMMISSION_PCT",    label: "Delivery Commission" },
-    { kpi: "ADVERTISING",          pct: "ADVERTISING_PCT",            label: "Advertising/Marketing" },
-    { kpi: "FINANCIAL_EXPENSES",   pct: "FINANCIAL_EXPENSES_PCT",     label: "TOTAL Financial Expenses" },
-    { kpi: "CHARGEBACKS",          pct: "CHARGEBACKS_PCT",            label: "Chargebacks" },
-    { kpi: "REPAIRS_MAINTENANCE",  pct: "REPAIRS_MAINTENANCE_PCT",    label: "Total Repairs and Maintenance" },
-    { kpi: "UTILITIES",            pct: "UTILITIES_PCT",              label: "Utilities" },
-    { kpi: "INSURANCE",            pct: "INSURANCE_PCT",              label: "TOTAL Insurance" },
-    { kpi: "LICENSES_PERMITS",     pct: "LICENSES_PERMITS_PCT",       label: "Licenses and Permits" },
-    { kpi: "PROFESSIONAL_FEES",    pct: "PROFESSIONAL_FEES_PCT",      label: "Professional Fees" },
-    { kpi: "RENT",                 pct: "RENT_PCT",                   label: "TOTAL Rent" },
-    { kpi: "FRANCHISE_FEES",       pct: "FRANCHISE_FEES_PCT",         label: "Franchise Fees" },
-    { kpi: "OPEX_TAXES",           pct: "OPEX_TAXES_PCT",             label: "Taxes" },
-    { kpi: "MANAGEMENT_FEE",       pct: "MANAGEMENT_FEE_PCT",         label: "Management Fees" },
-    { kpi: "OTHER_EXPENSES",       pct: "OTHER_EXPENSES_PCT",         label: "Total Other Expenses" },
-    { kpi: "INTEREST_EXPENSE",     pct: "INTEREST_EXPENSE_PCT",       label: "Interest Expense" },
-    { kpi: "DEPRECIATION_EXP",     pct: "DEPRECIATION_EXP_PCT",      label: "Depreciation Expense" },
-    { kpi: "AMORTIZATION_EXP",     pct: "AMORTIZATION_EXP_PCT",      label: "Amortization Expense" },
+    { kpi: "FOOD_SUPPLIES",      pct: "FOOD_SUPPLIES_PCT",        label: "Food and Supplies" },
+    { kpi: "STAFF_COST",         pct: "STAFF_PCT",                label: "Operational Payroll Expenses" },
+    { kpi: "RENT",               pct: "RENT_PCT",                 label: "Rent" },
+    { kpi: "FRANCHISE_FEES",     pct: "FRANCHISE_FEES_PCT",       label: "Franchise Fees" },
+    { kpi: "UTILITIES",          pct: "UTILITIES_PCT",            label: "Utilities" },
+    { kpi: "REPAIRS_MAINTENANCE",pct: "REPAIRS_MAINTENANCE_PCT",  label: "Total Repairs and Maintenance" },
+    { kpi: "OTHER_EXPENSES",     pct: "OTHER_EXPENSES_PCT",       label: "Total Other Expenses" },
+    { kpi: "INTEREST_EXPENSE",   pct: "INTEREST_EXPENSE_PCT",     label: "Interest Expense" },
+    { kpi: "DEPRECIATION_EXP",   pct: "DEPRECIATION_EXP_PCT",     label: "Depreciation Expense" },
+    { kpi: "AMORTIZATION_EXP",   pct: "AMORTIZATION_EXP_PCT",     label: "Amortization Expense" },
   ];
   costKPIs.forEach(({ kpi, pct, label }) => {
     const storeEntries = activeStores
@@ -1617,17 +1380,10 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     });
 
     const highest = sorted[0];
-
     const nonZeroEntries = sorted.filter(e =>
       e.pctVal !== null && e.pctVal !== undefined && isFinite(e.pctVal) && e.pctVal > 0
     );
     const lowest = nonZeroEntries.length > 0 ? nonZeroEntries[nonZeroEntries.length - 1] : null;
-
-    // For Interest Expense: note in the data block that the portfolio avg excludes 0% stores
-    const isInterestExpense = kpi === "INTEREST_EXPENSE";
-    const avgNote = isInterestExpense
-      ? " (excl. stores with 0% interest expense)"
-      : "";
 
     b += `\n  [${label}]\n`;
     b += `  HIGHEST: ${highest.store} — ${formatNum(highest.amt)} (${highest.pctVal !== null ? formatPct(highest.pctVal) : "N/A"})\n`;
@@ -1636,7 +1392,15 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     } else {
       b += `  LOWEST: No stores with positive % found\n`;
     }
-    b += `  Portfolio simple avg: ${averages[pct] !== undefined ? formatPct(averages[pct]) : "N/A"}${avgNote}\n`;
+
+    // ── FIX: For Interest Expense, show the non-zero avg as the "Portfolio simple avg"
+    // so the AI uses the correct figure (not the diluted all-stores avg).
+    if (kpi === "INTEREST_EXPENSE" && interestAvgNonZero !== null && interestAvgNonZero !== undefined) {
+      b += `  Portfolio simple avg (excl. stores with 0%): ${formatPct(interestAvgNonZero)}\n`;
+    } else {
+      b += `  Portfolio simple avg: ${averages[pct] !== undefined ? formatPct(averages[pct]) : "N/A"}\n`;
+    }
+
     b += `  All stores (sorted high→low %):\n`;
     sorted.forEach(e => {
       const flag = e === highest ? " ← HIGHEST" : (e === lowest ? " ← LOWEST (excl. 0%)" : "");
@@ -1756,20 +1520,15 @@ function parseUserIntent(userQuestion, allStoreNames = []) {
 
 function getKPIOrderForIntent(intent) {
   const FULL_ORDER = [
-    "GROSS_REVENUE", "DISCOUNTS", "REVENUE",
+    "REVENUE",
     "FOOD_SUPPLIES", "STAFF_COST", "COGS",
     "GROSS_PROFIT",
-    "CONTROLLABLE_EXP", "DELIVERY_COMMISSION", "ADVERTISING",
-    "FINANCIAL_EXPENSES", "CHARGEBACKS",
-    "REPAIRS_MAINTENANCE", "UTILITIES", "INSURANCE",
-    "LICENSES_PERMITS", "PROFESSIONAL_FEES",
     "RENT", "FRANCHISE_FEES", "RENT_FRANCHISE_TOTAL",
-    "OPEX_TAXES", "MANAGEMENT_FEE", "ADMIN_EXP",
-    "OTHER_EXPENSES", "TOTAL_OPEX",
+    "UTILITIES", "REPAIRS_MAINTENANCE", "OTHER_EXPENSES",
     "EBITDA",
     "INTEREST_EXPENSE", "DEPRECIATION_EXP", "AMORTIZATION_EXP", "TOTAL_DEPR_INT",
     "OPR_INCOME_BEFORE_MGT",
-    "NET_OPR_INCOME",
+    "MANAGEMENT_FEE", "ADMIN_EXP", "NET_OPR_INCOME",
     "OTHER_INCOME",
     "PBT",
     "NET_PROFIT"
@@ -1797,31 +1556,32 @@ function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedR
   if (isSpecific) scopeNote += ` Focus ONLY on: ${intent.specificStores.join(", ")}.`;
   if (exclusionNote) scopeNote += exclusionNote;
 
-  const allCostHeads = [
-    { label: "Food and Supplies",           kpi: "FOOD_SUPPLIES" },
-    { label: "Operational Payroll Expenses",kpi: "STAFF_COST" },
-    { label: "Controllable Expenses",       kpi: "CONTROLLABLE_EXP" },
-    { label: "Delivery Commission",         kpi: "DELIVERY_COMMISSION" },
-    { label: "Advertising/Marketing",       kpi: "ADVERTISING" },
-    { label: "TOTAL Financial Expenses",    kpi: "FINANCIAL_EXPENSES" },
-    { label: "Chargebacks",                 kpi: "CHARGEBACKS" },
-    { label: "TOTAL Repairs and Maintenance",kpi: "REPAIRS_MAINTENANCE" },
-    { label: "TOTAL Utilities",             kpi: "UTILITIES" },
-    { label: "TOTAL Insurance",             kpi: "INSURANCE" },
-    { label: "Licenses and Permits",        kpi: "LICENSES_PERMITS" },
-    { label: "Professional Fees",           kpi: "PROFESSIONAL_FEES" },
-    { label: "TOTAL Rent",                  kpi: "RENT" },
-    { label: "Franchise Fees",              kpi: "FRANCHISE_FEES" },
-    { label: "Taxes",                       kpi: "OPEX_TAXES" },
-    { label: "Management Fees",             kpi: "MANAGEMENT_FEE" },
-    { label: "Total Other Expenses",        kpi: "OTHER_EXPENSES" },
-    { label: "Interest Expense",            kpi: "INTEREST_EXPENSE" },
-    { label: "Depreciation Expense",        kpi: "DEPRECIATION_EXP" },
-    { label: "Amortization Expense",        kpi: "AMORTIZATION_EXP" },
-  ];
-  const costHeadsInOrder = allCostHeads
-    .filter(h => kpiScope.includes(h.kpi))
-    .map(h => h.label);
+  const costHeadsInOrder = [
+    "Food and Supplies",
+    "Operational Payroll Expenses",
+    "Rent",
+    "Franchise Fees",
+    "Utilities",
+    "Total Repairs and Maintenance",
+    "Total Other Expenses",
+    "Interest Expense",
+    "Depreciation Expense",
+    "Amortization Expense"
+  ].filter(h => {
+    const kpiMap = {
+      "Food and Supplies":          "FOOD_SUPPLIES",
+      "Operational Payroll Expenses":"STAFF_COST",
+      "Rent":                        "RENT",
+      "Franchise Fees":              "FRANCHISE_FEES",
+      "Utilities":                   "UTILITIES",
+      "Total Repairs and Maintenance":"REPAIRS_MAINTENANCE",
+      "Total Other Expenses":        "OTHER_EXPENSES",
+      "Interest Expense":            "INTEREST_EXPENSE",
+      "Depreciation Expense":        "DEPRECIATION_EXP",
+      "Amortization Expense":        "AMORTIZATION_EXP",
+    };
+    return kpiScope.includes(kpiMap[h]);
+  });
 
   const rawQuestion = userQuestion && userQuestion.trim() ? userQuestion.trim() : "Full P&L analysis";
   const isBrand = !!intent.isBrandReport;
@@ -1863,6 +1623,7 @@ Write a detailed MIS P&L commentary with these sections IN THIS EXACT ORDER:
 `;
 
   if (!isSpecific) {
+
     if (hasLY) {
       instructions += `## Year-on-Year Analysis — ${isBrand ? "All Brands" : "Portfolio"}
 Present as a markdown table with columns: | KPI | CY Total | LY Total | Δ Amount | Δ% |
@@ -1927,6 +1688,7 @@ After covering all the above heads, add:
 
 `;
       } else {
+        // ── STORE REPORT: full benchmark + inter-store comparison ──
         instructions += `## Cost Structure Analysis
 
 For each of the following expense heads (IN THIS ORDER), write a dedicated subsection:
@@ -1937,18 +1699,26 @@ For EACH expense head, your subsection MUST cover ALL THREE of the following:
 **a) Comparison with Industry Standards / Benchmark**
 The data block has a "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE" section.
 
-CRITICAL BENCHMARK RULES:
-- Interest Expense, Depreciation Expense, Amortization Expense, and Total D&A are NEVER
-  industry-benchmarked. These are financing and accounting policy decisions, not operational
-  cost heads. For these, ALWAYS state: "No industry benchmark is available for [head name]
-  as it is a financing/accounting decision that varies by capital structure."
-  Then provide the portfolio simple average % (excluding stores with 0%, for Interest Expense).
-  Do NOT mention any benchmark figure for these heads under any circumstances.
-- For all other heads: if the benchmark % IS listed in the data block, state it and compare
-  the portfolio simple average % to that benchmark %.
-- If the data block says "⚠ NO BENCHMARK for: [this head]": state "No benchmark available"
-  and provide only the portfolio simple average %.
-- Do NOT compute or mention pp variances. Do NOT mention raw dollar amounts.
+CRITICAL RULES FOR BENCHMARK:
+- If the expense head IS listed in that section with a % value → state that exact % as the benchmark.
+  Compare the portfolio simple average % to it. Do NOT mention pp variances. Do NOT mention raw amounts.
+- If the data block says "⚠ NO BENCHMARK IN FILE for: [this head]" OR the head is not listed there →
+  You MUST write: "No benchmark is available in the report for [head name]."
+  Then state the portfolio simple average % only.
+  DO NOT say the portfolio average "aligns with" any benchmark. DO NOT imply any benchmark exists.
+  DO NOT write sentences like "The benchmark for X is Y%" when there is no benchmark in the file.
+
+SPECIAL RULE — Interest Expense:
+  The data block has a section "INTEREST EXPENSE — SPECIAL AVERAGE NOTE" with two averages:
+  - Portfolio simple avg (ALL stores, incl. 0%)
+  - Portfolio avg EXCLUDING stores with 0% interest
+  For Interest Expense, ALWAYS use the "excluding 0%" average as the portfolio simple average.
+  Stores at 0% have no interest-bearing debt and must NOT be included in the average.
+
+SPECIAL RULE — Depreciation Expense:
+  Depreciation Expense almost never has a benchmark in restaurant/F&B P&L files.
+  If the data block flags it under "⚠ NO BENCHMARK IN FILE", do NOT invent or imply one.
+  Simply state "No benchmark available" and present the portfolio average.
 
 **b) Comparison Among All Stores**
 The data block "STORE-WISE COST STRUCTURE" section lists stores sorted HIGH → LOW % for each head,
@@ -1959,7 +1729,7 @@ RULES:
 - State the LOWEST store and its % — use the store labelled "← LOWEST (excl. 0%)" in the data block.
   NEVER pick a store at 0% as the lowest. The data block already excludes 0% entries for you.
 - State the portfolio simple average % (labelled "Portfolio simple avg" in the data block).
-  For Interest Expense: note this average excludes stores with 0% interest expense.
+  For Interest Expense: use the "excluding 0%" average from the data block.
 - Mention any other stores that stand out as notably high or low (>3pp from the avg).
 
 **c) Suggestive Measures / Observations**
@@ -2013,8 +1783,9 @@ After covering all the above heads, add:
 - Negatives stay negative.
 - No Recommendations section.
 - ${unitWordCap}-wise YoY table must include ALL ${totalStores} ${unitWordPl} with no truncation.
-- Interest Expense and Depreciation/Amortization NEVER have a benchmark — do not fabricate one.
-- For Interest Expense portfolio average: it excludes stores with 0% — state this when mentioning it.
+- BENCHMARK: ONLY use benchmark % values explicitly listed in "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE".
+  If a head is listed under "⚠ NO BENCHMARK IN FILE", do NOT claim a benchmark exists for it.
+- INTEREST EXPENSE AVG: Always use the "excluding 0%" average from the "INTEREST EXPENSE — SPECIAL AVERAGE NOTE" section.
 ${isBrand ? "- This is a BRAND report: use the word 'brand/brands' everywhere, NOT 'store/stores'." : ""}`;
 
   if (showEbitdaRank && kpiScope.includes("EBITDA") && !isSpecific) {
@@ -2060,10 +1831,9 @@ ABSOLUTE RULES — NEVER BREAK:
 12. STORE-WISE YOY TABLE: The data block contains a fully pre-built markdown table labelled 'STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)'. Copy it exactly — every row, every value. Do NOT regenerate it, do NOT skip rows, do NOT add '...'.
 13. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |).
 14. COST STRUCTURE ANALYSIS: For each expense head, cover (a) benchmark comparison (b) inter-store comparison (c) observation. Follow the exact order specified.
-15. BENCHMARK RULE FOR INTEREST/DEPRECIATION/AMORTIZATION: These heads NEVER have an industry benchmark. ALWAYS state "No industry benchmark is available for [head] as it is a financing/accounting decision." Then use the portfolio simple average. NEVER quote a benchmark % for these heads.
-16. INTEREST EXPENSE AVERAGE: The portfolio simple average for Interest Expense excludes stores with 0% interest expense. Always mention this when referencing the Interest Expense average.
-17. BENCHMARK SOURCE (all other heads): The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section shows the benchmark % exactly as stored in the file. Use ONLY that % value — never compute or mention pp variances, never mention raw amounts. If a head has no benchmark (marked '⚠ NO BENCHMARK'), say so and use the portfolio simple average instead.
-18. COST STRUCTURE HIGHEST/LOWEST: Always use the store explicitly labelled '← HIGHEST' and '← LOWEST (excl. 0%)' in the data block. NEVER pick a 0% store as the lowest.${compact ? "\n19. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
+15. BENCHMARK SOURCE — STRICT RULE: The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section shows ONLY the benchmarks present in the file. If a head appears under '⚠ NO BENCHMARK IN FILE', there is NO benchmark for it — do NOT claim one exists, do NOT say the portfolio average aligns with a benchmark, do NOT use phrases like "The benchmark for X is Y%" when no benchmark was found. Simply state "No benchmark available in the report" and show the portfolio average.
+16. INTEREST EXPENSE AVERAGE: The data block has an 'INTEREST EXPENSE — SPECIAL AVERAGE NOTE' section. ALWAYS use the "excluding 0%" average for Interest Expense in both the benchmark section and the inter-store comparison section. NEVER use the all-stores average for this head.
+17. COST STRUCTURE HIGHEST/LOWEST: Always use the store explicitly labelled '← HIGHEST' and '← LOWEST (excl. 0%)' in the data block. NEVER pick a 0% store as the lowest.${compact ? "\n18. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
     },
     {
       role: "user",
