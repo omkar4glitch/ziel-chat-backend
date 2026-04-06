@@ -275,6 +275,13 @@ const KPI_PATTERNS = {
     "revenue","sales","turnover","total income"
   ],
 
+  // ── Discounts, Coupons & Refunds (Prell) ──
+  DISCOUNTS: [
+    "total discounts, coupons & refunds","total discounts coupons and refunds",
+    "discounts, coupons & refunds","discounts coupons & refunds",
+    "discounts and refunds","discounts","coupons & refunds","total discounts"
+  ],
+
   // ── Food & Supplies ──
   FOOD_SUPPLIES: [
     "food and supplies","food & supplies","food cost","food and supply"
@@ -293,9 +300,38 @@ const KPI_PATTERNS = {
     "cost of revenue","cost of material","material cost","total cost of goods"
   ],
 
-  // ── Gross Margin ──
+  // ── Gross Margin / Gross Profit ──
   GROSS_PROFIT: [
     "gross margin","gross profit","gross margin amount","gross income"
+  ],
+
+  // ── Controllable Expenses (Prell) ──
+  CONTROLLABLE_EXP: [
+    "controllable expenses","controlable expenses","total controllable expenses",
+    "total controlable expenses","controllable exp"
+  ],
+
+  // ── Delivery Commission (Prell) ──
+  DELIVERY_COMMISSION: [
+    "delivery commission","delivery commissions","delivery fee","third party delivery",
+    "online delivery commission","delivery platform fee"
+  ],
+
+  // ── Advertising / Marketing (Prell) ──
+  ADVERTISING: [
+    "advertising/marketing","advertising & marketing","advertising and marketing",
+    "advertising","marketing expense","marketing","ad spend","total advertising"
+  ],
+
+  // ── Total Financial Expenses (Prell) ──
+  FINANCIAL_EXPENSES: [
+    "total financial expenses","financial expenses","total financial expense",
+    "financial expense","bank charges","total bank & financial charges"
+  ],
+
+  // ── Chargebacks (Prell) ──
+  CHARGEBACKS: [
+    "chargebacks","chargeback","charge backs","charge back"
   ],
 
   // ── Rent ──
@@ -326,18 +362,49 @@ const KPI_PATTERNS = {
     "repairs and maintenance","repairs & maintenance","total r&m"
   ],
 
+  // ── Insurance (Prell) ──
+  INSURANCE: [
+    "total insurance","insurance expense","insurance","total insurance expense"
+  ],
+
+  // ── Licenses and Permits (Prell) ──
+  LICENSES_PERMITS: [
+    "licenses and permits","licences and permits","license & permits","licenses & permits",
+    "permits and licenses","total licenses and permits"
+  ],
+
+  // ── Professional Fees (Prell) ──
+  PROFESSIONAL_FEES: [
+    "professional fees","professional fee","accounting fees","legal fees",
+    "consulting fees","total professional fees"
+  ],
+
+  // ── Taxes (Prell — appears as an opex line, not income tax) ──
+  OPEX_TAXES: [
+    "taxes","total taxes","real property taxes","personal property taxes",
+    "property tax","payroll taxes","local taxes","state taxes"
+  ],
+
   // ── Total Other Expenses ──
   OTHER_EXPENSES: [
     "total other expenses","total other expense","other expenses",
-    "total controllable expenses","total controlable expenses"
+    "total other operating expenses"
   ],
 
-  // ── EBITDA ──
+  // ── Total Operating Expenses (Prell) ──
+  TOTAL_OPEX: [
+    "total operating expenses","total operating expense","total opex",
+    "total operating costs","total expenses"
+  ],
+
+  // ── EBITDA / Total Operating Profit ──
   EBITDA: [
     "ebitda","ebidta","earnings before interest tax depreciation",
     "ebitda (a-b)","ebitda (a - b)","profit before dep","profit before depreciation",
     "operating ebitda","ebitda before pre-opening","ebitda addback",
-    "total operating profit","total operating profit (loss)"
+    "total operating profit","total operating profit (loss)",
+    "total operating profit/ ebidta","total operating profit/ebidta",
+    "total operating profit / ebidta","total operating profit/ ebitda"
   ],
 
   // ── Interest Expense ──
@@ -390,7 +457,7 @@ const KPI_PATTERNS = {
     "net operating income","net operating profit","noi"
   ],
 
-  // ── OTHER INCOME (NEW — added after Net Operating Income) ──
+  // ── Other Income ──
   OTHER_INCOME: [
     "other income","other revenue","non-operating income","miscellaneous income",
     "other operating income","additional income","sundry income","non operating income"
@@ -402,15 +469,14 @@ const KPI_PATTERNS = {
     "earnings before tax","income before tax"
   ],
 
-  // NOTE: TAX is intentionally REMOVED from the P&L flow here.
-  // Tax was previously matched but belongs inside "other expenses" in this MIS format.
-  // We no longer extract or display TAX as a standalone KPI line.
-
   // ── Net Profit / Net Income ──
+  // NOTE: TAX as income tax line is NOT a standalone KPI (belongs inside opex for SLZ).
+  // For Prell, OPEX_TAXES above captures tax as an operating expense line.
   NET_PROFIT: [
     "net profit","pat","profit after tax","net income","net earnings",
     "profit/(loss) after tax","net profit/(loss)","net loss","profit / (loss)",
-    "net income (loss)","net profit before tax","net profit/loss"
+    "net income (loss)","net profit before tax","net profit/loss","total net income",
+    "net income after tax"
   ]
 };
 
@@ -769,7 +835,18 @@ Return JSON:
     "ADMIN_EXP": "exact row label for administrative expenses",
     "NET_OPR_INCOME": "exact row label for net operating income",
     "OTHER_INCOME": "exact row label for other income",
-    "NET_PROFIT": "exact row label for net profit/net income"
+    "NET_PROFIT": "exact row label for net profit/net income",
+    "DISCOUNTS": "exact row label for discounts/coupons/refunds or null",
+    "CONTROLLABLE_EXP": "exact row label for controllable expenses or null",
+    "DELIVERY_COMMISSION": "exact row label for delivery commission or null",
+    "ADVERTISING": "exact row label for advertising/marketing or null",
+    "FINANCIAL_EXPENSES": "exact row label for total financial expenses or null",
+    "CHARGEBACKS": "exact row label for chargebacks or null",
+    "INSURANCE": "exact row label for total insurance or null",
+    "LICENSES_PERMITS": "exact row label for licenses and permits or null",
+    "PROFESSIONAL_FEES": "exact row label for professional fees or null",
+    "OPEX_TAXES": "exact row label for taxes (operating expense line) or null",
+    "TOTAL_OPEX": "exact row label for total operating expenses or null"
   }
 }
 
@@ -842,8 +919,20 @@ function computeKPIsFromLineItems(lineItemDict, storeNames, overrideKpiNames = {
       if (m.INTEREST_EXPENSE   !== null) m.INTEREST_EXPENSE_PCT = safeDivide(m.INTEREST_EXPENSE,   rev);
       if (m.DEPRECIATION_EXP   !== null) m.DEPRECIATION_EXP_PCT = safeDivide(m.DEPRECIATION_EXP,  rev);
       if (m.AMORTIZATION_EXP   !== null) m.AMORTIZATION_EXP_PCT = safeDivide(m.AMORTIZATION_EXP,  rev);
-      if (m.OTHER_EXPENSES     !== null) m.OTHER_EXPENSES_PCT = safeDivide(m.OTHER_EXPENSES,        rev);
-      if (m.OTHER_INCOME       !== null) m.OTHER_INCOME_PCT  = safeDivide(m.OTHER_INCOME,           rev);
+      if (m.OTHER_EXPENSES     !== null) m.OTHER_EXPENSES_PCT       = safeDivide(m.OTHER_EXPENSES,        rev);
+      if (m.OTHER_INCOME       !== null) m.OTHER_INCOME_PCT          = safeDivide(m.OTHER_INCOME,           rev);
+      // ── Prell-specific % computations ──
+      if (m.DISCOUNTS          !== null) m.DISCOUNTS_PCT             = safeDivide(m.DISCOUNTS,              rev);
+      if (m.CONTROLLABLE_EXP   !== null) m.CONTROLLABLE_EXP_PCT      = safeDivide(m.CONTROLLABLE_EXP,       rev);
+      if (m.DELIVERY_COMMISSION!== null) m.DELIVERY_COMMISSION_PCT   = safeDivide(m.DELIVERY_COMMISSION,    rev);
+      if (m.ADVERTISING        !== null) m.ADVERTISING_PCT           = safeDivide(m.ADVERTISING,            rev);
+      if (m.FINANCIAL_EXPENSES !== null) m.FINANCIAL_EXPENSES_PCT    = safeDivide(m.FINANCIAL_EXPENSES,     rev);
+      if (m.CHARGEBACKS        !== null) m.CHARGEBACKS_PCT           = safeDivide(m.CHARGEBACKS,            rev);
+      if (m.INSURANCE          !== null) m.INSURANCE_PCT             = safeDivide(m.INSURANCE,              rev);
+      if (m.LICENSES_PERMITS   !== null) m.LICENSES_PERMITS_PCT      = safeDivide(m.LICENSES_PERMITS,       rev);
+      if (m.PROFESSIONAL_FEES  !== null) m.PROFESSIONAL_FEES_PCT     = safeDivide(m.PROFESSIONAL_FEES,      rev);
+      if (m.OPEX_TAXES         !== null) m.OPEX_TAXES_PCT            = safeDivide(m.OPEX_TAXES,             rev);
+      if (m.TOTAL_OPEX         !== null) m.TOTAL_OPEX_PCT            = safeDivide(m.TOTAL_OPEX,             rev);
     }
     storeMetrics[store] = m;
   });
@@ -964,12 +1053,18 @@ function step2_extractAndCompute(sheets, querySchema) {
   });
 
   // Portfolio averages — simple average of each store's individual % value
+  // Covers both SLZ and Prell KPI % keys
   const pctKpis = [
     "GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT",
     "FOOD_SUPPLIES_PCT","STAFF_PCT","RENT_PCT","FRANCHISE_FEES_PCT",
     "RENT_FRANCHISE_PCT","UTILITIES_PCT","REPAIRS_MAINTENANCE_PCT",
     "INTEREST_EXPENSE_PCT","DEPRECIATION_EXP_PCT","AMORTIZATION_EXP_PCT",
-    "OTHER_EXPENSES_PCT","OTHER_INCOME_PCT"
+    "OTHER_EXPENSES_PCT","OTHER_INCOME_PCT",
+    // Prell-specific %s
+    "DISCOUNTS_PCT","CONTROLLABLE_EXP_PCT","DELIVERY_COMMISSION_PCT",
+    "ADVERTISING_PCT","FINANCIAL_EXPENSES_PCT","CHARGEBACKS_PCT",
+    "INSURANCE_PCT","LICENSES_PERMITS_PCT","PROFESSIONAL_FEES_PCT",
+    "OPEX_TAXES_PCT","TOTAL_OPEX_PCT"
   ];
   const averages = {};
   pctKpis.forEach(pctKpi => {
@@ -1189,51 +1284,90 @@ function step2_fallback(sheets) {
 // ─────────────────────────────────────────────
 
 const KPI_LABELS = {
+  // ── Core (both groups) ──
   REVENUE:              "Net Revenue",
   FOOD_SUPPLIES:        "Food and Supplies",
   STAFF_COST:           "Operational Payroll Expenses",
   COGS:                 "Total COGS",
-  GROSS_PROFIT:         "Gross Margin",
-  GROSS_MARGIN_PCT:     "Gross Margin%",
-  RENT:                 "Rent",
+  GROSS_PROFIT:         "Gross Profit",
+  GROSS_MARGIN_PCT:     "Gross Profit%",
+  RENT:                 "TOTAL Rent",
   FRANCHISE_FEES:       "Franchise Fees",
   RENT_FRANCHISE_TOTAL: "Total Rent & Franchise Fees",
-  UTILITIES:            "Utilities",
-  REPAIRS_MAINTENANCE:  "Total Repairs and Maintenance",
-  OTHER_EXPENSES:       "Total Other Expenses",
-  EBITDA:               "EBITDA",
+  UTILITIES:            "TOTAL Utilities",
+  REPAIRS_MAINTENANCE:  "TOTAL Repairs and Maintenance",
+  OTHER_EXPENSES:       "TOTAL Other Expenses",
+  EBITDA:               "TOTAL Operating Profit / EBITDA",
   EBITDA_MARGIN_PCT:    "EBITDA%",
   INTEREST_EXPENSE:     "Interest Expense",
   DEPRECIATION_EXP:     "Depreciation Expense",
   AMORTIZATION_EXP:     "Amortization Expense",
   TOTAL_DEPR_INT:       "Total Interest / Depreciation & Amortizations",
   OPR_INCOME_BEFORE_MGT:"Operating Income before Mgt Fee & O/h Allocations",
-  MANAGEMENT_FEE:       "Management Fee",
+  MANAGEMENT_FEE:       "Management Fees",
   ADMIN_EXP:            "Administrative Expenses",
   NET_OPR_INCOME:       "Net Operating Income",
-  OTHER_INCOME:         "Other Income",           // NEW
+  OTHER_INCOME:         "Other Income",
   PBT:                  "PBT",
-  NET_PROFIT:           "Net Profit Before Tax",
-  NET_MARGIN_PCT:       "Net Margin%"
-  // NOTE: TAX removed — no longer a standalone KPI line
+  NET_PROFIT:           "Net Income",
+  NET_MARGIN_PCT:       "Net Margin%",
+  // ── Prell-specific ──
+  DISCOUNTS:            "Total Discounts, Coupons & Refunds",
+  CONTROLLABLE_EXP:     "Controllable Expenses",
+  DELIVERY_COMMISSION:  "Delivery Commission",
+  ADVERTISING:          "Advertising/Marketing",
+  FINANCIAL_EXPENSES:   "TOTAL Financial Expenses",
+  CHARGEBACKS:          "Chargebacks",
+  INSURANCE:            "TOTAL Insurance",
+  LICENSES_PERMITS:     "Licenses and Permits",
+  PROFESSIONAL_FEES:    "Professional Fees",
+  OPEX_TAXES:           "Taxes",
+  TOTAL_OPEX:           "TOTAL Operating Expenses",
 };
 
-// ── KPI_ORDER: display sequence matching the P&L waterfall ──
-// TAX is removed. OTHER_INCOME added after NET_OPR_INCOME.
+// ── KPI_ORDER: unified display sequence covering both SLZ and Prell P&L waterfalls ──
+// Prell heads are interspersed at the correct positions.
+// Any KPI not present in the file is simply skipped (no data = not shown).
 const KPI_ORDER = [
-  "REVENUE",
-  "FOOD_SUPPLIES", "STAFF_COST", "COGS",
-  "GROSS_PROFIT",
-  "RENT", "FRANCHISE_FEES", "RENT_FRANCHISE_TOTAL",
-  "UTILITIES", "REPAIRS_MAINTENANCE", "OTHER_EXPENSES",
-  "EBITDA",
-  "INTEREST_EXPENSE", "DEPRECIATION_EXP", "AMORTIZATION_EXP", "TOTAL_DEPR_INT",
-  "OPR_INCOME_BEFORE_MGT",
-  "MANAGEMENT_FEE", "ADMIN_EXP", "NET_OPR_INCOME",
-  "OTHER_INCOME",     // NEW — after Net Operating Income, before Net Profit
-  "PBT",
-  "NET_PROFIT"
-  // TAX intentionally omitted
+  // ── Revenue block ──
+  "GROSS_REVENUE",          // Prell: Gross Revenue
+  "DISCOUNTS",              // Prell: Total Discounts, Coupons & Refunds
+  "REVENUE",                // Both:  Net Revenue
+  // ── COGS block ──
+  "FOOD_SUPPLIES",          // Both:  Food and Supplies
+  "STAFF_COST",             // Both:  Operational Payroll Expenses
+  "COGS",                   // Both:  Total COGS
+  // ── Gross Profit ──
+  "GROSS_PROFIT",           // Both:  Gross Profit / Gross Margin
+  // ── Operating Expenses block ──
+  "CONTROLLABLE_EXP",       // Prell: Controllable Expenses
+  "DELIVERY_COMMISSION",    // Prell: Delivery Commission
+  "ADVERTISING",            // Prell: Advertising/Marketing
+  "FINANCIAL_EXPENSES",     // Prell: TOTAL Financial Expenses
+  "CHARGEBACKS",            // Prell: Chargebacks
+  "REPAIRS_MAINTENANCE",    // Both:  TOTAL Repairs and Maintenance
+  "UTILITIES",              // Both:  TOTAL Utilities
+  "INSURANCE",              // Prell: TOTAL Insurance
+  "LICENSES_PERMITS",       // Prell: Licenses and Permits
+  "PROFESSIONAL_FEES",      // Prell: Professional Fees
+  "RENT", "FRANCHISE_FEES", "RENT_FRANCHISE_TOTAL",  // Both
+  "OPEX_TAXES",             // Prell: Taxes (as opex line)
+  "MANAGEMENT_FEE",         // Both:  Management Fees
+  "ADMIN_EXP",              // Both:  Admin / O/H
+  "OTHER_EXPENSES",         // Both:  TOTAL Other Expenses
+  "TOTAL_OPEX",             // Prell: TOTAL Operating Expenses
+  // ── EBITDA ──
+  "EBITDA",                 // Both:  TOTAL Operating Profit / EBITDA
+  // ── Below EBITDA ──
+  "INTEREST_EXPENSE",       // Both:  Interest Expense
+  "DEPRECIATION_EXP",       // SLZ:   Depreciation Expense
+  "AMORTIZATION_EXP",       // SLZ:   Amortization Expense
+  "TOTAL_DEPR_INT",         // SLZ:   Total D&A
+  "OPR_INCOME_BEFORE_MGT",  // SLZ:   Operating Income before Mgt Fee
+  "NET_OPR_INCOME",         // SLZ:   Net Operating Income
+  "OTHER_INCOME",           // Both:  Other Income
+  "PBT",                    // SLZ:   PBT
+  "NET_PROFIT"              // Both:  Net Income / Net Profit
 ];
 
 function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
@@ -1395,17 +1529,29 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
 
   // ── Per-store Cost Structure data for Cost Structure Analysis ──
   b += `\n▶ STORE-WISE COST STRUCTURE (% of Revenue — for Cost Structure Analysis)\n${"─".repeat(58)}\n`;
+  // All possible cost heads — both SLZ and Prell.
+  // Only heads that have actual data (storeEntries.length > 0) will appear in the output.
   const costKPIs = [
-    { kpi: "FOOD_SUPPLIES",      pct: "FOOD_SUPPLIES_PCT",        label: "Food and Supplies" },
-    { kpi: "STAFF_COST",         pct: "STAFF_PCT",                label: "Operational Payroll Expenses" },
-    { kpi: "RENT",               pct: "RENT_PCT",                 label: "Rent" },
-    { kpi: "FRANCHISE_FEES",     pct: "FRANCHISE_FEES_PCT",       label: "Franchise Fees" },
-    { kpi: "UTILITIES",          pct: "UTILITIES_PCT",            label: "Utilities" },
-    { kpi: "REPAIRS_MAINTENANCE",pct: "REPAIRS_MAINTENANCE_PCT",  label: "Total Repairs and Maintenance" },
-    { kpi: "OTHER_EXPENSES",     pct: "OTHER_EXPENSES_PCT",       label: "Total Other Expenses" },
-    { kpi: "INTEREST_EXPENSE",   pct: "INTEREST_EXPENSE_PCT",     label: "Interest Expense" },
-    { kpi: "DEPRECIATION_EXP",   pct: "DEPRECIATION_EXP_PCT",     label: "Depreciation Expense" },
-    { kpi: "AMORTIZATION_EXP",   pct: "AMORTIZATION_EXP_PCT",     label: "Amortization Expense" },
+    { kpi: "FOOD_SUPPLIES",        pct: "FOOD_SUPPLIES_PCT",          label: "Food and Supplies" },
+    { kpi: "STAFF_COST",           pct: "STAFF_PCT",                  label: "Operational Payroll Expenses" },
+    { kpi: "CONTROLLABLE_EXP",     pct: "CONTROLLABLE_EXP_PCT",       label: "Controllable Expenses" },
+    { kpi: "DELIVERY_COMMISSION",  pct: "DELIVERY_COMMISSION_PCT",    label: "Delivery Commission" },
+    { kpi: "ADVERTISING",          pct: "ADVERTISING_PCT",            label: "Advertising/Marketing" },
+    { kpi: "FINANCIAL_EXPENSES",   pct: "FINANCIAL_EXPENSES_PCT",     label: "TOTAL Financial Expenses" },
+    { kpi: "CHARGEBACKS",          pct: "CHARGEBACKS_PCT",            label: "Chargebacks" },
+    { kpi: "REPAIRS_MAINTENANCE",  pct: "REPAIRS_MAINTENANCE_PCT",    label: "Total Repairs and Maintenance" },
+    { kpi: "UTILITIES",            pct: "UTILITIES_PCT",              label: "Utilities" },
+    { kpi: "INSURANCE",            pct: "INSURANCE_PCT",              label: "TOTAL Insurance" },
+    { kpi: "LICENSES_PERMITS",     pct: "LICENSES_PERMITS_PCT",       label: "Licenses and Permits" },
+    { kpi: "PROFESSIONAL_FEES",    pct: "PROFESSIONAL_FEES_PCT",      label: "Professional Fees" },
+    { kpi: "RENT",                 pct: "RENT_PCT",                   label: "TOTAL Rent" },
+    { kpi: "FRANCHISE_FEES",       pct: "FRANCHISE_FEES_PCT",         label: "Franchise Fees" },
+    { kpi: "OPEX_TAXES",           pct: "OPEX_TAXES_PCT",             label: "Taxes" },
+    { kpi: "MANAGEMENT_FEE",       pct: "MANAGEMENT_FEE_PCT",         label: "Management Fees" },
+    { kpi: "OTHER_EXPENSES",       pct: "OTHER_EXPENSES_PCT",         label: "Total Other Expenses" },
+    { kpi: "INTEREST_EXPENSE",     pct: "INTEREST_EXPENSE_PCT",       label: "Interest Expense" },
+    { kpi: "DEPRECIATION_EXP",     pct: "DEPRECIATION_EXP_PCT",      label: "Depreciation Expense" },
+    { kpi: "AMORTIZATION_EXP",     pct: "AMORTIZATION_EXP_PCT",      label: "Amortization Expense" },
   ];
   costKPIs.forEach(({ kpi, pct, label }) => {
     // Collect all stores that have data for this cost head
@@ -1563,21 +1709,25 @@ function parseUserIntent(userQuestion, allStoreNames = []) {
 }
 
 function getKPIOrderForIntent(intent) {
-  // TAX removed from FULL_ORDER. OTHER_INCOME added after NET_OPR_INCOME.
+  // Unified order covering both SLZ and Prell. Any KPI not in the file is simply skipped.
   const FULL_ORDER = [
-    "REVENUE",
+    "GROSS_REVENUE", "DISCOUNTS", "REVENUE",
     "FOOD_SUPPLIES", "STAFF_COST", "COGS",
     "GROSS_PROFIT",
+    "CONTROLLABLE_EXP", "DELIVERY_COMMISSION", "ADVERTISING",
+    "FINANCIAL_EXPENSES", "CHARGEBACKS",
+    "REPAIRS_MAINTENANCE", "UTILITIES", "INSURANCE",
+    "LICENSES_PERMITS", "PROFESSIONAL_FEES",
     "RENT", "FRANCHISE_FEES", "RENT_FRANCHISE_TOTAL",
-    "UTILITIES", "REPAIRS_MAINTENANCE", "OTHER_EXPENSES",
+    "OPEX_TAXES", "MANAGEMENT_FEE", "ADMIN_EXP",
+    "OTHER_EXPENSES", "TOTAL_OPEX",
     "EBITDA",
     "INTEREST_EXPENSE", "DEPRECIATION_EXP", "AMORTIZATION_EXP", "TOTAL_DEPR_INT",
     "OPR_INCOME_BEFORE_MGT",
-    "MANAGEMENT_FEE", "ADMIN_EXP", "NET_OPR_INCOME",
-    "OTHER_INCOME",     // NEW
+    "NET_OPR_INCOME",
+    "OTHER_INCOME",
     "PBT",
     "NET_PROFIT"
-    // TAX intentionally omitted
   ];
   if (!intent.kpiLimit) return FULL_ORDER;
   const limitIdx = FULL_ORDER.indexOf(intent.kpiLimit);
@@ -1605,33 +1755,33 @@ function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedR
   // ─────────────────────────────────────────────────────────────
   //  COST STRUCTURE ANALYSIS: expense heads in the required order
   // ─────────────────────────────────────────────────────────────
-  const costHeadsInOrder = [
-    "Food and Supplies",
-    "Operational Payroll Expenses",
-    "Rent",
-    "Franchise Fees",
-    "Utilities",
-    "Total Repairs and Maintenance",
-    "Total Other Expenses",
-    "Interest Expense",
-    "Depreciation Expense",
-    "Amortization Expense"
-  ].filter(h => {
-    // Only include cost heads that are within KPI scope
-    const kpiMap = {
-      "Food and Supplies":          "FOOD_SUPPLIES",
-      "Operational Payroll Expenses":"STAFF_COST",
-      "Rent":                        "RENT",
-      "Franchise Fees":              "FRANCHISE_FEES",
-      "Utilities":                   "UTILITIES",
-      "Total Repairs and Maintenance":"REPAIRS_MAINTENANCE",
-      "Total Other Expenses":        "OTHER_EXPENSES",
-      "Interest Expense":            "INTEREST_EXPENSE",
-      "Depreciation Expense":        "DEPRECIATION_EXP",
-      "Amortization Expense":        "AMORTIZATION_EXP",
-    };
-    return kpiScope.includes(kpiMap[h]);
-  });
+  // All possible cost heads across both SLZ and Prell — filtered to only those
+  // present in the current file's KPI scope (i.e. matched from the data).
+  const allCostHeads = [
+    { label: "Food and Supplies",           kpi: "FOOD_SUPPLIES" },
+    { label: "Operational Payroll Expenses",kpi: "STAFF_COST" },
+    { label: "Controllable Expenses",       kpi: "CONTROLLABLE_EXP" },
+    { label: "Delivery Commission",         kpi: "DELIVERY_COMMISSION" },
+    { label: "Advertising/Marketing",       kpi: "ADVERTISING" },
+    { label: "TOTAL Financial Expenses",    kpi: "FINANCIAL_EXPENSES" },
+    { label: "Chargebacks",                 kpi: "CHARGEBACKS" },
+    { label: "TOTAL Repairs and Maintenance",kpi: "REPAIRS_MAINTENANCE" },
+    { label: "TOTAL Utilities",             kpi: "UTILITIES" },
+    { label: "TOTAL Insurance",             kpi: "INSURANCE" },
+    { label: "Licenses and Permits",        kpi: "LICENSES_PERMITS" },
+    { label: "Professional Fees",           kpi: "PROFESSIONAL_FEES" },
+    { label: "TOTAL Rent",                  kpi: "RENT" },
+    { label: "Franchise Fees",              kpi: "FRANCHISE_FEES" },
+    { label: "Taxes",                       kpi: "OPEX_TAXES" },
+    { label: "Management Fees",             kpi: "MANAGEMENT_FEE" },
+    { label: "Total Other Expenses",        kpi: "OTHER_EXPENSES" },
+    { label: "Interest Expense",            kpi: "INTEREST_EXPENSE" },
+    { label: "Depreciation Expense",        kpi: "DEPRECIATION_EXP" },
+    { label: "Amortization Expense",        kpi: "AMORTIZATION_EXP" },
+  ];
+  const costHeadsInOrder = allCostHeads
+    .filter(h => kpiScope.includes(h.kpi))
+    .map(h => h.label);
 
   const rawQuestion = userQuestion && userQuestion.trim() ? userQuestion.trim() : "Full P&L analysis";
   const isBrand = !!intent.isBrandReport;
