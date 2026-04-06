@@ -874,6 +874,29 @@ RULES:
 //  STEP 2 — CODE DOES ALL THE MATH
 // ─────────────────────────────────────────────
 
+// ── KPIs that should NEVER be sourced from the benchmark column,
+//    even if the file happens to contain a non-zero value for them.
+//    These heads are store-specific financing/accounting decisions and
+//    have no meaningful industry benchmark — the AI must use portfolio
+//    averages (excluding 0%) instead.
+const NO_BENCHMARK_KPIS = new Set([
+  "INTEREST_EXPENSE",
+  "DEPRECIATION_EXP",
+  "AMORTIZATION_EXP",
+  "TOTAL_DEPR_INT",
+]);
+
+// ── KPIs whose portfolio-average % should exclude stores with a 0% value.
+//    These are heads where a 0 means "this store has no such expense" (not
+//    "zero spend"), and including those stores would artificially drag the
+//    average down, making it misleading as a comparison baseline.
+const EXCLUDE_ZEROS_FROM_AVG_KPIS = new Set([
+  "INTEREST_EXPENSE",
+  "DEPRECIATION_EXP",
+  "AMORTIZATION_EXP",
+  "TOTAL_DEPR_INT",
+]);
+
 function computeKPIsFromLineItems(lineItemDict, storeNames, overrideKpiNames = {}) {
   const kpiMapping = {};
   const allDescs = [...new Set(Object.values(lineItemDict).flatMap(d => Object.keys(d)))];
@@ -1052,8 +1075,11 @@ function step2_extractAndCompute(sheets, querySchema) {
     if (vals.length) totals[kpi] = Math.round(vals.reduce((a,b) => a+b, 0));
   });
 
-  // Portfolio averages — simple average of each store's individual % value
-  // Covers both SLZ and Prell KPI % keys
+  // ── Portfolio averages ──
+  // For most KPIs: include all stores with a finite % value (including 0%).
+  // For KPIs in EXCLUDE_ZEROS_FROM_AVG_KPIS (Interest Expense, Depreciation, etc.):
+  //   exclude stores with a 0% value, because 0% means "no such expense" for that store,
+  //   not genuine zero spend — including them artificially drags the average down.
   const pctKpis = [
     "GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT",
     "FOOD_SUPPLIES_PCT","STAFF_PCT","RENT_PCT","FRANCHISE_FEES_PCT",
@@ -1066,18 +1092,29 @@ function step2_extractAndCompute(sheets, querySchema) {
     "INSURANCE_PCT","LICENSES_PERMITS_PCT","PROFESSIONAL_FEES_PCT",
     "OPEX_TAXES_PCT","TOTAL_OPEX_PCT"
   ];
-  // Simple average of per-store % values.
-  // IMPORTANT: include stores where the % is exactly 0 (valid — means $0 for that head).
-  // A store is included if its % value is a finite number (including 0).
-  // A store is excluded only if its % is null/undefined (KPI row absent from file for that store).
+
   const averages = {};
   pctKpis.forEach(pctKpi => {
+    // Derive the base KPI key from the _PCT suffix (e.g. "INTEREST_EXPENSE_PCT" → "INTEREST_EXPENSE")
+    const baseKpi = pctKpi.replace(/_PCT$/, "");
+    const excludeZeros = EXCLUDE_ZEROS_FROM_AVG_KPIS.has(baseKpi);
+
     const vals = storeNames.map(s => {
-      const v = cyMetrics[s]?.[pctKpi];
-      // Include 0 explicitly — isFinite(0) is true and 0 !== null
+      const v = storeMetrics[s]?.[pctKpi];
       return (v !== null && v !== undefined && isFinite(v)) ? v : null;
-    }).filter(v => v !== null);
-    if (vals.length) averages[pctKpi] = roundTo2(vals.reduce((a, b) => a + b, 0) / vals.length);
+    }).filter(v => {
+      if (v === null) return false;
+      // For heads where 0% means "no expense", exclude those stores from the average
+      if (excludeZeros && v === 0) return false;
+      return true;
+    });
+
+    if (vals.length) {
+      averages[pctKpi] = roundTo2(vals.reduce((a, b) => a + b, 0) / vals.length);
+      if (excludeZeros) {
+        console.log(`📊 ${pctKpi} avg (excl. 0%): ${averages[pctKpi]}% across ${vals.length} stores (0% stores excluded)`);
+      }
+    }
   });
 
   const ebitdaRanking = storeNames
@@ -1214,7 +1251,7 @@ function step2_extractAndCompute(sheets, querySchema) {
     ebitdaRanking, revenueRanking,
     yoyComparisons, portfolioYoY,
     allLineItems: cyLineItemDict,
-    benchmarkData    // NEW: benchmark column values keyed by line item description
+    benchmarkData    // benchmark column values keyed by line item description
   };
 }
 
@@ -1452,65 +1489,73 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     ].filter(k => averages[k] !== undefined);
     if (avgKPIs.length) {
       b += `\n▶ PORTFOLIO AVERAGES (all ${storeCount} stores)\n${"─".repeat(58)}\n`;
+      // Add a note for heads where 0% stores were excluded from the average
       avgKPIs.forEach(kpi => {
-        if (averages[kpi] !== undefined)
-          b += `  ${(KPI_LABELS[kpi]||kpi).padEnd(22)}: ${formatPct(averages[kpi])}\n`;
+        if (averages[kpi] !== undefined) {
+          const baseKpi = kpi.replace(/_PCT$/, "");
+          const zeroNote = EXCLUDE_ZEROS_FROM_AVG_KPIS.has(baseKpi)
+            ? " [avg excludes stores with 0%]"
+            : "";
+          b += `  ${(KPI_LABELS[kpi]||kpi).padEnd(22)}: ${formatPct(averages[kpi])}${zeroNote}\n`;
+        }
       });
     }
   }
 
   // ── Benchmark data block ──
-  // Benchmark values from the report's Benchmark column are shown here in TWO forms:
-  // 1. Raw amount (absolute figure as stored in the file)
-  // 2. % of Benchmark Revenue (so the AI can compare cost ratios to benchmark ratios)
+  // The benchmark column in the file stores values AS percentages already (e.g. 28.1 = 28.1%).
+  // IMPORTANT: Interest Expense, Depreciation Expense, Amortization Expense, and Total D&A
+  //   are ALWAYS treated as having NO benchmark — even if the file has a non-zero value for
+  //   them — because these are store-specific financing/accounting decisions with no
+  //   meaningful industry benchmark. They are stripped from benchmarkPctByKpi below.
   if (benchmarkData && Object.keys(benchmarkData).length > 0) {
     b += `\n▶ BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE\n`;
     b += `   (These are the real benchmark figures from the "Benchmark" column — NOT portfolio averages)\n`;
     b += `${"─".repeat(58)}\n`;
 
-    // Find benchmark revenue to compute benchmark %s
-    // The benchmark column in the file stores values AS percentages already (e.g. 28.1 = 28.1%).
-    // Do NOT divide by revenue — just display the raw value directly via formatPct.
-    // A benchmark value of 0 (or null) is treated as "not available" — it means the file
-    // has no meaningful benchmark for that head (e.g. Interest Expense, Depreciation).
     const benchmarkPctByKpi = {};
     Object.entries(benchmarkData).forEach(([desc, val]) => {
       const kpi = matchKPI(desc);
       if (!kpi) return;
+      // Strip KPIs that must never use a benchmark (interest, depreciation, amortization)
+      if (NO_BENCHMARK_KPIS.has(kpi)) return;
       // Only store if the value is a meaningful non-zero positive percentage
-      // val == 0 means the benchmark column had a blank/zero for this head → treat as absent
       if (val !== null && val !== undefined && isFinite(val) && val > 0) {
         benchmarkPctByKpi[kpi] = val;
       }
     });
 
-    // Display: one line per KPI that has a valid benchmark %
+    // Display: one line per KPI that has a valid benchmark % (NO_BENCHMARK_KPIS already excluded)
     Object.entries(benchmarkData).forEach(([desc, val]) => {
       const kpi = matchKPI(desc);
+      if (!kpi) return;
+      if (NO_BENCHMARK_KPIS.has(kpi)) return; // never display benchmark for these heads
       const label = kpi ? (KPI_LABELS[kpi] || kpi) : desc;
       if (kpi && benchmarkPctByKpi[kpi] !== undefined) {
         b += `  ${label.padEnd(36)}: ${formatPct(val)}\n`;
       }
     });
 
-    // Flag cost heads that have NO benchmark (absent OR zero in file) so AI uses portfolio avg
-    const costKpiKeys = ["FOOD_SUPPLIES","STAFF_COST","RENT","FRANCHISE_FEES","UTILITIES",
-                         "REPAIRS_MAINTENANCE","OTHER_EXPENSES","INTEREST_EXPENSE",
-                         "DEPRECIATION_EXP","AMORTIZATION_EXP"];
+    // Flag cost heads that have NO benchmark (absent, zero, or explicitly excluded)
+    const costKpiKeys = [
+      "FOOD_SUPPLIES","STAFF_COST","RENT","FRANCHISE_FEES","UTILITIES",
+      "REPAIRS_MAINTENANCE","OTHER_EXPENSES",
+      // Always flagged as no-benchmark regardless of file content:
+      "INTEREST_EXPENSE","DEPRECIATION_EXP","AMORTIZATION_EXP","TOTAL_DEPR_INT"
+    ];
     const missingBenchmark = costKpiKeys.filter(k => benchmarkPctByKpi[k] === undefined);
     if (missingBenchmark.length > 0) {
       b += `\n  ⚠ NO BENCHMARK for: ${missingBenchmark.map(k => KPI_LABELS[k]||k).join(", ")}\n`;
-      b += `    → For these heads, use portfolio simple average % and highest/lowest store instead.\n`;
+      b += `    → For these heads, use portfolio simple average % (excl. 0% stores where noted) and highest/lowest store instead.\n`;
     }
     b += `\n  ⚑ These % values are taken directly from the file's Benchmark column — use as-is.\n`;
+    b += `  ⚑ Interest Expense, Depreciation Expense, Amortization Expense, and Total D&A have NO industry benchmark — always use portfolio avg (excl. 0%) for these heads.\n`;
   } else {
     b += `\n▶ BENCHMARK COLUMN: Not found in this file. Use portfolio averages for comparisons.\n`;
   }
 
   // ── Per-store YoY data for Store-wise YoY table ──
   // ── Pre-build the complete Store-wise YoY markdown table in CODE ──
-  // Injected as a ready-made table so the AI copies it verbatim — no token cost for generation,
-  // no risk of truncation or missing rows regardless of store count.
   {
     const cols = ["Sr.No", "Store", "Rev CY", "Rev LY", "Rev Δ%", "Gross Profit CY", "GP LY", "EBITDA CY", "EBITDA LY", "EBITDA Δ%"];
     const rows = activeStores.map((store, idx) => {
@@ -1541,8 +1586,6 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
 
   // ── Per-store Cost Structure data for Cost Structure Analysis ──
   b += `\n▶ STORE-WISE COST STRUCTURE (% of Revenue — for Cost Structure Analysis)\n${"─".repeat(58)}\n`;
-  // All possible cost heads — both SLZ and Prell.
-  // Only heads that have actual data (storeEntries.length > 0) will appear in the output.
   const costKPIs = [
     { kpi: "FOOD_SUPPLIES",        pct: "FOOD_SUPPLIES_PCT",          label: "Food and Supplies" },
     { kpi: "STAFF_COST",           pct: "STAFF_PCT",                  label: "Operational Payroll Expenses" },
@@ -1566,7 +1609,6 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     { kpi: "AMORTIZATION_EXP",     pct: "AMORTIZATION_EXP_PCT",      label: "Amortization Expense" },
   ];
   costKPIs.forEach(({ kpi, pct, label }) => {
-    // Collect all stores that have data for this cost head
     const storeEntries = activeStores
       .map(store => ({
         store,
@@ -1577,7 +1619,6 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
 
     if (storeEntries.length === 0) return;
 
-    // Sort by % descending to find highest/lowest reliably
     const sorted = [...storeEntries].sort((a, b) => {
       const pa = (a.pctVal !== null && a.pctVal !== undefined) ? a.pctVal : -Infinity;
       const pb = (b.pctVal !== null && b.pctVal !== undefined) ? b.pctVal : -Infinity;
@@ -1586,13 +1627,14 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
 
     const highest = sorted[0];
 
-    // Lowest: skip stores with 0% (or null %) — use 2nd lowest if lowest is 0%
-    // Filter to stores with a meaningful positive % > 0
     const nonZeroEntries = sorted.filter(e =>
       e.pctVal !== null && e.pctVal !== undefined && isFinite(e.pctVal) && e.pctVal > 0
     );
-    // The true lowest is the last entry in nonZeroEntries (sorted desc → last = smallest positive)
     const lowest = nonZeroEntries.length > 0 ? nonZeroEntries[nonZeroEntries.length - 1] : null;
+
+    // For heads in EXCLUDE_ZEROS_FROM_AVG_KPIS, show the zero-excluded avg with a note
+    const baseKpi = kpi;
+    const avgNote = EXCLUDE_ZEROS_FROM_AVG_KPIS.has(baseKpi) ? " (excl. stores with 0%)" : "";
 
     b += `\n  [${label}]\n`;
     b += `  HIGHEST: ${highest.store} — ${formatNum(highest.amt)} (${highest.pctVal !== null ? formatPct(highest.pctVal) : "N/A"})\n`;
@@ -1601,7 +1643,10 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     } else {
       b += `  LOWEST: No stores with positive % found\n`;
     }
-    b += `  Portfolio simple avg: ${averages[pct] !== undefined ? formatPct(averages[pct]) : "N/A"}\n`;
+    b += `  Portfolio simple avg${avgNote}: ${averages[pct] !== undefined ? formatPct(averages[pct]) : "N/A"}\n`;
+    if (NO_BENCHMARK_KPIS.has(baseKpi)) {
+      b += `  ⚠ NO BENCHMARK available for ${label} — use portfolio avg (excl. 0%) only.\n`;
+    }
     b += `  All stores (sorted high→low %):\n`;
     sorted.forEach(e => {
       const flag = e === highest ? " ← HIGHEST" : (e === lowest ? " ← LOWEST (excl. 0%)" : "");
@@ -1707,7 +1752,6 @@ function parseUserIntent(userQuestion, allStoreNames = []) {
   const wantsEbitdaRank  = /top.*ebid?ta|bottom.*ebid?ta|ebid?ta.*top|ebid?ta.*bottom|ebid?ta.*rank|rank.*ebid?ta|best.*ebid?ta|worst.*ebid?ta/.test(q);
   const isAllStoreAnalysis = !isSpecificStore && !storeFilter && !isRanking;
 
-  // Brand report detection — if user says "brand", "brands", "brand report", "brand data" etc.
   const isBrandReport = /\bbrand\b|\bbrands\b|brand report|brand data|brand.?wise|brand analysis/i.test(q);
 
   console.log("🎯 Intent: kpiLimit=" + kpiLimit + ", stores=" + JSON.stringify(specificStores) + ", deep=" + isDeepAnalysis + ", isBrandReport=" + isBrandReport);
@@ -1721,7 +1765,6 @@ function parseUserIntent(userQuestion, allStoreNames = []) {
 }
 
 function getKPIOrderForIntent(intent) {
-  // Unified order covering both SLZ and Prell. Any KPI not in the file is simply skipped.
   const FULL_ORDER = [
     "GROSS_REVENUE", "DISCOUNTS", "REVENUE",
     "FOOD_SUPPLIES", "STAFF_COST", "COGS",
@@ -1764,11 +1807,6 @@ function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedR
   if (isSpecific) scopeNote += ` Focus ONLY on: ${intent.specificStores.join(", ")}.`;
   if (exclusionNote) scopeNote += exclusionNote;
 
-  // ─────────────────────────────────────────────────────────────
-  //  COST STRUCTURE ANALYSIS: expense heads in the required order
-  // ─────────────────────────────────────────────────────────────
-  // All possible cost heads across both SLZ and Prell — filtered to only those
-  // present in the current file's KPI scope (i.e. matched from the data).
   const allCostHeads = [
     { label: "Food and Supplies",           kpi: "FOOD_SUPPLIES" },
     { label: "Operational Payroll Expenses",kpi: "STAFF_COST" },
@@ -1798,7 +1836,6 @@ function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedR
   const rawQuestion = userQuestion && userQuestion.trim() ? userQuestion.trim() : "Full P&L analysis";
   const isBrand = !!intent.isBrandReport;
 
-  // Dynamic terminology: "store" for store reports, "brand" for brand reports
   const unitWord     = isBrand ? "brand"     : "store";
   const unitWordCap  = isBrand ? "Brand"     : "Store";
   const unitWordPl   = isBrand ? "brands"    : "stores";
@@ -1836,8 +1873,6 @@ Write a detailed MIS P&L commentary with these sections IN THIS EXACT ORDER:
 `;
 
   if (!isSpecific) {
-    // ── ALL-STORE ANALYSIS ──
-
     if (hasLY) {
       instructions += `## Year-on-Year Analysis — ${isBrand ? "All Brands" : "Portfolio"}
 Present as a markdown table with columns: | KPI | CY Total | LY Total | Δ Amount | Δ% |
@@ -1853,7 +1888,6 @@ MANDATORY TABLE RULES:
 `;
     }
 
-    // ── Store-wise YoY Comparison Table (replaces Store Performance Review) ──
     instructions += `## ${unitWordCap}-wise Year-on-Year Comparison
 
 The data block contains a section called "STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)".
@@ -1872,10 +1906,8 @@ ${isBrand ? `NOTE: The "Store" column header in the table should be relabelled "
 `;
     }
 
-    // ── Cost Structure Analysis (expanded, following required head order) ──
     if (costHeadsInOrder.length > 0) {
       if (isBrand) {
-        // ── BRAND REPORT: no benchmark — compare brands against each other ──
         instructions += `## Cost Structure Analysis
 
 For each of the following expense heads (IN THIS ORDER), write a dedicated subsection:
@@ -1905,7 +1937,6 @@ After covering all the above heads, add:
 
 `;
       } else {
-        // ── STORE REPORT: full benchmark + inter-store comparison ──
         instructions += `## Cost Structure Analysis
 
 For each of the following expense heads (IN THIS ORDER), write a dedicated subsection:
@@ -1914,17 +1945,16 @@ ${costHeadsInOrder.map((h, i) => `${i+1}. ${h}`).join("\n")}
 For EACH expense head, your subsection MUST cover ALL THREE of the following:
 
 **a) Comparison with Industry Standards / Benchmark**
-The data block has a "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE" section. Each line shows the benchmark % exactly as it appears in the file (e.g. "Food and Supplies: 28.0%").
+The data block has a "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE" section.
 
-RULES:
-- If the benchmark % for this expense head IS listed in the data block:
-  → State the benchmark % using the exact figure from the data block (1 decimal, e.g. 28.0%).
-  → Compare the portfolio simple average % to that benchmark %.
-  → Do NOT compute or mention pp variances. Do NOT mention raw dollar amounts.
-- If the data block says "⚠ NO BENCHMARK for: [this head]" OR the head is not listed:
-  → State: "No benchmark available in the report for this head."
-  → Then provide the portfolio simple average % (from "Portfolio simple avg" in the data block).
-  → Do NOT invent a benchmark or use an industry guess.
+CRITICAL BENCHMARK RULES — read carefully:
+- Interest Expense, Depreciation Expense, Amortization Expense, and Total D&A NEVER have a benchmark.
+  These heads are ALWAYS listed under "⚠ NO BENCHMARK for:" in the data block.
+  For these heads, ALWAYS write: "No industry benchmark is available for [head name]."
+  Then use the portfolio simple average % (labelled "Portfolio simple avg (excl. stores with 0%)" in the data block for these heads).
+  NEVER say the portfolio average IS the benchmark. NEVER imply alignment with industry standards for these heads.
+- For all other heads: if the head IS listed in the benchmark section with a % value, state that % and compare the portfolio average to it.
+- If the head is listed under "⚠ NO BENCHMARK for:" for any reason, say "No benchmark available" and use portfolio avg.
 
 **b) Comparison Among All Stores**
 The data block "STORE-WISE COST STRUCTURE" section lists stores sorted HIGH → LOW % for each head,
@@ -1935,6 +1965,7 @@ RULES:
 - State the LOWEST store and its % — use the store labelled "← LOWEST (excl. 0%)" in the data block.
   NEVER pick a store at 0% as the lowest. The data block already excludes 0% entries for you.
 - State the portfolio simple average % (labelled "Portfolio simple avg" in the data block).
+- For Interest Expense and Depreciation: note that the average excludes stores with 0% (no such expense).
 - Mention any other stores that stand out as notably high or low (>3pp from the avg).
 
 **c) Suggestive Measures / Observations**
@@ -1963,7 +1994,6 @@ After covering all the above heads, add:
     }
 
   } else {
-    // ── SPECIFIC STORE/BRAND ANALYSIS ──
     instructions += `## ${unitWordCap} Performance — ${intent.specificStores.join(" & ")}
 (Detailed paragraph for each specified ${unitWord}. Cover all KPIs in scope with exact figures.)
 
@@ -1989,6 +2019,7 @@ After covering all the above heads, add:
 - Negatives stay negative.
 - No Recommendations section.
 - ${unitWordCap}-wise YoY table must include ALL ${totalStores} ${unitWordPl} with no truncation.
+- INTEREST EXPENSE & DEPRECIATION EXPENSE: Never state or imply a benchmark exists for these heads. Never say the portfolio average "aligns with industry standards" — just state the average and note it excludes stores with no such expense (0%).
 ${isBrand ? "- This is a BRAND report: use the word 'brand/brands' everywhere, NOT 'store/stores'." : ""}`;
 
   if (showEbitdaRank && kpiScope.includes("EBITDA") && !isSpecific) {
@@ -2035,7 +2066,8 @@ ABSOLUTE RULES — NEVER BREAK:
 13. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |).
 14. COST STRUCTURE ANALYSIS: For each expense head, cover (a) benchmark comparison (b) inter-store comparison (c) observation. Follow the exact order specified.
 15. BENCHMARK SOURCE: The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section shows the benchmark % exactly as stored in the file. Use ONLY that % value — never compute or mention pp variances, never mention raw amounts. If a head has no benchmark (marked '⚠ NO BENCHMARK'), say so and use the portfolio simple average instead.
-16. COST STRUCTURE HIGHEST/LOWEST: Always use the store explicitly labelled '← HIGHEST' and '← LOWEST (excl. 0%)' in the data block. NEVER pick a 0% store as the lowest.${compact ? "\n15. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
+16. COST STRUCTURE HIGHEST/LOWEST: Always use the store explicitly labelled '← HIGHEST' and '← LOWEST (excl. 0%)' in the data block. NEVER pick a 0% store as the lowest.
+17. INTEREST EXPENSE & DEPRECIATION EXPENSE BENCHMARK RULE: These heads have NO industry benchmark — EVER. The data block will always mark them under '⚠ NO BENCHMARK'. NEVER write that the portfolio average "aligns with industry standards" or implies any benchmark for these heads. Only state: "No industry benchmark is available for [head]." Then report the portfolio simple average (which excludes stores with 0%) as a reference point only.${compact ? "\n18. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
     },
     {
       role: "user",
