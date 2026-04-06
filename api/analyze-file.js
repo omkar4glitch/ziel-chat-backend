@@ -1066,10 +1066,17 @@ function step2_extractAndCompute(sheets, querySchema) {
     "INSURANCE_PCT","LICENSES_PERMITS_PCT","PROFESSIONAL_FEES_PCT",
     "OPEX_TAXES_PCT","TOTAL_OPEX_PCT"
   ];
+  // Simple average of per-store % values.
+  // IMPORTANT: include stores where the % is exactly 0 (valid — means $0 for that head).
+  // A store is included if its % value is a finite number (including 0).
+  // A store is excluded only if its % is null/undefined (KPI row absent from file for that store).
   const averages = {};
   pctKpis.forEach(pctKpi => {
-    const vals = storeNames.map(s => cyMetrics[s]?.[pctKpi])
-      .filter(v => v !== null && v !== undefined && isFinite(v));
+    const vals = storeNames.map(s => {
+      const v = cyMetrics[s]?.[pctKpi];
+      // Include 0 explicitly — isFinite(0) is true and 0 !== null
+      return (v !== null && v !== undefined && isFinite(v)) ? v : null;
+    }).filter(v => v !== null);
     if (vals.length) averages[pctKpi] = roundTo2(vals.reduce((a, b) => a + b, 0) / vals.length);
   });
 
@@ -1464,15 +1471,20 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     // Find benchmark revenue to compute benchmark %s
     // The benchmark column in the file stores values AS percentages already (e.g. 28.1 = 28.1%).
     // Do NOT divide by revenue — just display the raw value directly via formatPct.
+    // A benchmark value of 0 (or null) is treated as "not available" — it means the file
+    // has no meaningful benchmark for that head (e.g. Interest Expense, Depreciation).
     const benchmarkPctByKpi = {};
     Object.entries(benchmarkData).forEach(([desc, val]) => {
       const kpi = matchKPI(desc);
       if (!kpi) return;
-      // val is already a percentage figure from the file (e.g. 28.1 means 28.1%)
-      benchmarkPctByKpi[kpi] = val;
+      // Only store if the value is a meaningful non-zero positive percentage
+      // val == 0 means the benchmark column had a blank/zero for this head → treat as absent
+      if (val !== null && val !== undefined && isFinite(val) && val > 0) {
+        benchmarkPctByKpi[kpi] = val;
+      }
     });
 
-    // Display: one line per KPI, showing the % exactly as stored in the file
+    // Display: one line per KPI that has a valid benchmark %
     Object.entries(benchmarkData).forEach(([desc, val]) => {
       const kpi = matchKPI(desc);
       const label = kpi ? (KPI_LABELS[kpi] || kpi) : desc;
@@ -1481,7 +1493,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
       }
     });
 
-    // Flag cost heads that have NO benchmark entry so AI falls back to portfolio avg
+    // Flag cost heads that have NO benchmark (absent OR zero in file) so AI uses portfolio avg
     const costKpiKeys = ["FOOD_SUPPLIES","STAFF_COST","RENT","FRANCHISE_FEES","UTILITIES",
                          "REPAIRS_MAINTENANCE","OTHER_EXPENSES","INTEREST_EXPENSE",
                          "DEPRECIATION_EXP","AMORTIZATION_EXP"];
