@@ -7,10 +7,6 @@ import {
 } from "docx";
 import JSZip from "jszip";
 
-// ─────────────────────────────────────────────
-//  CORS + BODY PARSER
-// ─────────────────────────────────────────────
-
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -30,10 +26,6 @@ async function parseJsonBody(req) {
   });
 }
 
-// ─────────────────────────────────────────────
-//  FILE DOWNLOAD
-// ─────────────────────────────────────────────
-
 async function downloadFileToBuffer(url, maxBytes = 30 * 1024 * 1024, timeoutMs = 25000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -52,10 +44,6 @@ async function downloadFileToBuffer(url, maxBytes = 30 * 1024 * 1024, timeoutMs 
   }
   return { buffer: Buffer.concat(chunks), contentType };
 }
-
-// ─────────────────────────────────────────────
-//  FILE TYPE DETECTION
-// ─────────────────────────────────────────────
 
 function detectFileType(fileUrl, contentType, buffer) {
   const u = (fileUrl || "").toLowerCase();
@@ -80,10 +68,6 @@ function detectFileType(fileUrl, contentType, buffer) {
   if (u.endsWith(".jpg")  || ct.includes("image/jpeg"))       return "jpg";
   return "txt";
 }
-
-// ─────────────────────────────────────────────
-//  FILE CONTENT EXTRACTION
-// ─────────────────────────────────────────────
 
 function bufferToText(buf) {
   if (!buf) return "";
@@ -145,12 +129,7 @@ async function extractImage(_buf, fileType) {
 
 function extractXlsx(buffer) {
   try {
-    const wb = XLSX.read(buffer, {
-      type: "buffer",
-      cellDates: false,
-      raw: false,
-      defval: null
-    });
+    const wb = XLSX.read(buffer, { type: "buffer", cellDates: false, raw: false, defval: null });
     if (!wb.SheetNames.length) return { type: "xlsx", sheets: [] };
     const sheets = wb.SheetNames.map(name => {
       const ws = wb.Sheets[name];
@@ -187,10 +166,6 @@ function parseCSV(csvText) {
   });
 }
 
-// ─────────────────────────────────────────────
-//  NEGATIVE-SAFE NUMERIC PARSING
-// ─────────────────────────────────────────────
-
 function parseAmount(raw) {
   if (typeof raw === "number") return isFinite(raw) ? raw : null;
   if (raw === null || raw === undefined) return null;
@@ -220,221 +195,74 @@ function roundTo2(n) {
   return Math.round(n * 100) / 100;
 }
 
-// US-style WHOLE numbers: 1,234,567 | Negatives: -1,234,567 (no decimals on amounts)
 function formatNum(n) {
   if (n === undefined || n === null || !isFinite(n)) return "N/A";
   return Math.round(Number(n)).toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
-// ─────────────────────────────────────────────
-//  FIX: Percentage rounding — always rounds HALF-UP (away from zero)
-//  e.g. 4.65 → 4.7 (not 4.6 as JS default banker's rounding may give)
-//  e.g. -4.65 → -4.7 (magnitude rounds up, sign preserved)
-// ─────────────────────────────────────────────
 function roundHalfUp(n, decimals = 1) {
   if (n === null || n === undefined || !isFinite(n)) return null;
   const factor = Math.pow(10, decimals);
-  // Use sign-preserving half-up: multiply by factor, round positively, divide back
   const sign = n < 0 ? -1 : 1;
   return sign * Math.floor(Math.abs(n) * factor + 0.5) / factor;
 }
 
-// Percentage to 1 decimal: 12.3% / -4.5%
 function formatPct(n) {
   if (n === undefined || n === null || !isFinite(n)) return "N/A";
   const r = roundHalfUp(Number(n), 1);
   return `${r.toFixed(1)}%`;
 }
 
-// Delta percentage with explicit + for positive
 function formatDeltaPct(n) {
   if (n === undefined || n === null || !isFinite(n)) return "N/A";
   const r = roundHalfUp(Number(n), 1);
   return `${r >= 0 ? "+" : ""}${r.toFixed(1)}%`;
 }
 
-// safeDivide returns rounded-half-up percentage value (stored at 2dp for precision)
 function safeDivide(num, den) {
   if (!den || den === 0) return null;
-  // Store at full precision internally; formatPct/formatDeltaPct do the display rounding
   return roundTo2((num / den) * 100);
 }
 
-// ─────────────────────────────────────────────
-//  KPI PATTERN MATCHING
-// ─────────────────────────────────────────────
-
 const KPI_PATTERNS = {
-  // ── Revenue ──
-  NET_REVENUE:  [
-    "net revenue","total net revenue","net sales","total net sales","net income from sales",
-    "net turnover","revenue (net)","sales (net)"
-  ],
-  GROSS_REVENUE:[
-    "gross revenue","gross sales","total revenue","total sales","revenue dd","revenue br",
-    "revenue","sales","turnover","total income"
-  ],
-
-  // ── Food & Supplies ──
-  FOOD_SUPPLIES: [
-    "food and supplies","food & supplies","food cost","food and supply"
-  ],
-
-  // ── Operational Payroll ──
-  STAFF_COST: [
-    "operational payroll expenses","operational payroll","staff cost","employee cost",
-    "payroll","salary","wages","personnel cost","labour cost","labor cost",
-    "total labor","total labour","payroll expense","total payroll"
-  ],
-
-  // ── Total COGS ──
-  COGS: [
-    "total cogs","cost of goods sold","cost of sales","cogs","direct cost",
-    "cost of revenue","cost of material","material cost","total cost of goods"
-  ],
-
-  // ── Gross Margin ──
-  GROSS_PROFIT: [
-    "gross margin","gross profit","gross margin amount","gross income"
-  ],
-
-  // ── Rent ──
-  RENT: [
-    "rent"
-  ],
-
-  // ── Franchise Fees ──
-  FRANCHISE_FEES: [
-    "franchise fees","franchise fee","franchising fees","royalty fees","franchise royalty"
-  ],
-
-  // ── Total Rent & Franchise Fees ──
-  RENT_FRANCHISE_TOTAL: [
-    "total rent & franchise fees","total rent and franchise fees",
-    "rent & franchise fees","rent and franchise fees",
-    "total nnn","total rent","rent & franchise"
-  ],
-
-  // ── Utilities ──
-  UTILITIES: [
-    "utilities","total utilities","utility expense","utility"
-  ],
-
-  // ── Total Repairs & Maintenance ──
-  REPAIRS_MAINTENANCE: [
-    "total repairs and maintenance","total repairs & maintenance",
-    "repairs and maintenance","repairs & maintenance","total r&m"
-  ],
-
-  // ── Total Other Expenses ──
-  OTHER_EXPENSES: [
-    "total other expenses","total other expense","other expenses",
-    "total controllable expenses","total controlable expenses"
-  ],
-
-  // ── EBITDA ──
-  EBITDA: [
-    "ebitda","ebidta","earnings before interest tax depreciation",
-    "ebitda (a-b)","ebitda (a - b)","profit before dep","profit before depreciation",
-    "operating ebitda","ebitda before pre-opening","ebitda addback",
-    "total operating profit","total operating profit (loss)"
-  ],
-
-  // ── Interest Expense ──
-  INTEREST_EXPENSE: [
-    "interest expense","interest expense (net)","interest cost","finance cost",
-    "finance charge","borrowing cost"
-  ],
-
-  // ── Depreciation Expense ──
-  DEPRECIATION_EXP: [
-    "depreciation expense","depreciation"
-  ],
-
-  // ── Amortization Expense ──
-  AMORTIZATION_EXP: [
-    "amortization expense","amortisation expense","amortization","amortisation"
-  ],
-
-  // ── Total Interest / Depreciation & Amortizations ──
-  TOTAL_DEPR_INT: [
-    "total interest / depreciation & amortizations",
-    "total interest / depreciation and amortizations",
-    "total interest/depreciation & amortizations",
-    "total interest, depreciation & amortization",
-    "total depreciation and amortization","d&a","total d&a"
-  ],
-
-  // ── Operating Income before Mgt Fee & O/H ──
-  OPR_INCOME_BEFORE_MGT: [
-    "operating income before mgt fee & o/h allocations",
-    "operating income before mgt fee",
-    "operating income before management fee",
-    "ebit","operating profit","profit from operations","profit before interest"
-  ],
-
-  // ── Management Fee ──
-  MANAGEMENT_FEE: [
-    "management fee","management fees","mgmt fee","mgmt fees",
-    "management charge","management cost"
-  ],
-
-  // ── Administrative Expenses ──
-  ADMIN_EXP: [
-    "administrative expenses","administrative expense","admin expenses",
-    "admin expense","administrative costs","overhead allocation","o/h allocations"
-  ],
-
-  // ── Net Operating Income ──
-  NET_OPR_INCOME: [
-    "net operating income","net operating profit","noi"
-  ],
-
-  // ── OTHER INCOME (NEW — added after Net Operating Income) ──
-  OTHER_INCOME: [
-    "other income","other revenue","non-operating income","miscellaneous income",
-    "other operating income","additional income","sundry income","non operating income"
-  ],
-
-  // ── PBT ──
-  PBT: [
-    "profit before tax","pbt","pre-tax profit","profit/(loss) before tax",
-    "earnings before tax","income before tax"
-  ],
-
-  // NOTE: TAX is intentionally REMOVED from the P&L flow here.
-  // Tax was previously matched but belongs inside "other expenses" in this MIS format.
-  // We no longer extract or display TAX as a standalone KPI line.
-
-  // ── Net Profit / Net Income ──
-  NET_PROFIT: [
-    "net profit","pat","profit after tax","net income","net earnings",
-    "profit/(loss) after tax","net profit/(loss)","net loss","profit / (loss)",
-    "net income (loss)","net profit before tax","net profit/loss"
-  ]
+  NET_REVENUE:  ["net revenue","total net revenue","net sales","total net sales","net income from sales","net turnover","revenue (net)","sales (net)"],
+  GROSS_REVENUE:["gross revenue","gross sales","total revenue","total sales","revenue dd","revenue br","revenue","sales","turnover","total income"],
+  FOOD_SUPPLIES:["food and supplies","food & supplies","food cost","food and supply"],
+  STAFF_COST:   ["operational payroll expenses","operational payroll","staff cost","employee cost","payroll","salary","wages","personnel cost","labour cost","labor cost","total labor","total labour","payroll expense","total payroll"],
+  COGS:         ["total cogs","cost of goods sold","cost of sales","cogs","direct cost","cost of revenue","cost of material","material cost","total cost of goods"],
+  GROSS_PROFIT: ["gross margin","gross profit","gross margin amount","gross income"],
+  RENT:         ["rent"],
+  FRANCHISE_FEES:["franchise fees","franchise fee","franchising fees","royalty fees","franchise royalty"],
+  RENT_FRANCHISE_TOTAL:["total rent & franchise fees","total rent and franchise fees","rent & franchise fees","rent and franchise fees","total nnn","total rent","rent & franchise"],
+  UTILITIES:    ["utilities","total utilities","utility expense","utility"],
+  REPAIRS_MAINTENANCE:["total repairs and maintenance","total repairs & maintenance","repairs and maintenance","repairs & maintenance","total r&m"],
+  OTHER_EXPENSES:["total other expenses","total other expense","other expenses","total controllable expenses","total controlable expenses"],
+  EBITDA:       ["ebitda","ebidta","earnings before interest tax depreciation","ebitda (a-b)","ebitda (a - b)","profit before dep","profit before depreciation","operating ebitda","ebitda before pre-opening","ebitda addback","total operating profit","total operating profit (loss)"],
+  INTEREST_EXPENSE:["interest expense","interest expense (net)","interest cost","finance cost","finance charge","borrowing cost"],
+  DEPRECIATION_EXP:["depreciation expense","depreciation"],
+  AMORTIZATION_EXP:["amortization expense","amortisation expense","amortization","amortisation"],
+  TOTAL_DEPR_INT:["total interest / depreciation & amortizations","total interest / depreciation and amortizations","total interest/depreciation & amortizations","total interest, depreciation & amortization","total depreciation and amortization","d&a","total d&a"],
+  OPR_INCOME_BEFORE_MGT:["operating income before mgt fee & o/h allocations","operating income before mgt fee","operating income before management fee","ebit","operating profit","profit from operations","profit before interest"],
+  MANAGEMENT_FEE:["management fee","management fees","mgmt fee","mgmt fees","management charge","management cost"],
+  ADMIN_EXP:    ["administrative expenses","administrative expense","admin expenses","admin expense","administrative costs","overhead allocation","o/h allocations"],
+  NET_OPR_INCOME:["net operating income","net operating profit","noi"],
+  OTHER_INCOME: ["other income","other revenue","non-operating income","miscellaneous income","other operating income","additional income","sundry income","non operating income"],
+  PBT:          ["profit before tax","pbt","pre-tax profit","profit/(loss) before tax","earnings before tax","income before tax"],
+  NET_PROFIT:   ["net profit","pat","profit after tax","net income","net earnings","profit/(loss) after tax","net profit/(loss)","net loss","profit / (loss)","net income (loss)","net profit before tax","net profit/loss"]
 };
 
 function matchKPI(description) {
   const d = String(description || "").toLowerCase().trim();
-
-  // Pass 1: exact and startsWith matches only
   for (const [kpi, patterns] of Object.entries(KPI_PATTERNS)) {
     for (const p of patterns) {
       if (d === p || d.startsWith(p)) return kpi;
     }
   }
-
-  // Pass 2: NET_REVENUE priority check
   const netPatterns = KPI_PATTERNS["NET_REVENUE"] || [];
-  for (const p of netPatterns) {
-    if (d.includes(p)) return "NET_REVENUE";
-  }
-
+  for (const p of netPatterns) { if (d.includes(p)) return "NET_REVENUE"; }
   for (const [kpi, patterns] of Object.entries(KPI_PATTERNS)) {
     if (kpi === "NET_REVENUE") continue;
-    for (const p of patterns) {
-      if (d.includes(p)) return kpi;
-    }
+    for (const p of patterns) { if (d.includes(p)) return kpi; }
   }
   return null;
 }
@@ -444,30 +272,21 @@ function setKPIMapping(kpiMapping, kpi, desc) {
   if (!kpiMapping[kpi]) kpiMapping[kpi] = desc;
 }
 
-function resolveRevenueKPI(kpiMapping, lineItemDict) {
+function resolveRevenueKPI(kpiMapping) {
   const hasNet   = "NET_REVENUE"   in kpiMapping;
   const hasGross = "GROSS_REVENUE" in kpiMapping;
   if (hasNet && hasGross) {
-    console.log(`💰 Both NET and GROSS revenue found. Using NET: "${kpiMapping.NET_REVENUE}" (dropping gross: "${kpiMapping.GROSS_REVENUE}")`);
+    console.log(`💰 Both NET and GROSS revenue found. Using NET: "${kpiMapping.NET_REVENUE}"`);
     kpiMapping.REVENUE = kpiMapping.NET_REVENUE;
-    delete kpiMapping.NET_REVENUE;
-    delete kpiMapping.GROSS_REVENUE;
+    delete kpiMapping.NET_REVENUE; delete kpiMapping.GROSS_REVENUE;
   } else if (hasNet) {
-    kpiMapping.REVENUE = kpiMapping.NET_REVENUE;
-    delete kpiMapping.NET_REVENUE;
+    kpiMapping.REVENUE = kpiMapping.NET_REVENUE; delete kpiMapping.NET_REVENUE;
   } else if (hasGross) {
-    kpiMapping.REVENUE = kpiMapping.GROSS_REVENUE;
-    delete kpiMapping.GROSS_REVENUE;
+    kpiMapping.REVENUE = kpiMapping.GROSS_REVENUE; delete kpiMapping.GROSS_REVENUE;
   }
   return kpiMapping;
 }
 
-// ─────────────────────────────────────────────
-//  CONSOLIDATED COLUMN DETECTION
-// ─────────────────────────────────────────────
-
-// Patterns that exclude a column from being treated as a store in P&L analysis.
-// "benchmark" is intentionally kept here so it never appears as a store column.
 const EXCLUDED_COLUMN_PATTERNS = [
   "total","consolidated","grand total","all stores","overall","company total",
   "aggregate","sum","portfolio","net total",
@@ -481,8 +300,6 @@ function isConsolidatedColumn(name) {
   return EXCLUDED_COLUMN_PATTERNS.some(p => n === p || n.startsWith(p) || n.includes(p));
 }
 
-// isBenchmarkColumn — identifies the Benchmark column specifically.
-// Used to EXTRACT its data rather than exclude it.
 function isBenchmarkColumn(name) {
   const n = String(name || "").toLowerCase().trim();
   return n === "benchmark" || n.startsWith("benchmark");
@@ -495,17 +312,11 @@ function parseExclusionsFromPrompt(userQuestion) {
   while ((m = exclusionRegex.exec(userQuestion)) !== null) {
     const phrase = m[1].trim().toLowerCase()
       .replace(/in the analysis|from the analysis|in this analysis|from this/g, "")
-      .replace(/\.\s*cause.*/g, "")
-      .replace(/\s*\(.*\)\s*/g, "")
-      .trim();
+      .replace(/\.\s*cause.*/g, "").replace(/\s*\(.*\)\s*/g, "").trim();
     if (phrase.length >= 3) excluded.push(phrase);
   }
   return excluded;
 }
-
-// ─────────────────────────────────────────────
-//  INLINE CY/LY DETECTION & PARSING
-// ─────────────────────────────────────────────
 
 function detectInlineYearLayout(rawArray) {
   if (!rawArray || rawArray.length < 3) return { isInline: false };
@@ -564,19 +375,13 @@ function detectSeparateSheetLayout(rawArray) {
       if (isConsolidatedColumn(s)) return;
       if (/^(20\d{2}|FY\s*\d{2,4})$/i.test(s)) return;
       if (/^[\d.,\-\(\)$%\s]+$/.test(s)) return;
-      if (!seenStoreNames.has(s)) {
-        seenStoreNames.add(s);
-        candidateStoreCols.push({ name: s, index: colIdx });
-      }
+      if (!seenStoreNames.has(s)) { seenStoreNames.add(s); candidateStoreCols.push({ name: s, index: colIdx }); }
     });
     if (candidateStoreCols.length === 0) continue;
     let numericBelow = 0;
     for (let r = rowIdx + 1; r < Math.min(rowIdx + 10, rawArray.length); r++) {
       const dataRow = rawArray[r] || [];
-      const hasNum = candidateStoreCols.some(sc => {
-        const v = dataRow[sc.index];
-        return typeof v === "number" && isFinite(v);
-      });
+      const hasNum = candidateStoreCols.some(sc => { const v = dataRow[sc.index]; return typeof v === "number" && isFinite(v); });
       if (hasNum) numericBelow++;
     }
     let textInCol0 = 0;
@@ -608,7 +413,6 @@ function parseInlineYearSheet(sheet, inlineInfo) {
     });
     if (meaningful.length >= 1) storeRowIdx = r;
   }
-  console.log(`📋 storeRow=${storeRowIdx}, yearRow=${yearRowIdx}`);
   const storeRow = rawArray[storeRowIdx] || [];
   const yearRow  = rawArray[yearRowIdx]  || [];
   const storeByCol = {};
@@ -617,11 +421,8 @@ function parseInlineYearSheet(sheet, inlineInfo) {
     if (colIdx === 0) return;
     const s = String(cell ?? "").trim();
     if (s) {
-      if (!isConsolidatedColumn(s) && !/^(20\d{2}|FY\d{2,4}|\d+\.?\d*)$/i.test(s)) {
-        lastStore = s;
-      } else {
-        lastStore = null;
-      }
+      if (!isConsolidatedColumn(s) && !/^(20\d{2}|FY\d{2,4}|\d+\.?\d*)$/i.test(s)) { lastStore = s; }
+      else { lastStore = null; }
     }
     if (lastStore) storeByCol[colIdx] = lastStore;
   });
@@ -636,17 +437,13 @@ function parseInlineYearSheet(sheet, inlineInfo) {
   let amtRowIdx = yearRowIdx + 1;
   for (let r = yearRowIdx + 1; r < Math.min(yearRowIdx + 5, rawArray.length); r++) {
     const row = rawArray[r] || [];
-    if (row.some(c => /^amount$|^amt$|^\$$|^value$/i.test(String(c ?? "").trim()))) {
-      amtRowIdx = r; break;
-    }
+    if (row.some(c => /^amount$|^amt$|^\$$|^value$/i.test(String(c ?? "").trim()))) { amtRowIdx = r; break; }
   }
   const amtRow = rawArray[amtRowIdx] || [];
-  console.log(`📋 amtRow=${amtRowIdx}`);
   const colMap = {};
   amtRow.forEach((cell, colIdx) => {
     const s = String(cell ?? "").trim().toLowerCase();
-    const store = storeByCol[colIdx];
-    const year  = yearByCol[colIdx];
+    const store = storeByCol[colIdx]; const year = yearByCol[colIdx];
     if (!store || !year) return;
     if (isConsolidatedColumn(store)) return;
     const isAmt = (s === "amount" || s === "amt" || s === "$" || s === "value" || s === "");
@@ -662,39 +459,23 @@ function parseInlineYearSheet(sheet, inlineInfo) {
     const key = `${info.store}::${info.year}`;
     if (!(key in amountCols)) amountCols[key] = parseInt(ci);
   });
-  console.log(`💡 amountCols: ${JSON.stringify(amountCols)}`);
-  const storeNames = [...new Set(
-    Object.keys(amountCols).map(k => k.split("::")[0])
-  )].filter(s => !isConsolidatedColumn(s));
+  const storeNames = [...new Set(Object.keys(amountCols).map(k => k.split("::")[0]))].filter(s => !isConsolidatedColumn(s));
   const dataStartRow = amtRowIdx + 1;
   const lineItemColIdx = 0;
-  const cyData = {};
-  const lyData = {};
+  const cyData = {}; const lyData = {};
   storeNames.forEach(s => { cyData[s] = {}; lyData[s] = {}; });
   for (let rowIdx = dataStartRow; rowIdx < rawArray.length; rowIdx++) {
     const row = rawArray[rowIdx];
     const desc = String(row[lineItemColIdx] ?? "").trim();
     if (!desc) continue;
     storeNames.forEach(store => {
-      const cyKey = `${store}::${cyYear}`;
-      const lyKey = `${store}::${lyYear}`;
-      if (cyKey in amountCols) {
-        const val = parseAmount(row[amountCols[cyKey]]);
-        if (val !== null) cyData[store][desc] = val;
-      }
-      if (lyKey in amountCols) {
-        const val = parseAmount(row[amountCols[lyKey]]);
-        if (val !== null) lyData[store][desc] = val;
-      }
+      const cyKey = `${store}::${cyYear}`; const lyKey = `${store}::${lyYear}`;
+      if (cyKey in amountCols) { const val = parseAmount(row[amountCols[cyKey]]); if (val !== null) cyData[store][desc] = val; }
+      if (lyKey in amountCols) { const val = parseAmount(row[amountCols[lyKey]]); if (val !== null) lyData[store][desc] = val; }
     });
   }
-  console.log(`✅ Inline parse: ${storeNames.length} stores | cyRows: ${Object.keys(cyData[storeNames[0]] || {}).length}`);
   return { cyData, lyData, storeNames, cyYear, lyYear };
 }
-
-// ─────────────────────────────────────────────
-//  STEP 1 — AI UNDERSTANDS STRUCTURE + INTENT
-// ─────────────────────────────────────────────
 
 async function step1_understandQueryAndStructure(sheets, userQuestion) {
   const fileSample = sheets.slice(0, 4).map(sheet => {
@@ -706,79 +487,15 @@ async function step1_understandQueryAndStructure(sheets, userQuestion) {
     const allLineItems = [];
     ra.slice(8).forEach((row, i) => {
       const desc = String(row?.[0] ?? "").trim();
-      if (desc && !/^[=\d]/.test(desc)) {
-        allLineItems.push(`  row${i+8}: "${desc}"`);
-      }
+      if (desc && !/^[=\d]/.test(desc)) allLineItems.push(`  row${i+8}: "${desc}"`);
     });
-    const lineItemSummary = allLineItems.length
-      ? `\nALL LINE ITEM NAMES (col 0):\n${allLineItems.join("\n")}`
-      : "";
+    const lineItemSummary = allLineItems.length ? `\nALL LINE ITEM NAMES (col 0):\n${allLineItems.join("\n")}` : "";
     return `=== Sheet: "${sheet.name}" (${ra.length}r × ${ra[0]?.length || 0}c) ===\n${headerRows}${lineItemSummary}`;
   }).join("\n\n");
 
   const messages = [
     { role: "system", content: "You are a financial spreadsheet structure analyzer. Return ONLY valid JSON. No markdown, no explanation, no backticks." },
-    {
-      role: "user",
-      content: `File sample:
-${fileSample}
-
-User question: "${userQuestion || "Full P&L analysis"}"
-
-LAYOUT IDENTIFICATION RULES:
-
-LAYOUT A — SEPARATE_SHEETS:
-  Each sheet covers ONE time period. Stores are columns. Row 0 = [Particulars | Store A | Store B...]
-  KEY SIGN: Sheet NAMES contain year or period info (e.g. "2024", "2025", "FY24", "CY", "LY", "Jan-Dec 2025")
-
-LAYOUT B — INLINE_YEAR_COLUMNS:
-  ONE sheet has both years as COLUMN sub-headers. Year numbers (2024, 2025) appear INSIDE a row.
-  KEY SIGN: Year numbers appear in a header ROW (not as sheet names). Same year repeats per store group.
-
-DECISION RULE: If sheet names are year-based → SEPARATE_SHEETS. If years appear inside rows → INLINE_YEAR_COLUMNS.
-
-Return JSON:
-{
-  "layout_type": "SEPARATE_SHEETS or INLINE_YEAR_COLUMNS",
-  "cy_sheet": "exact sheet name with most recent year",
-  "ly_sheet": "exact sheet name with prior year, or null",
-  "line_item_column_index": 0,
-  "store_columns": [{ "name": "Store Name as in header", "index": 2 }],
-  "consolidated_column_indices": [],
-  "data_start_row": 5,
-  "analysis_type": "FULL_ANALYSIS",
-  "kpi_name_mapping": {
-    "REVENUE": "exact row label for net revenue",
-    "FOOD_SUPPLIES": "exact row label for food and supplies",
-    "STAFF_COST": "exact row label for operational payroll expenses",
-    "COGS": "exact row label for total COGS",
-    "GROSS_PROFIT": "exact row label for gross margin/profit",
-    "RENT": "exact row label for rent",
-    "FRANCHISE_FEES": "exact row label for franchise fees",
-    "RENT_FRANCHISE_TOTAL": "exact row label for total rent & franchise fees",
-    "UTILITIES": "exact row label for utilities",
-    "REPAIRS_MAINTENANCE": "exact row label for total repairs and maintenance",
-    "OTHER_EXPENSES": "exact row label for total other expenses",
-    "EBITDA": "exact row label for EBITDA/EBIDTA",
-    "INTEREST_EXPENSE": "exact row label for interest expense",
-    "DEPRECIATION_EXP": "exact row label for depreciation expense",
-    "AMORTIZATION_EXP": "exact row label for amortization expense",
-    "TOTAL_DEPR_INT": "exact row label for total interest/depreciation/amortization",
-    "OPR_INCOME_BEFORE_MGT": "exact row label for operating income before management fee",
-    "MANAGEMENT_FEE": "exact row label for management fee",
-    "ADMIN_EXP": "exact row label for administrative expenses",
-    "NET_OPR_INCOME": "exact row label for net operating income",
-    "OTHER_INCOME": "exact row label for other income",
-    "NET_PROFIT": "exact row label for net profit/net income"
-  }
-}
-
-RULES:
-- store_columns: ALL individual stores. EXCLUDE: Benchmark, Target, Budget, Plan, Consolidated, Total, Grand Total, Same Store, Same Store Comparison, All Stores, Overall — put those indices in consolidated_column_indices
-- data_start_row: the exact row index where the first P&L data row starts (Revenue/Sales line), AFTER all title and header rows
-- kpi_name_mapping: look at the LINE ITEM NAMES list and identify the exact label used for each key KPI. Use "null" if not found.
-- List ALL individual store columns`
-    }
+    { role: "user", content: `File sample:\n${fileSample}\n\nUser question: "${userQuestion || "Full P&L analysis"}"\n\nLAYOUT IDENTIFICATION RULES:\n\nLAYOUT A — SEPARATE_SHEETS:\n  Each sheet covers ONE time period. Stores are columns. Row 0 = [Particulars | Store A | Store B...]\n  KEY SIGN: Sheet NAMES contain year or period info (e.g. "2024", "2025", "FY24", "CY", "LY", "Jan-Dec 2025")\n\nLAYOUT B — INLINE_YEAR_COLUMNS:\n  ONE sheet has both years as COLUMN sub-headers. Year numbers (2024, 2025) appear INSIDE a row.\n  KEY SIGN: Year numbers appear in a header ROW (not as sheet names). Same year repeats per store group.\n\nDECISION RULE: If sheet names are year-based → SEPARATE_SHEETS. If years appear inside rows → INLINE_YEAR_COLUMNS.\n\nReturn JSON:\n{\n  "layout_type": "SEPARATE_SHEETS or INLINE_YEAR_COLUMNS",\n  "cy_sheet": "exact sheet name with most recent year",\n  "ly_sheet": "exact sheet name with prior year, or null",\n  "line_item_column_index": 0,\n  "store_columns": [{ "name": "Store Name as in header", "index": 2 }],\n  "consolidated_column_indices": [],\n  "data_start_row": 5,\n  "analysis_type": "FULL_ANALYSIS",\n  "kpi_name_mapping": {\n    "REVENUE": "exact row label for net revenue",\n    "FOOD_SUPPLIES": "exact row label for food and supplies",\n    "STAFF_COST": "exact row label for operational payroll expenses",\n    "COGS": "exact row label for total COGS",\n    "GROSS_PROFIT": "exact row label for gross margin/profit",\n    "RENT": "exact row label for rent",\n    "FRANCHISE_FEES": "exact row label for franchise fees",\n    "RENT_FRANCHISE_TOTAL": "exact row label for total rent & franchise fees",\n    "UTILITIES": "exact row label for utilities",\n    "REPAIRS_MAINTENANCE": "exact row label for total repairs and maintenance",\n    "OTHER_EXPENSES": "exact row label for total other expenses",\n    "EBITDA": "exact row label for EBITDA/EBIDTA",\n    "INTEREST_EXPENSE": "exact row label for interest expense",\n    "DEPRECIATION_EXP": "exact row label for depreciation expense",\n    "AMORTIZATION_EXP": "exact row label for amortization expense",\n    "TOTAL_DEPR_INT": "exact row label for total interest/depreciation/amortization",\n    "OPR_INCOME_BEFORE_MGT": "exact row label for operating income before management fee",\n    "MANAGEMENT_FEE": "exact row label for management fee",\n    "ADMIN_EXP": "exact row label for administrative expenses",\n    "NET_OPR_INCOME": "exact row label for net operating income",\n    "OTHER_INCOME": "exact row label for other income",\n    "NET_PROFIT": "exact row label for net profit/net income"\n  }\n}\n\nRULES:\n- store_columns: ALL individual stores. EXCLUDE: Benchmark, Target, Budget, Plan, Consolidated, Total, Grand Total, Same Store, Same Store Comparison, All Stores, Overall — put those indices in consolidated_column_indices\n- data_start_row: the exact row index where the first P&L data row starts (Revenue/Sales line), AFTER all title and header rows\n- kpi_name_mapping: look at the LINE ITEM NAMES list and identify the exact label used for each key KPI. Use "null" if not found.\n- List ALL individual store columns` }
   ];
   console.log("🔍 Step 1: Analysing file structure...");
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -793,14 +510,9 @@ RULES:
   try { return JSON.parse(content); } catch { return null; }
 }
 
-// ─────────────────────────────────────────────
-//  STEP 2 — CODE DOES ALL THE MATH
-// ─────────────────────────────────────────────
-
 function computeKPIsFromLineItems(lineItemDict, storeNames, overrideKpiNames = {}) {
   const kpiMapping = {};
   const allDescs = [...new Set(Object.values(lineItemDict).flatMap(d => Object.keys(d)))];
-
   Object.entries(overrideKpiNames).forEach(([kpi, desc]) => {
     if (desc && desc !== "null" && allDescs.includes(desc)) {
       const internalKey = kpi === "REVENUE" ? "NET_REVENUE" : kpi;
@@ -808,15 +520,12 @@ function computeKPIsFromLineItems(lineItemDict, storeNames, overrideKpiNames = {
       console.log(`🎯 KPI override applied: ${internalKey} → "${desc}"`);
     }
   });
-
   for (const desc of allDescs) {
     const kpi = matchKPI(desc);
     if (kpi && !kpiMapping[kpi]) setKPIMapping(kpiMapping, kpi, desc);
   }
-
-  resolveRevenueKPI(kpiMapping, lineItemDict);
-  console.log("📊 KPIs matched (after revenue resolution):", kpiMapping);
-
+  resolveRevenueKPI(kpiMapping);
+  console.log("📊 KPIs matched:", kpiMapping);
   const storeMetrics = {};
   storeNames.forEach(store => {
     const items = lineItemDict[store] || {};
@@ -825,25 +534,24 @@ function computeKPIsFromLineItems(lineItemDict, storeNames, overrideKpiNames = {
       const val = items[desc];
       m[kpi] = (val !== undefined && val !== null) ? val : null;
     });
-    // Derived % metrics
     const rev = m.REVENUE;
     if (rev && rev !== 0) {
-      if (m.GROSS_PROFIT       !== null) m.GROSS_MARGIN_PCT  = safeDivide(m.GROSS_PROFIT,           rev);
-      if (m.EBITDA             !== null) m.EBITDA_MARGIN_PCT = safeDivide(m.EBITDA,                 rev);
-      if (m.NET_PROFIT         !== null) m.NET_MARGIN_PCT    = safeDivide(m.NET_PROFIT,             rev);
-      if (m.COGS               !== null) m.COGS_PCT          = safeDivide(m.COGS,                   rev);
-      if (m.STAFF_COST         !== null) m.STAFF_PCT         = safeDivide(m.STAFF_COST,             rev);
-      if (m.FOOD_SUPPLIES      !== null) m.FOOD_SUPPLIES_PCT = safeDivide(m.FOOD_SUPPLIES,          rev);
-      if (m.RENT               !== null) m.RENT_PCT          = safeDivide(m.RENT,                   rev);
-      if (m.FRANCHISE_FEES     !== null) m.FRANCHISE_FEES_PCT= safeDivide(m.FRANCHISE_FEES,         rev);
-      if (m.RENT_FRANCHISE_TOTAL!== null) m.RENT_FRANCHISE_PCT = safeDivide(m.RENT_FRANCHISE_TOTAL, rev);
-      if (m.UTILITIES          !== null) m.UTILITIES_PCT     = safeDivide(m.UTILITIES,              rev);
-      if (m.REPAIRS_MAINTENANCE!== null) m.REPAIRS_MAINTENANCE_PCT = safeDivide(m.REPAIRS_MAINTENANCE, rev);
-      if (m.INTEREST_EXPENSE   !== null) m.INTEREST_EXPENSE_PCT = safeDivide(m.INTEREST_EXPENSE,   rev);
-      if (m.DEPRECIATION_EXP   !== null) m.DEPRECIATION_EXP_PCT = safeDivide(m.DEPRECIATION_EXP,  rev);
-      if (m.AMORTIZATION_EXP   !== null) m.AMORTIZATION_EXP_PCT = safeDivide(m.AMORTIZATION_EXP,  rev);
-      if (m.OTHER_EXPENSES     !== null) m.OTHER_EXPENSES_PCT = safeDivide(m.OTHER_EXPENSES,        rev);
-      if (m.OTHER_INCOME       !== null) m.OTHER_INCOME_PCT  = safeDivide(m.OTHER_INCOME,           rev);
+      if (m.GROSS_PROFIT       !== null) m.GROSS_MARGIN_PCT       = safeDivide(m.GROSS_PROFIT,        rev);
+      if (m.EBITDA             !== null) m.EBITDA_MARGIN_PCT      = safeDivide(m.EBITDA,              rev);
+      if (m.NET_PROFIT         !== null) m.NET_MARGIN_PCT         = safeDivide(m.NET_PROFIT,          rev);
+      if (m.COGS               !== null) m.COGS_PCT               = safeDivide(m.COGS,                rev);
+      if (m.STAFF_COST         !== null) m.STAFF_PCT              = safeDivide(m.STAFF_COST,          rev);
+      if (m.FOOD_SUPPLIES      !== null) m.FOOD_SUPPLIES_PCT      = safeDivide(m.FOOD_SUPPLIES,       rev);
+      if (m.RENT               !== null) m.RENT_PCT               = safeDivide(m.RENT,                rev);
+      if (m.FRANCHISE_FEES     !== null) m.FRANCHISE_FEES_PCT     = safeDivide(m.FRANCHISE_FEES,      rev);
+      if (m.RENT_FRANCHISE_TOTAL!==null) m.RENT_FRANCHISE_PCT     = safeDivide(m.RENT_FRANCHISE_TOTAL,rev);
+      if (m.UTILITIES          !== null) m.UTILITIES_PCT          = safeDivide(m.UTILITIES,           rev);
+      if (m.REPAIRS_MAINTENANCE!== null) m.REPAIRS_MAINTENANCE_PCT= safeDivide(m.REPAIRS_MAINTENANCE, rev);
+      if (m.INTEREST_EXPENSE   !== null) m.INTEREST_EXPENSE_PCT   = safeDivide(m.INTEREST_EXPENSE,    rev);
+      if (m.DEPRECIATION_EXP   !== null) m.DEPRECIATION_EXP_PCT   = safeDivide(m.DEPRECIATION_EXP,   rev);
+      if (m.AMORTIZATION_EXP   !== null) m.AMORTIZATION_EXP_PCT   = safeDivide(m.AMORTIZATION_EXP,   rev);
+      if (m.OTHER_EXPENSES     !== null) m.OTHER_EXPENSES_PCT     = safeDivide(m.OTHER_EXPENSES,      rev);
+      if (m.OTHER_INCOME       !== null) m.OTHER_INCOME_PCT       = safeDivide(m.OTHER_INCOME,        rev);
     }
     storeMetrics[store] = m;
   });
@@ -859,27 +567,17 @@ function extractSeparateSheetData(sheet, querySchema) {
     lineItemColIdx = autoDetected.lineItemColIdx;
     dataStartRow   = autoDetected.dataStartRow;
     const consolidatedIdxs = new Set(querySchema?.consolidated_column_indices || []);
-    const schemaStores = (querySchema?.store_columns || []).filter(sc =>
-      !isConsolidatedColumn(sc.name) && !consolidatedIdxs.has(sc.index)
-    );
+    const schemaStores = (querySchema?.store_columns || []).filter(sc => !isConsolidatedColumn(sc.name) && !consolidatedIdxs.has(sc.index));
     const mergedByIndex = new Map(autoDetected.storeColumns.map(sc => [sc.index, sc]));
-    schemaStores.forEach(sc => {
-      if (!mergedByIndex.has(sc.index) && !isConsolidatedColumn(sc.name)) {
-        mergedByIndex.set(sc.index, sc);
-      }
-    });
+    schemaStores.forEach(sc => { if (!mergedByIndex.has(sc.index) && !isConsolidatedColumn(sc.name)) mergedByIndex.set(sc.index, sc); });
     storeColumns = [...mergedByIndex.values()].sort((a, b) => a.index - b.index);
     const schemaStart = querySchema?.data_start_row;
     if (schemaStart !== undefined && schemaStart < dataStartRow) dataStartRow = schemaStart;
-    console.log(`📋 Merged: ${storeColumns.length} stores (auto=${autoDetected.storeColumns.length}, schema=${schemaStores.length}), dataStart=${dataStartRow}`);
   } else {
     const consolidatedIdxs = new Set(querySchema?.consolidated_column_indices || []);
-    storeColumns   = (querySchema?.store_columns || []).filter(sc =>
-      !isConsolidatedColumn(sc.name) && !consolidatedIdxs.has(sc.index)
-    );
+    storeColumns   = (querySchema?.store_columns || []).filter(sc => !isConsolidatedColumn(sc.name) && !consolidatedIdxs.has(sc.index));
     lineItemColIdx = querySchema?.line_item_column_index ?? 0;
     dataStartRow   = querySchema?.data_start_row ?? 1;
-    console.log(`📋 Using Step 1 schema only: ${storeColumns.length} stores`);
   }
   if (!storeColumns.length) return {};
   const lineItemDict = {};
@@ -889,16 +587,9 @@ function extractSeparateSheetData(sheet, querySchema) {
     const desc = String(row[lineItemColIdx] ?? '').trim();
     if (!desc) continue;
     if (/^(20d{2}|19d{2}|amount|amt|particulars|description|line item)$/i.test(desc)) continue;
-    const allBlank = storeColumns.every(sc => {
-      const v = row[sc.index];
-      return v === null || v === undefined ||
-        (typeof v === 'string' && !v.trim()) || parseAmount(v) === null;
-    });
+    const allBlank = storeColumns.every(sc => { const v = row[sc.index]; return v === null || v === undefined || (typeof v === 'string' && !v.trim()) || parseAmount(v) === null; });
     if (allBlank) continue;
-    storeColumns.forEach(sc => {
-      const val = parseAmount(row[sc.index]);
-      if (val !== null) lineItemDict[sc.name][desc] = val;
-    });
+    storeColumns.forEach(sc => { const val = parseAmount(row[sc.index]); if (val !== null) lineItemDict[sc.name][desc] = val; });
   }
   return { lineItemDict, storeColumns };
 }
@@ -914,34 +605,20 @@ function step2_extractAndCompute(sheets, querySchema) {
 
   if (isInline) {
     console.log("📊 Using INLINE year-column layout");
-    const parsed    = parseInlineYearSheet(primarySheet, inlineInfo.isInline ? inlineInfo : detectInlineYearLayout(primarySheet.rawArray));
-    cyLineItemDict  = parsed.cyData;
-    lyLineItemDict  = parsed.lyData;
-    storeNames      = parsed.storeNames;
-    cyYear          = parsed.cyYear;
-    lyYear          = parsed.lyYear;
+    const parsed   = parseInlineYearSheet(primarySheet, inlineInfo.isInline ? inlineInfo : detectInlineYearLayout(primarySheet.rawArray));
+    cyLineItemDict = parsed.cyData; lyLineItemDict = parsed.lyData;
+    storeNames     = parsed.storeNames; cyYear = parsed.cyYear; lyYear = parsed.lyYear;
   } else {
     console.log("📊 Using SEPARATE SHEETS layout");
     const cyExt = extractSeparateSheetData(primarySheet, querySchema);
     if (!cyExt.storeColumns?.length) return null;
     storeNames     = cyExt.storeColumns.map(sc => sc.name).filter(n => !isConsolidatedColumn(n));
-    cyLineItemDict = cyExt.lineItemDict;
-    cyYear         = primarySheet.name;
+    cyLineItemDict = cyExt.lineItemDict; cyYear = primarySheet.name;
     const allOtherSheets = sheets.filter(s => s.name !== primarySheet.name);
-    const lySheet = sheets.find(s => s.name === querySchema?.ly_sheet)
-      || (allOtherSheets.length > 0 ? allOtherSheets[0] : null);
+    const lySheet = sheets.find(s => s.name === querySchema?.ly_sheet) || (allOtherSheets.length > 0 ? allOtherSheets[0] : null);
     if (lySheet) {
-      const lyExt = extractSeparateSheetData(lySheet, {
-        ...querySchema,
-        cy_sheet: lySheet.name,
-        store_columns: [],
-        data_start_row: undefined
-      });
-      if (lyExt.storeColumns?.length) {
-        lyLineItemDict = lyExt.lineItemDict;
-        lyYear = lySheet.name;
-        console.log(`✅ LY sheet "${lySheet.name}": ${lyExt.storeColumns.length} stores`);
-      }
+      const lyExt = extractSeparateSheetData(lySheet, { ...querySchema, cy_sheet: lySheet.name, store_columns: [], data_start_row: undefined });
+      if (lyExt.storeColumns?.length) { lyLineItemDict = lyExt.lineItemDict; lyYear = lySheet.name; }
     }
   }
 
@@ -959,27 +636,12 @@ function step2_extractAndCompute(sheets, querySchema) {
   const totals = {};
   resolvedKpiKeys.forEach(kpi => {
     const vals = storeNames.map(s => cyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
-    // Use Math.round to get exact integer totals — avoids floating-point 1-3 dollar drift
     if (vals.length) totals[kpi] = Math.round(vals.reduce((a,b) => a+b, 0));
   });
 
-  // ─────────────────────────────────────────────────────────────────────
-  //  Portfolio averages
-  //
-  //  GENERAL RULE: simple average of each store's individual % value,
-  //  INCLUDING stores at 0% (a 0% is a real data point — the store
-  //  genuinely has no spend on that head).
-  //
-  //  EXCEPTION — INTEREST_EXPENSE_PCT:
-  //  Interest expense is a financing decision, not an operational one.
-  //  Many stores carry zero debt and therefore legitimately report 0%.
-  //  Including those zeros would artificially suppress the portfolio
-  //  average, making the figure misleading for operational benchmarking.
-  //  Therefore, for INTEREST_EXPENSE_PCT only, we exclude stores whose
-  //  % is exactly 0 (or null) before computing the simple average.
-  //  The data block clearly labels this as "avg of stores with interest > 0%"
-  //  so the AI and reader understand the basis.
-  // ─────────────────────────────────────────────────────────────────────
+  // ── FIX 2: Simple average — include stores where PCT = 0 (valid zero).
+  // A store is included if its % is a finite number (including 0 — means $0 for that head).
+  // A store is excluded only if its % is null/undefined (KPI row truly absent from file).
   const pctKpis = [
     "GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT",
     "FOOD_SUPPLIES_PCT","STAFF_PCT","RENT_PCT","FRANCHISE_FEES_PCT",
@@ -989,50 +651,36 @@ function step2_extractAndCompute(sheets, querySchema) {
   ];
   const averages = {};
   pctKpis.forEach(pctKpi => {
-    let vals;
-    if (pctKpi === "INTEREST_EXPENSE_PCT") {
-      // FIX: exclude stores with 0% (or null) interest expense from the average
-      vals = storeNames
-        .map(s => cyMetrics[s]?.[pctKpi])
-        .filter(v => v !== null && v !== undefined && isFinite(v) && v !== 0);
-    } else {
-      vals = storeNames
-        .map(s => cyMetrics[s]?.[pctKpi])
-        .filter(v => v !== null && v !== undefined && isFinite(v));
-    }
+    const vals = storeNames.map(s => {
+      const v = cyMetrics[s]?.[pctKpi];
+      // Include 0 explicitly — isFinite(0) is true, 0 !== null
+      // Exclude only null/undefined (store has no data for this KPI at all)
+      return (v !== null && v !== undefined && isFinite(v)) ? v : null;
+    }).filter(v => v !== null);
     if (vals.length) averages[pctKpi] = roundTo2(vals.reduce((a, b) => a + b, 0) / vals.length);
   });
 
   const ebitdaRanking = storeNames
     .map(s => ({ store: s, ebitda: cyMetrics[s]?.EBITDA ?? null, ebitdaMargin: cyMetrics[s]?.EBITDA_MARGIN_PCT ?? null, revenue: cyMetrics[s]?.REVENUE ?? null }))
-    .filter(x => x.ebitda !== null)
-    .sort((a, b) => b.ebitda - a.ebitda);
+    .filter(x => x.ebitda !== null).sort((a, b) => b.ebitda - a.ebitda);
 
   const revenueRanking = storeNames
     .map(s => ({ store: s, revenue: cyMetrics[s]?.REVENUE ?? null }))
-    .filter(x => x.revenue !== null)
-    .sort((a, b) => b.revenue - a.revenue);
+    .filter(x => x.revenue !== null).sort((a, b) => b.revenue - a.revenue);
 
   function matchLYStore(cyStoreName, lyStoreNames) {
     if (!cyStoreName || !lyStoreNames.length) return null;
     if (lyStoreNames.includes(cyStoreName)) return cyStoreName;
     const cyNorm = cyStoreName.toLowerCase().replace(/[^a-z0-9]/g, "");
-    const normMatch = lyStoreNames.find(ls =>
-      ls.toLowerCase().replace(/[^a-z0-9]/g, "") === cyNorm
-    );
+    const normMatch = lyStoreNames.find(ls => ls.toLowerCase().replace(/[^a-z0-9]/g, "") === cyNorm);
     if (normMatch) return normMatch;
-    const containsMatch = lyStoreNames.find(ls => {
-      const lsNorm = ls.toLowerCase().replace(/[^a-z0-9]/g, "");
-      return cyNorm.includes(lsNorm) || lsNorm.includes(cyNorm);
-    });
+    const containsMatch = lyStoreNames.find(ls => { const lsNorm = ls.toLowerCase().replace(/[^a-z0-9]/g, ""); return cyNorm.includes(lsNorm) || lsNorm.includes(cyNorm); });
     if (containsMatch) return containsMatch;
     const SKIP_TOKENS = new Set(["donut","donuts","llc","inc","corp","group","street","ferry","hall","city"]);
-    const cyTokens = cyStoreName.toLowerCase().split(/\s+/)
-      .filter(t => t.length >= 4 && !SKIP_TOKENS.has(t));
+    const cyTokens = cyStoreName.toLowerCase().split(/\s+/).filter(t => t.length >= 4 && !SKIP_TOKENS.has(t));
     if (cyTokens.length > 0) {
       const tokenMatch = lyStoreNames.find(ls => {
-        const lsTokens = ls.toLowerCase().split(/\s+/)
-          .filter(t => t.length >= 4 && !SKIP_TOKENS.has(t));
+        const lsTokens = ls.toLowerCase().split(/\s+/).filter(t => t.length >= 4 && !SKIP_TOKENS.has(t));
         return cyTokens.some(ct => lsTokens.some(lt => ct === lt || lt.startsWith(ct) || ct.startsWith(lt)));
       });
       if (tokenMatch) return tokenMatch;
@@ -1044,20 +692,12 @@ function step2_extractAndCompute(sheets, querySchema) {
   if (lyMetrics) {
     storeNames.forEach(store => {
       const lyStore = matchLYStore(store, lyStoreNames);
-      if (!lyStore) {
-        console.log(`⚠️ No LY match for CY store: "${store}"`);
-        return;
-      }
+      if (!lyStore) { console.log(`⚠️ No LY match for CY store: "${store}"`); return; }
       yoyComparisons[store] = {};
       resolvedKpiKeys.forEach(kpi => {
-        const cy = cyMetrics[store]?.[kpi];
-        const ly = lyMetrics[lyStore]?.[kpi];
+        const cy = cyMetrics[store]?.[kpi]; const ly = lyMetrics[lyStore]?.[kpi];
         if (cy !== null && cy !== undefined && ly !== null && ly !== undefined && isFinite(cy) && isFinite(ly)) {
-          yoyComparisons[store][kpi] = {
-            cy, ly,
-            change: roundTo2(cy - ly),
-            changePct: ly !== 0 ? safeDivide(cy - ly, Math.abs(ly)) : null
-          };
+          yoyComparisons[store][kpi] = { cy, ly, change: roundTo2(cy - ly), changePct: ly !== 0 ? safeDivide(cy - ly, Math.abs(ly)) : null };
         }
       });
     });
@@ -1070,34 +710,22 @@ function step2_extractAndCompute(sheets, querySchema) {
       if (lyVals.length && totals[kpi] !== undefined) {
         const lyTotal = roundTo2(lyVals.reduce((a,b) => a+b, 0));
         if (lyTotal && lyTotal !== 0) {
-          portfolioYoY[kpi] = {
-            cy: totals[kpi], ly: lyTotal,
-            change: roundTo2(totals[kpi] - lyTotal),
-            changePct: safeDivide(totals[kpi] - lyTotal, Math.abs(lyTotal))
-          };
+          portfolioYoY[kpi] = { cy: totals[kpi], ly: lyTotal, change: roundTo2(totals[kpi] - lyTotal), changePct: safeDivide(totals[kpi] - lyTotal, Math.abs(lyTotal)) };
         }
       }
     });
   }
 
   // ── Extract Benchmark column data ──
-  // Scans ALL header rows (0-9) independently of layout detection so it works
-  // for both separate-sheet and inline layouts. "benchmark" stays excluded from
-  // store columns but its data is extracted here for Cost Structure Analysis.
   const benchmarkData = {};
   try {
     const primaryRaw = primarySheet.rawArray || [];
-    let benchmarkColIdx = -1;
-    let bmDataStartRow = 1;
-
-    // Search first 10 rows for a "Benchmark" header cell
+    let benchmarkColIdx = -1, bmDataStartRow = 1;
     for (let rowIdx = 0; rowIdx < Math.min(10, primaryRaw.length); rowIdx++) {
       const row = primaryRaw[rowIdx] || [];
       const colIdx = row.findIndex(c => isBenchmarkColumn(String(c ?? "").trim()));
       if (colIdx >= 0) {
-        benchmarkColIdx = colIdx;
-        // Find the first row AFTER this header that has numeric data in the benchmark col
-        bmDataStartRow = rowIdx + 1;
+        benchmarkColIdx = colIdx; bmDataStartRow = rowIdx + 1;
         for (let r = rowIdx + 1; r < Math.min(rowIdx + 6, primaryRaw.length); r++) {
           const v = parseAmount((primaryRaw[r] || [])[colIdx]);
           if (v !== null) { bmDataStartRow = r; break; }
@@ -1106,7 +734,6 @@ function step2_extractAndCompute(sheets, querySchema) {
         break;
       }
     }
-
     if (benchmarkColIdx >= 0) {
       for (let r = bmDataStartRow; r < primaryRaw.length; r++) {
         const row = primaryRaw[r] || [];
@@ -1118,26 +745,15 @@ function step2_extractAndCompute(sheets, querySchema) {
     } else {
       console.log("📊 No Benchmark column found in primary sheet headers");
     }
-  } catch (e) {
-    console.warn("⚠️ Benchmark extraction failed:", e.message);
-  }
-
-  console.log(`✅ Step 2 done. ${storeNames.length} stores | EBITDA ranked: ${ebitdaRanking.length} | YoY: ${Object.keys(yoyComparisons).length} stores`);
+  } catch (e) { console.warn("⚠️ Benchmark extraction failed:", e.message); }
 
   return {
     layoutType: isInline ? "INLINE" : "SEPARATE_SHEETS",
-    cySheetName: primarySheet.name,
-    lySheetName: lyMetrics ? (lyYear || "LY Sheet") : null,
-    cyYear, lyYear,
-    storeCount: storeNames.length,
-    stores: storeNames,
-    storeMetrics: cyMetrics,
-    lyMetrics, lyStores: lyStoreNames,
-    kpiMapping, totals, averages,
-    ebitdaRanking, revenueRanking,
-    yoyComparisons, portfolioYoY,
-    allLineItems: cyLineItemDict,
-    benchmarkData    // benchmark column values keyed by line item description
+    cySheetName: primarySheet.name, lySheetName: lyMetrics ? (lyYear || "LY Sheet") : null,
+    cyYear, lyYear, storeCount: storeNames.length, stores: storeNames,
+    storeMetrics: cyMetrics, lyMetrics, lyStores: lyStoreNames,
+    kpiMapping, totals, averages, ebitdaRanking, revenueRanking,
+    yoyComparisons, portfolioYoY, allLineItems: cyLineItemDict, benchmarkData
   };
 }
 
@@ -1147,7 +763,6 @@ function step2_fallback(sheets) {
     const ra = sheet.rawArray || [];
     const inlineInfo = detectInlineYearLayout(ra);
     if (inlineInfo.isInline) {
-      console.log(`🔍 Fallback: INLINE layout detected on sheet "${sheet.name}"`);
       const result = step2_extractAndCompute(sheets, { layout_type: "INLINE_YEAR_COLUMNS", cy_sheet: sheet.name });
       if (result?.storeCount > 0) return result;
     }
@@ -1156,120 +771,38 @@ function step2_fallback(sheets) {
   for (const sheet of sheets) {
     const ra = sheet.rawArray || [];
     const detection = detectSeparateSheetLayout(ra);
-    if (detection.isSeparateSheet) {
-      validSheets.push({ sheet, detection });
-      console.log(`🔍 Fallback: SEPARATE SHEET layout on "${sheet.name}", ${detection.storeColumns.length} stores`);
-    }
+    if (detection.isSeparateSheet) validSheets.push({ sheet, detection });
   }
   if (validSheets.length === 0) return null;
   const { sheet: cySheet, detection: cyDetection } = validSheets[0];
   const lyEntry = validSheets.length > 1 ? validSheets[1] : null;
-  const fakeSchema = {
-    layout_type: "SEPARATE_SHEETS",
-    cy_sheet: cySheet.name,
-    ly_sheet: lyEntry?.sheet.name || null,
-    line_item_column_index: cyDetection.lineItemColIdx,
-    store_columns: cyDetection.storeColumns,
-    consolidated_column_indices: [],
-    data_start_row: cyDetection.dataStartRow
-  };
-  if (lyEntry && lyEntry.detection.storeColumns.length !== cyDetection.storeColumns.length) {
-    const lyFakeSchema = {
-      ...fakeSchema,
-      cy_sheet: lyEntry.sheet.name,
-      ly_sheet: null,
-      store_columns: lyEntry.detection.storeColumns,
-      data_start_row: lyEntry.detection.dataStartRow
-    };
-    const cyResult = step2_extractAndCompute([cySheet], fakeSchema);
-    const lyResult = step2_extractAndCompute([lyEntry.sheet], lyFakeSchema);
-    if (cyResult?.storeCount > 0 && lyResult?.storeCount > 0) {
-      cyResult.lyMetrics = lyResult.storeMetrics;
-      cyResult.lyStores = lyResult.stores;
-      cyResult.lySheetName = lyEntry.sheet.name;
-      cyResult.lyYear = lyEntry.sheet.name;
-      const kpiKeys = Object.keys(KPI_PATTERNS);
-      cyResult.stores.forEach(store => {
-        const lyStore = matchLYStore(store, lyResult.stores);
-        if (!lyStore) return;
-        cyResult.yoyComparisons[store] = {};
-        kpiKeys.forEach(kpi => {
-          const cy = cyResult.storeMetrics[store]?.[kpi];
-          const ly = lyResult.storeMetrics[lyStore]?.[kpi];
-          if (cy != null && ly != null && isFinite(cy) && isFinite(ly)) {
-            cyResult.yoyComparisons[store][kpi] = { cy, ly, change: roundTo2(cy - ly), changePct: ly !== 0 ? safeDivide(cy - ly, Math.abs(ly)) : null };
-          }
-        });
-      });
-      return cyResult;
-    }
-  }
+  const fakeSchema = { layout_type: "SEPARATE_SHEETS", cy_sheet: cySheet.name, ly_sheet: lyEntry?.sheet.name || null, line_item_column_index: cyDetection.lineItemColIdx, store_columns: cyDetection.storeColumns, consolidated_column_indices: [], data_start_row: cyDetection.dataStartRow };
   const result = step2_extractAndCompute(sheets, fakeSchema);
   if (result?.storeCount > 0) return result;
   return null;
 }
 
-// ─────────────────────────────────────────────
-//  BUILD CLEAN DATA BLOCK FOR AI (Step 3 input)
-// ─────────────────────────────────────────────
-
 const KPI_LABELS = {
-  REVENUE:              "Net Revenue",
-  FOOD_SUPPLIES:        "Food and Supplies",
-  STAFF_COST:           "Operational Payroll Expenses",
-  COGS:                 "Total COGS",
-  GROSS_PROFIT:         "Gross Margin",
-  GROSS_MARGIN_PCT:     "Gross Margin%",
-  RENT:                 "Rent",
-  FRANCHISE_FEES:       "Franchise Fees",
-  RENT_FRANCHISE_TOTAL: "Total Rent & Franchise Fees",
-  UTILITIES:            "Utilities",
-  REPAIRS_MAINTENANCE:  "Total Repairs and Maintenance",
-  OTHER_EXPENSES:       "Total Other Expenses",
-  EBITDA:               "EBITDA",
-  EBITDA_MARGIN_PCT:    "EBITDA%",
-  INTEREST_EXPENSE:     "Interest Expense",
-  DEPRECIATION_EXP:     "Depreciation Expense",
-  AMORTIZATION_EXP:     "Amortization Expense",
-  TOTAL_DEPR_INT:       "Total Interest / Depreciation & Amortizations",
+  REVENUE:"Net Revenue", FOOD_SUPPLIES:"Food and Supplies", STAFF_COST:"Operational Payroll Expenses",
+  COGS:"Total COGS", GROSS_PROFIT:"Gross Margin", GROSS_MARGIN_PCT:"Gross Margin%",
+  RENT:"Rent", FRANCHISE_FEES:"Franchise Fees", RENT_FRANCHISE_TOTAL:"Total Rent & Franchise Fees",
+  UTILITIES:"Utilities", REPAIRS_MAINTENANCE:"Total Repairs and Maintenance",
+  OTHER_EXPENSES:"Total Other Expenses", EBITDA:"EBITDA", EBITDA_MARGIN_PCT:"EBITDA%",
+  INTEREST_EXPENSE:"Interest Expense", DEPRECIATION_EXP:"Depreciation Expense",
+  AMORTIZATION_EXP:"Amortization Expense", TOTAL_DEPR_INT:"Total Interest / Depreciation & Amortizations",
   OPR_INCOME_BEFORE_MGT:"Operating Income before Mgt Fee & O/h Allocations",
-  MANAGEMENT_FEE:       "Management Fee",
-  ADMIN_EXP:            "Administrative Expenses",
-  NET_OPR_INCOME:       "Net Operating Income",
-  OTHER_INCOME:         "Other Income",
-  PBT:                  "PBT",
-  NET_PROFIT:           "Net Profit Before Tax",
-  NET_MARGIN_PCT:       "Net Margin%"
+  MANAGEMENT_FEE:"Management Fee", ADMIN_EXP:"Administrative Expenses",
+  NET_OPR_INCOME:"Net Operating Income", OTHER_INCOME:"Other Income",
+  PBT:"PBT", NET_PROFIT:"Net Profit Before Tax", NET_MARGIN_PCT:"Net Margin%"
 };
 
-// ── KPI_ORDER: display sequence matching the P&L waterfall ──
 const KPI_ORDER = [
-  "REVENUE",
-  "FOOD_SUPPLIES", "STAFF_COST", "COGS",
-  "GROSS_PROFIT",
-  "RENT", "FRANCHISE_FEES", "RENT_FRANCHISE_TOTAL",
-  "UTILITIES", "REPAIRS_MAINTENANCE", "OTHER_EXPENSES",
-  "EBITDA",
-  "INTEREST_EXPENSE", "DEPRECIATION_EXP", "AMORTIZATION_EXP", "TOTAL_DEPR_INT",
-  "OPR_INCOME_BEFORE_MGT",
-  "MANAGEMENT_FEE", "ADMIN_EXP", "NET_OPR_INCOME",
-  "OTHER_INCOME",
-  "PBT",
-  "NET_PROFIT"
+  "REVENUE","FOOD_SUPPLIES","STAFF_COST","COGS","GROSS_PROFIT",
+  "RENT","FRANCHISE_FEES","RENT_FRANCHISE_TOTAL","UTILITIES","REPAIRS_MAINTENANCE","OTHER_EXPENSES",
+  "EBITDA","INTEREST_EXPENSE","DEPRECIATION_EXP","AMORTIZATION_EXP","TOTAL_DEPR_INT",
+  "OPR_INCOME_BEFORE_MGT","MANAGEMENT_FEE","ADMIN_EXP","NET_OPR_INCOME",
+  "OTHER_INCOME","PBT","NET_PROFIT"
 ];
-
-// ─────────────────────────────────────────────────────────────────────────
-//  KPI heads that NEVER have a benchmark in this MIS format.
-//  When any of these appear in a cost structure section, we must explicitly
-//  tell the AI "no benchmark exists" so it never treats the portfolio
-//  average as a benchmark surrogate.
-// ─────────────────────────────────────────────────────────────────────────
-const KPI_NEVER_HAS_BENCHMARK = new Set([
-  "INTEREST_EXPENSE",
-  "DEPRECIATION_EXP",
-  "AMORTIZATION_EXP",
-  "TOTAL_DEPR_INT"
-]);
 
 function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   const { storeMetrics, stores, totals, averages, ebitdaRanking, revenueRanking,
@@ -1282,24 +815,13 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   const promptExcl = inp.promptExclusions || [];
   let activeStores = stores.filter(s => {
     const sl = s.toLowerCase();
-    if (promptExcl.some(excl => sl.includes(excl) || excl.includes(sl.replace(/\s+(llc|inc|corp|group).*$/i, "")))) {
-      console.log(`🚫 Excluding store "${s}" due to prompt exclusion`);
-      return false;
-    }
-    if (isConsolidatedColumn(s)) {
-      console.log(`🚫 Excluding store "${s}" — matches consolidated pattern`);
-      return false;
-    }
+    if (promptExcl.some(excl => sl.includes(excl) || excl.includes(sl.replace(/\s+(llc|inc|corp|group).*$/i, "")))) { console.log(`🚫 Excluding store "${s}" due to prompt exclusion`); return false; }
+    if (isConsolidatedColumn(s)) { console.log(`🚫 Excluding store "${s}" — matches consolidated pattern`); return false; }
     return true;
   });
 
   if (inp.isSpecificStore && inp.specificStores?.length > 0) {
-    const filtered = activeStores.filter(s =>
-      inp.specificStores.some(req =>
-        s.toLowerCase().includes(req.toLowerCase()) ||
-        req.toLowerCase().includes(s.toLowerCase().split(" ")[0])
-      )
-    );
+    const filtered = activeStores.filter(s => inp.specificStores.some(req => s.toLowerCase().includes(req.toLowerCase()) || req.toLowerCase().includes(s.toLowerCase().split(" ")[0])));
     if (filtered.length > 0) activeStores = filtered;
   }
 
@@ -1317,7 +839,6 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   b += `Total stores in file: ${storeCount}\n`;
   b += `Stores in this analysis: ${activeStores.length}${inp.isSpecificStore ? ` (filtered to: ${activeStores.join(", ")})` : ""}\n\n`;
 
-  // ── Portfolio totals ──
   const scopedTotals = {};
   activeKPIs.forEach(kpi => {
     const vals = activeStores.map(s => storeMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
@@ -1327,117 +848,74 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   b += `▶ ${inp.isSpecificStore ? `TOTALS FOR SELECTED STORES` : "PORTFOLIO TOTALS"}\n${"─".repeat(58)}\n`;
   activeKPIs.forEach(kpi => {
     if (scopedTotals[kpi] !== undefined) {
-      const label  = (KPI_LABELS[kpi]||kpi).padEnd(22);
-      const cy     = formatNum(scopedTotals[kpi]);
-      const yoy    = (!inp.isSpecificStore) ? portfolioYoY[kpi] : null;
+      const label = (KPI_LABELS[kpi]||kpi).padEnd(22);
+      const cy    = formatNum(scopedTotals[kpi]);
+      const yoy   = (!inp.isSpecificStore) ? portfolioYoY[kpi] : null;
       const yoyStr = yoy ? `  |  LY: ${formatNum(yoy.ly)}  |  Δ: ${formatNum(yoy.change)} (${formatDeltaPct(yoy.changePct)})` : "";
       b += `  ${label}: ${cy.padStart(15)}${yoyStr}\n`;
     }
   });
 
-  // Portfolio averages
   if (!inp.isSpecificStore) {
-    const avgKPIs = [
-      "GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT",
-      "FOOD_SUPPLIES_PCT","STAFF_PCT","RENT_PCT","FRANCHISE_FEES_PCT",
-      "RENT_FRANCHISE_PCT","UTILITIES_PCT","REPAIRS_MAINTENANCE_PCT",
-      "INTEREST_EXPENSE_PCT","DEPRECIATION_EXP_PCT","AMORTIZATION_EXP_PCT",
-      "OTHER_EXPENSES_PCT","OTHER_INCOME_PCT"
-    ].filter(k => averages[k] !== undefined);
+    const avgKPIs = ["GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT","FOOD_SUPPLIES_PCT","STAFF_PCT","RENT_PCT","FRANCHISE_FEES_PCT","RENT_FRANCHISE_PCT","UTILITIES_PCT","REPAIRS_MAINTENANCE_PCT","INTEREST_EXPENSE_PCT","DEPRECIATION_EXP_PCT","AMORTIZATION_EXP_PCT","OTHER_EXPENSES_PCT","OTHER_INCOME_PCT"].filter(k => averages[k] !== undefined);
     if (avgKPIs.length) {
       b += `\n▶ PORTFOLIO AVERAGES (all ${storeCount} stores)\n${"─".repeat(58)}\n`;
-      avgKPIs.forEach(kpi => {
-        if (averages[kpi] !== undefined) {
-          // FIX: label INTEREST_EXPENSE_PCT average clearly so AI knows it excludes 0% stores
-          const label = kpi === "INTEREST_EXPENSE_PCT"
-            ? "Interest Expense% (avg of stores with interest > 0%)"
-            : (KPI_LABELS[kpi] || kpi);
-          b += `  ${label.padEnd(52)}: ${formatPct(averages[kpi])}\n`;
-        }
-      });
+      avgKPIs.forEach(kpi => { if (averages[kpi] !== undefined) b += `  ${(KPI_LABELS[kpi]||kpi).padEnd(22)}: ${formatPct(averages[kpi])}\n`; });
     }
   }
 
   // ── Benchmark data block ──
-  // ─────────────────────────────────────────────────────────────────────
-  //  BENCHMARK BLOCK
-  //
-  //  Rules enforced in code (not left to AI interpretation):
-  //  1. Only emit benchmark % for KPIs that actually appear in benchmarkData.
-  //  2. For KPI_NEVER_HAS_BENCHMARK heads (Interest Expense, Depreciation,
-  //     Amortization, Total D&A): always emit the explicit "NO BENCHMARK"
-  //     warning, regardless of whether a value somehow crept into benchmarkData.
-  //     This prevents the AI from treating the portfolio average as a benchmark.
-  //  3. The missing-benchmark warning list is built from ALL cost KPI heads
-  //     that are in scope — not just the ones absent from the file.
-  // ─────────────────────────────────────────────────────────────────────
+  // FIX 1: Only store benchmark values that are meaningfully non-zero positive percentages.
+  // A value of 0 (or absent) means the file has no benchmark for that head
+  // (e.g. Interest Expense, Depreciation) — those heads will get the ⚠ NO BENCHMARK flag.
   if (benchmarkData && Object.keys(benchmarkData).length > 0) {
     b += `\n▶ BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE\n`;
-    b += `   (These are the real benchmark figures from the "Benchmark" column — NOT portfolio averages)\n`;
+    b += `   (Real benchmark % figures from the "Benchmark" column — NOT portfolio averages)\n`;
     b += `${"─".repeat(58)}\n`;
 
-    // Build a KPI → benchmark % map, but SKIP any KPI in KPI_NEVER_HAS_BENCHMARK
     const benchmarkPctByKpi = {};
     Object.entries(benchmarkData).forEach(([desc, val]) => {
       const kpi = matchKPI(desc);
       if (!kpi) return;
-      if (KPI_NEVER_HAS_BENCHMARK.has(kpi)) return; // always treat these as no-benchmark
-      benchmarkPctByKpi[kpi] = val;
+      // Only treat as a valid benchmark if the value is a meaningful positive percentage.
+      // val == 0 means the file had blank/zero for this head → treat as no benchmark.
+      if (val !== null && val !== undefined && isFinite(val) && val > 0) {
+        benchmarkPctByKpi[kpi] = val;
+      }
     });
 
-    // Display lines for KPIs that DO have a benchmark
+    // Display only KPIs that have a valid (non-zero) benchmark
     Object.entries(benchmarkData).forEach(([desc, val]) => {
       const kpi = matchKPI(desc);
-      if (!kpi) return;
-      if (KPI_NEVER_HAS_BENCHMARK.has(kpi)) return; // skip — shown in NO BENCHMARK section below
-      if (benchmarkPctByKpi[kpi] !== undefined) {
-        const label = KPI_LABELS[kpi] || kpi;
+      const label = kpi ? (KPI_LABELS[kpi] || kpi) : desc;
+      if (kpi && benchmarkPctByKpi[kpi] !== undefined) {
         b += `  ${label.padEnd(36)}: ${formatPct(val)}\n`;
       }
     });
 
-    // Build the "NO BENCHMARK" warning list:
-    // Includes (a) cost KPIs missing from benchmarkData AND (b) all KPI_NEVER_HAS_BENCHMARK heads in scope
-    const costKpiKeys = ["FOOD_SUPPLIES","STAFF_COST","RENT","FRANCHISE_FEES","UTILITIES",
-                         "REPAIRS_MAINTENANCE","OTHER_EXPENSES","INTEREST_EXPENSE",
-                         "DEPRECIATION_EXP","AMORTIZATION_EXP"];
-    const missingBenchmark = costKpiKeys.filter(k => {
-      if (KPI_NEVER_HAS_BENCHMARK.has(k)) return true;      // always flag these
-      return benchmarkPctByKpi[k] === undefined;             // flag if absent from file
-    });
-
+    // Flag cost heads with NO valid benchmark so AI uses portfolio simple avg instead
+    const costKpiKeys = ["FOOD_SUPPLIES","STAFF_COST","RENT","FRANCHISE_FEES","UTILITIES","REPAIRS_MAINTENANCE","OTHER_EXPENSES","INTEREST_EXPENSE","DEPRECIATION_EXP","AMORTIZATION_EXP"];
+    const missingBenchmark = costKpiKeys.filter(k => benchmarkPctByKpi[k] === undefined);
     if (missingBenchmark.length > 0) {
       b += `\n  ⚠ NO BENCHMARK for: ${missingBenchmark.map(k => KPI_LABELS[k]||k).join(", ")}\n`;
-      b += `    → For these heads, DO NOT use any benchmark figure.\n`;
-      b += `    → State "No benchmark available in the report for this head."\n`;
-      b += `    → Then provide the portfolio simple average % and inter-store comparison only.\n`;
-      b += `    → NEVER treat the portfolio average as a benchmark for these heads.\n`;
+      b += `    → For these heads, use portfolio simple average % and highest/lowest store instead.\n`;
     }
     b += `\n  ⚑ These % values are taken directly from the file's Benchmark column — use as-is.\n`;
   } else {
     b += `\n▶ BENCHMARK COLUMN: Not found in this file. Use portfolio averages for comparisons.\n`;
-    // Even if there's no benchmark column at all, explicitly flag the never-has-benchmark heads
-    b += `\n  ⚠ NO BENCHMARK for: Interest Expense, Depreciation Expense, Amortization Expense, Total Interest/Depreciation & Amortizations\n`;
-    b += `    → For these heads, DO NOT use any benchmark figure. State "No benchmark available."\n`;
-    b += `    → NEVER treat the portfolio average as a benchmark for these heads.\n`;
   }
 
-  // ── Per-store YoY data for Store-wise YoY table ──
+  // ── Pre-built Store-wise YoY table ──
   {
     const cols = ["Sr.No", "Store", "Rev CY", "Rev LY", "Rev Δ%", "Gross Profit CY", "GP LY", "EBITDA CY", "EBITDA LY", "EBITDA Δ%"];
     const rows = activeStores.map((store, idx) => {
-      const m   = storeMetrics[store];
-      const yoy = yoyComparisons[store];
+      const m = storeMetrics[store]; const yoy = yoyComparisons[store];
       return [
-        String(idx + 1),
-        store,
-        formatNum(m?.REVENUE ?? null),
-        formatNum(yoy?.REVENUE?.ly ?? null),
+        String(idx + 1), store,
+        formatNum(m?.REVENUE ?? null), formatNum(yoy?.REVENUE?.ly ?? null),
         yoy?.REVENUE?.changePct != null ? formatDeltaPct(yoy.REVENUE.changePct) : "N/A",
-        formatNum(m?.GROSS_PROFIT ?? null),
-        formatNum(yoy?.GROSS_PROFIT?.ly ?? null),
-        formatNum(m?.EBITDA ?? null),
-        formatNum(yoy?.EBITDA?.ly ?? null),
+        formatNum(m?.GROSS_PROFIT ?? null), formatNum(yoy?.GROSS_PROFIT?.ly ?? null),
+        formatNum(m?.EBITDA ?? null), formatNum(yoy?.EBITDA?.ly ?? null),
         yoy?.EBITDA?.changePct != null ? formatDeltaPct(yoy.EBITDA.changePct) : "N/A",
       ];
     });
@@ -1450,57 +928,32 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     b += `(${activeStores.length} stores total — all rows above are complete)\n`;
   }
 
-  // ── Per-store Cost Structure data for Cost Structure Analysis ──
+  // ── Per-store Cost Structure data ──
   b += `\n▶ STORE-WISE COST STRUCTURE (% of Revenue — for Cost Structure Analysis)\n${"─".repeat(58)}\n`;
   const costKPIs = [
-    { kpi: "FOOD_SUPPLIES",      pct: "FOOD_SUPPLIES_PCT",        label: "Food and Supplies" },
-    { kpi: "STAFF_COST",         pct: "STAFF_PCT",                label: "Operational Payroll Expenses" },
-    { kpi: "RENT",               pct: "RENT_PCT",                 label: "Rent" },
-    { kpi: "FRANCHISE_FEES",     pct: "FRANCHISE_FEES_PCT",       label: "Franchise Fees" },
-    { kpi: "UTILITIES",          pct: "UTILITIES_PCT",            label: "Utilities" },
-    { kpi: "REPAIRS_MAINTENANCE",pct: "REPAIRS_MAINTENANCE_PCT",  label: "Total Repairs and Maintenance" },
-    { kpi: "OTHER_EXPENSES",     pct: "OTHER_EXPENSES_PCT",       label: "Total Other Expenses" },
-    { kpi: "INTEREST_EXPENSE",   pct: "INTEREST_EXPENSE_PCT",     label: "Interest Expense" },
-    { kpi: "DEPRECIATION_EXP",   pct: "DEPRECIATION_EXP_PCT",     label: "Depreciation Expense" },
-    { kpi: "AMORTIZATION_EXP",   pct: "AMORTIZATION_EXP_PCT",     label: "Amortization Expense" },
+    { kpi: "FOOD_SUPPLIES",      pct: "FOOD_SUPPLIES_PCT",       label: "Food and Supplies" },
+    { kpi: "STAFF_COST",         pct: "STAFF_PCT",               label: "Operational Payroll Expenses" },
+    { kpi: "RENT",               pct: "RENT_PCT",                label: "Rent" },
+    { kpi: "FRANCHISE_FEES",     pct: "FRANCHISE_FEES_PCT",      label: "Franchise Fees" },
+    { kpi: "UTILITIES",          pct: "UTILITIES_PCT",           label: "Utilities" },
+    { kpi: "REPAIRS_MAINTENANCE",pct: "REPAIRS_MAINTENANCE_PCT", label: "Total Repairs and Maintenance" },
+    { kpi: "OTHER_EXPENSES",     pct: "OTHER_EXPENSES_PCT",      label: "Total Other Expenses" },
+    { kpi: "INTEREST_EXPENSE",   pct: "INTEREST_EXPENSE_PCT",    label: "Interest Expense" },
+    { kpi: "DEPRECIATION_EXP",   pct: "DEPRECIATION_EXP_PCT",   label: "Depreciation Expense" },
+    { kpi: "AMORTIZATION_EXP",   pct: "AMORTIZATION_EXP_PCT",   label: "Amortization Expense" },
   ];
   costKPIs.forEach(({ kpi, pct, label }) => {
-    const storeEntries = activeStores
-      .map(store => ({
-        store,
-        amt: storeMetrics[store]?.[kpi],
-        pctVal: storeMetrics[store]?.[pct]
-      }))
-      .filter(e => e.amt !== null && e.amt !== undefined && isFinite(e.amt));
-
+    const storeEntries = activeStores.map(store => ({ store, amt: storeMetrics[store]?.[kpi], pctVal: storeMetrics[store]?.[pct] })).filter(e => e.amt !== null && e.amt !== undefined && isFinite(e.amt));
     if (storeEntries.length === 0) return;
-
-    const sorted = [...storeEntries].sort((a, b) => {
-      const pa = (a.pctVal !== null && a.pctVal !== undefined) ? a.pctVal : -Infinity;
-      const pb = (b.pctVal !== null && b.pctVal !== undefined) ? b.pctVal : -Infinity;
-      return pb - pa;
-    });
-
+    const sorted = [...storeEntries].sort((a, b) => { const pa = (a.pctVal !== null && a.pctVal !== undefined) ? a.pctVal : -Infinity; const pb = (b.pctVal !== null && b.pctVal !== undefined) ? b.pctVal : -Infinity; return pb - pa; });
     const highest = sorted[0];
-
-    const nonZeroEntries = sorted.filter(e =>
-      e.pctVal !== null && e.pctVal !== undefined && isFinite(e.pctVal) && e.pctVal > 0
-    );
+    const nonZeroEntries = sorted.filter(e => e.pctVal !== null && e.pctVal !== undefined && isFinite(e.pctVal) && e.pctVal > 0);
     const lowest = nonZeroEntries.length > 0 ? nonZeroEntries[nonZeroEntries.length - 1] : null;
-
-    // For Interest Expense: label the portfolio avg clearly as excluding 0% stores
-    const avgLabel = kpi === "INTEREST_EXPENSE"
-      ? "Portfolio simple avg (excl. stores with 0% interest)"
-      : "Portfolio simple avg";
-
     b += `\n  [${label}]\n`;
     b += `  HIGHEST: ${highest.store} — ${formatNum(highest.amt)} (${highest.pctVal !== null ? formatPct(highest.pctVal) : "N/A"})\n`;
-    if (lowest) {
-      b += `  LOWEST (excl. 0%): ${lowest.store} — ${formatNum(lowest.amt)} (${formatPct(lowest.pctVal)})\n`;
-    } else {
-      b += `  LOWEST: No stores with positive % found\n`;
-    }
-    b += `  ${avgLabel}: ${averages[pct] !== undefined ? formatPct(averages[pct]) : "N/A"}\n`;
+    if (lowest) b += `  LOWEST (excl. 0%): ${lowest.store} — ${formatNum(lowest.amt)} (${formatPct(lowest.pctVal)})\n`;
+    else b += `  LOWEST: No stores with positive % found\n`;
+    b += `  Portfolio simple avg: ${averages[pct] !== undefined ? formatPct(averages[pct]) : "N/A"}\n`;
     b += `  All stores (sorted high→low %):\n`;
     sorted.forEach(e => {
       const flag = e === highest ? " ← HIGHEST" : (e === lowest ? " ← LOWEST (excl. 0%)" : "");
@@ -1511,14 +964,12 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   // ── Per-store detail ──
   b += `\n▶ ${inp.isSpecificStore ? "SELECTED STORE DETAIL" : "ALL STORES"} — CY PERFORMANCE\n${"─".repeat(58)}\n`;
   activeStores.forEach(store => {
-    const m   = storeMetrics[store];
-    const yoy = yoyComparisons[store];
+    const m = storeMetrics[store]; const yoy = yoyComparisons[store];
     b += `\n  ┌─ ${store}\n`;
     activeKPIs.forEach(kpi => {
       const v = m?.[kpi];
       if (v !== null && v !== undefined && isFinite(v)) {
-        const pctKey = kpi + "_PCT";
-        const pct    = m?.[pctKey];
+        const pctKey = kpi + "_PCT"; const pct = m?.[pctKey];
         const pctStr = (pct !== null && pct !== undefined && isFinite(pct)) ? `  (${formatPct(pct)})` : "";
         b += `  │  ${(KPI_LABELS[kpi]||kpi).padEnd(28)}: ${formatNum(v)}${pctStr}\n`;
       }
@@ -1535,38 +986,25 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     b += `  └${"─".repeat(60)}\n`;
   });
 
-  // ── EBITDA ranking ──
   const showEbitdaRanking = (!inp.isSpecificStore && inp.isAllStoreAnalysis) || inp.wantsEbitdaRank || inp.storeFilter;
   if (showEbitdaRanking && ebitdaRanking.length && activeKPIs.includes("EBITDA")) {
     b += `\n▶ EBITDA RANKING — ALL ${ebitdaRanking.length} STORES (highest → lowest)\n${"─".repeat(58)}\n`;
-    ebitdaRanking.forEach((x, i) => {
-      const m = x.ebitdaMargin !== null ? ` | ${formatPct(x.ebitdaMargin)}` : "";
-      b += `  #${String(i+1).padStart(2)} ${x.store.padEnd(34)} ${formatNum(x.ebitda)}${m}\n`;
-    });
-    const top5    = ebitdaRanking.slice(0, 5);
-    const bottom5 = [...ebitdaRanking].reverse().slice(0, 5);
-    b += `\n  ★ TOP 5:\n`;
-    top5.forEach((x,i) => b += `    ${i+1}. ${x.store} — ${formatNum(x.ebitda)}${x.ebitdaMargin!==null?` (${formatPct(x.ebitdaMargin)})`:""}\n`);
-    b += `\n  ▼ BOTTOM 5:\n`;
-    bottom5.forEach((x,i) => b += `    ${i+1}. ${x.store} — ${formatNum(x.ebitda)}${x.ebitdaMargin!==null?` (${formatPct(x.ebitdaMargin)})`:""}\n`);
+    ebitdaRanking.forEach((x, i) => { const m = x.ebitdaMargin !== null ? ` | ${formatPct(x.ebitdaMargin)}` : ""; b += `  #${String(i+1).padStart(2)} ${x.store.padEnd(34)} ${formatNum(x.ebitda)}${m}\n`; });
+    const top5 = ebitdaRanking.slice(0, 5); const bottom5 = [...ebitdaRanking].reverse().slice(0, 5);
+    b += `\n  ★ TOP 5:\n`; top5.forEach((x,i) => b += `    ${i+1}. ${x.store} — ${formatNum(x.ebitda)}${x.ebitdaMargin!==null?` (${formatPct(x.ebitdaMargin)})`:""}\n`);
+    b += `\n  ▼ BOTTOM 5:\n`; bottom5.forEach((x,i) => b += `    ${i+1}. ${x.store} — ${formatNum(x.ebitda)}${x.ebitdaMargin!==null?` (${formatPct(x.ebitdaMargin)})`:""}\n`);
   }
 
   if (!inp.isSpecificStore && revenueRanking.length) {
     b += `\n▶ REVENUE RANKING (top 10)\n${"─".repeat(58)}\n`;
-    revenueRanking.slice(0, 10).forEach((x, i) =>
-      b += `  #${String(i+1).padStart(2)} ${x.store.padEnd(34)} ${formatNum(x.revenue)}\n`);
+    revenueRanking.slice(0, 10).forEach((x, i) => b += `  #${String(i+1).padStart(2)} ${x.store.padEnd(34)} ${formatNum(x.revenue)}\n`);
   }
 
   return { text: b, activeStoreCount: activeStores.length };
 }
 
-// ─────────────────────────────────────────────
-//  STEP 3 — AI WRITES COMMENTARY
-// ─────────────────────────────────────────────
-
 function parseUserIntent(userQuestion, allStoreNames = []) {
   const q = String(userQuestion || "").toLowerCase();
-
   let kpiLimit = null;
   if (/till ebid?ta|upto ebid?ta|up to ebid?ta|only.*ebid?ta|ebid?ta only|stop at ebid?ta|through ebid?ta|ebid?ta level|show.*ebid?ta|give.*ebid?ta|analysis.*ebid?ta/.test(q)) kpiLimit = "EBITDA";
   else if (/till net.{0,8}operating|net operating income only/.test(q)) kpiLimit = "NET_OPR_INCOME";
@@ -1575,10 +1013,7 @@ function parseUserIntent(userQuestion, allStoreNames = []) {
   else if (/till revenue|revenue only/.test(q)) kpiLimit = "REVENUE";
   else if (/till ebit[^d]|up to ebit[^d]|ebit only/.test(q)) kpiLimit = "EBIT";
   else if (/till pbt|up to pbt|pbt only/.test(q)) kpiLimit = "PBT";
-
   const promptExclusions = parseExclusionsFromPrompt(userQuestion);
-  console.log("🚫 Prompt exclusions:", JSON.stringify(promptExclusions));
-
   let specificStores = [];
   if (allStoreNames.length > 0) {
     specificStores = allStoreNames.filter(storeName => {
@@ -1592,47 +1027,23 @@ function parseUserIntent(userQuestion, allStoreNames = []) {
     });
   }
   const isSpecificStore = specificStores.length > 0;
-
   let storeFilter = null;
-  const topMatch = q.match(/top\s*(\d+)/);
-  const botMatch = q.match(/bottom\s*(\d+)/);
-  if (topMatch) storeFilter = { type: "top",    n: parseInt(topMatch[1]) };
+  const topMatch = q.match(/top\s*(\d+)/); const botMatch = q.match(/bottom\s*(\d+)/);
+  if (topMatch) storeFilter = { type: "top", n: parseInt(topMatch[1]) };
   if (botMatch) storeFilter = { type: "bottom", n: parseInt(botMatch[1]) };
-
-  const isDeepAnalysis   = /deep|detail|thorough|comprehensive|full|complete|in.depth|all head|every head|all line|breakdown/.test(q);
-  const isRanking        = /top|bottom|rank|best|worst|highest|lowest/.test(q);
-  const isComparison     = /compar|vs|versus|against|yoy|year.on.year|last year/.test(q);
-  const wantsYoY         = isComparison || /yoy|year.on.year|last year|vs.*last|compared to/.test(q);
-  const wantsEbitdaRank  = /top.*ebid?ta|bottom.*ebid?ta|ebid?ta.*top|ebid?ta.*bottom|ebid?ta.*rank|rank.*ebid?ta|best.*ebid?ta|worst.*ebid?ta/.test(q);
+  const isDeepAnalysis  = /deep|detail|thorough|comprehensive|full|complete|in.depth|all head|every head|all line|breakdown/.test(q);
+  const isRanking       = /top|bottom|rank|best|worst|highest|lowest/.test(q);
+  const isComparison    = /compar|vs|versus|against|yoy|year.on.year|last year/.test(q);
+  const wantsYoY        = isComparison || /yoy|year.on.year|last year|vs.*last|compared to/.test(q);
+  const wantsEbitdaRank = /top.*ebid?ta|bottom.*ebid?ta|ebid?ta.*top|ebid?ta.*bottom|ebid?ta.*rank|rank.*ebid?ta|best.*ebid?ta|worst.*ebid?ta/.test(q);
   const isAllStoreAnalysis = !isSpecificStore && !storeFilter && !isRanking;
-
   const isBrandReport = /\bbrand\b|\bbrands\b|brand report|brand data|brand.?wise|brand analysis/i.test(q);
-
   console.log("🎯 Intent: kpiLimit=" + kpiLimit + ", stores=" + JSON.stringify(specificStores) + ", deep=" + isDeepAnalysis + ", isBrandReport=" + isBrandReport);
-
-  return {
-    kpiLimit, specificStores, isSpecificStore, promptExclusions,
-    storeFilter, isRanking, isComparison, wantsYoY,
-    isDeepAnalysis, wantsEbitdaRank, isAllStoreAnalysis,
-    isBrandReport
-  };
+  return { kpiLimit, specificStores, isSpecificStore, promptExclusions, storeFilter, isRanking, isComparison, wantsYoY, isDeepAnalysis, wantsEbitdaRank, isAllStoreAnalysis, isBrandReport };
 }
 
 function getKPIOrderForIntent(intent) {
-  const FULL_ORDER = [
-    "REVENUE",
-    "FOOD_SUPPLIES", "STAFF_COST", "COGS",
-    "GROSS_PROFIT",
-    "RENT", "FRANCHISE_FEES", "RENT_FRANCHISE_TOTAL",
-    "UTILITIES", "REPAIRS_MAINTENANCE", "OTHER_EXPENSES",
-    "EBITDA",
-    "INTEREST_EXPENSE", "DEPRECIATION_EXP", "AMORTIZATION_EXP", "TOTAL_DEPR_INT",
-    "OPR_INCOME_BEFORE_MGT",
-    "MANAGEMENT_FEE", "ADMIN_EXP", "NET_OPR_INCOME",
-    "OTHER_INCOME",
-    "PBT",
-    "NET_PROFIT"
-  ];
+  const FULL_ORDER = ["REVENUE","FOOD_SUPPLIES","STAFF_COST","COGS","GROSS_PROFIT","RENT","FRANCHISE_FEES","RENT_FRANCHISE_TOTAL","UTILITIES","REPAIRS_MAINTENANCE","OTHER_EXPENSES","EBITDA","INTEREST_EXPENSE","DEPRECIATION_EXP","AMORTIZATION_EXP","TOTAL_DEPR_INT","OPR_INCOME_BEFORE_MGT","MANAGEMENT_FEE","ADMIN_EXP","NET_OPR_INCOME","OTHER_INCOME","PBT","NET_PROFIT"];
   if (!intent.kpiLimit) return FULL_ORDER;
   const limitIdx = FULL_ORDER.indexOf(intent.kpiLimit);
   if (limitIdx === -1) return FULL_ORDER;
@@ -1640,57 +1051,24 @@ function getKPIOrderForIntent(intent) {
 }
 
 function buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults, activeStoreCount, userQuestion) {
-  const kpiScopeStr    = kpiScope.join(", ");
-  const isSpecific     = intent.isSpecificStore && intent.specificStores?.length > 0;
-  const isDeep         = intent.isDeepAnalysis;
+  const kpiScopeStr = kpiScope.join(", ");
+  const isSpecific  = intent.isSpecificStore && intent.specificStores?.length > 0;
   const showEbitdaRank = (!isSpecific && intent.isAllStoreAnalysis) || intent.wantsEbitdaRank || intent.storeFilter;
-  const totalStores    = activeStoreCount ?? (computedResults?.stores?.length || 0);
-
-  const exclusionNote = intent.promptExclusions?.length > 0
-    ? ` EXCLUDE the following from analysis: ${intent.promptExclusions.join("; ")} — do NOT mention them anywhere.`
-    : "";
-
-  let scopeNote = intent.kpiLimit
-    ? `Analysis limited to KPIs up to and including: ${intent.kpiLimit}.`
-    : "Full P&L analysis.";
+  const totalStores = activeStoreCount ?? (computedResults?.stores?.length || 0);
+  const exclusionNote = intent.promptExclusions?.length > 0 ? ` EXCLUDE the following from analysis: ${intent.promptExclusions.join("; ")} — do NOT mention them anywhere.` : "";
+  let scopeNote = intent.kpiLimit ? `Analysis limited to KPIs up to and including: ${intent.kpiLimit}.` : "Full P&L analysis.";
   if (isSpecific) scopeNote += ` Focus ONLY on: ${intent.specificStores.join(", ")}.`;
   if (exclusionNote) scopeNote += exclusionNote;
 
-  const costHeadsInOrder = [
-    "Food and Supplies",
-    "Operational Payroll Expenses",
-    "Rent",
-    "Franchise Fees",
-    "Utilities",
-    "Total Repairs and Maintenance",
-    "Total Other Expenses",
-    "Interest Expense",
-    "Depreciation Expense",
-    "Amortization Expense"
-  ].filter(h => {
-    const kpiMap = {
-      "Food and Supplies":          "FOOD_SUPPLIES",
-      "Operational Payroll Expenses":"STAFF_COST",
-      "Rent":                        "RENT",
-      "Franchise Fees":              "FRANCHISE_FEES",
-      "Utilities":                   "UTILITIES",
-      "Total Repairs and Maintenance":"REPAIRS_MAINTENANCE",
-      "Total Other Expenses":        "OTHER_EXPENSES",
-      "Interest Expense":            "INTEREST_EXPENSE",
-      "Depreciation Expense":        "DEPRECIATION_EXP",
-      "Amortization Expense":        "AMORTIZATION_EXP",
-    };
+  const costHeadsInOrder = ["Food and Supplies","Operational Payroll Expenses","Rent","Franchise Fees","Utilities","Total Repairs and Maintenance","Total Other Expenses","Interest Expense","Depreciation Expense","Amortization Expense"].filter(h => {
+    const kpiMap = { "Food and Supplies":"FOOD_SUPPLIES","Operational Payroll Expenses":"STAFF_COST","Rent":"RENT","Franchise Fees":"FRANCHISE_FEES","Utilities":"UTILITIES","Total Repairs and Maintenance":"REPAIRS_MAINTENANCE","Total Other Expenses":"OTHER_EXPENSES","Interest Expense":"INTEREST_EXPENSE","Depreciation Expense":"DEPRECIATION_EXP","Amortization Expense":"AMORTIZATION_EXP" };
     return kpiScope.includes(kpiMap[h]);
   });
 
   const rawQuestion = userQuestion && userQuestion.trim() ? userQuestion.trim() : "Full P&L analysis";
   const isBrand = !!intent.isBrandReport;
-
-  const unitWord     = isBrand ? "brand"     : "store";
-  const unitWordCap  = isBrand ? "Brand"     : "Store";
-  const unitWordPl   = isBrand ? "brands"    : "stores";
-  const unitWordPlCap= isBrand ? "Brands"    : "Stores";
-  const portfolioWord= isBrand ? "portfolio of brands" : "portfolio";
+  const unitWord = isBrand ? "brand" : "store"; const unitWordCap = isBrand ? "Brand" : "Store";
+  const unitWordPl = isBrand ? "brands" : "stores"; const portfolioWord = isBrand ? "portfolio of brands" : "portfolio";
 
   let instructions = `════════════════════════════════════════
 USER'S ACTUAL QUESTION (read carefully before writing):
@@ -1751,7 +1129,7 @@ ${isBrand ? `NOTE: The "Store" column header in the table should be relabelled "
 
     if (showEbitdaRank && hasEbitda && kpiScope.includes("EBITDA")) {
       instructions += `## EBITDA Analysis
-(EBITDA performance across all stores. List TOP 5 and BOTTOM 5 exactly as in EBITDA RANKING data block — same order, same figures. Provide commentary on what drives the spread between top and bottom performers.)
+(EBITDA performance across all ${unitWordPl}. List TOP 5 and BOTTOM 5 exactly as in EBITDA RANKING data block — same order, same figures. Provide commentary on what drives the spread between top and bottom performers.)
 
 `;
     }
@@ -1774,8 +1152,6 @@ RULES:
 - State the LOWEST brand and its % — use the brand labelled "← LOWEST (excl. 0%)" in the data block.
   NEVER pick a brand at 0% as the lowest.
 - State the portfolio simple average % (labelled "Portfolio simple avg" in the data block).
-- For Interest Expense, the portfolio simple average EXCLUDES stores with 0% interest — the data block
-  labels this explicitly as "Portfolio simple avg (excl. stores with 0% interest)". Report it as-is.
 - Mention any other brands that stand out as notably high or low (>3pp from the avg).
 - No benchmark comparison — different brands have different cost structures by nature.
 
@@ -1797,19 +1173,17 @@ ${costHeadsInOrder.map((h, i) => `${i+1}. ${h}`).join("\n")}
 For EACH expense head, your subsection MUST cover ALL THREE of the following:
 
 **a) Comparison with Industry Standards / Benchmark**
-The data block has a "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE" section.
+The data block has a "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE" section. Each line shows the benchmark % exactly as it appears in the file (e.g. "Food and Supplies: 28.0%").
 
-CRITICAL RULES FOR BENCHMARK:
-- If the data block says "⚠ NO BENCHMARK for: [this head]" — including Interest Expense,
-  Depreciation Expense, and Amortization Expense which NEVER have a benchmark — then:
-  → Write: "No benchmark available in the report for this head."
-  → Do NOT mention any benchmark figure or percentage for this head.
-  → Do NOT treat the portfolio average as a benchmark.
-  → Move directly to providing the portfolio simple average % only.
-- If the benchmark % for this expense head IS listed (not in the NO BENCHMARK list):
+RULES:
+- If the benchmark % for this expense head IS listed in the data block:
   → State the benchmark % using the exact figure from the data block (1 decimal, e.g. 28.0%).
   → Compare the portfolio simple average % to that benchmark %.
   → Do NOT compute or mention pp variances. Do NOT mention raw dollar amounts.
+- If the data block says "⚠ NO BENCHMARK for: [this head]" OR the head is not listed:
+  → State: "No benchmark available in the report for this head."
+  → Then provide the portfolio simple average % (from "Portfolio simple avg" in the data block).
+  → Do NOT invent a benchmark or use an industry guess.
 
 **b) Comparison Among All Stores**
 The data block "STORE-WISE COST STRUCTURE" section lists stores sorted HIGH → LOW % for each head,
@@ -1820,8 +1194,6 @@ RULES:
 - State the LOWEST store and its % — use the store labelled "← LOWEST (excl. 0%)" in the data block.
   NEVER pick a store at 0% as the lowest. The data block already excludes 0% entries for you.
 - State the portfolio simple average % (labelled "Portfolio simple avg" in the data block).
-- For Interest Expense, the average is labelled "Portfolio simple avg (excl. stores with 0% interest)"
-  in the data block — report it with that context (i.e. mention it excludes stores with no debt).
 - Mention any other stores that stand out as notably high or low (>3pp from the avg).
 
 **c) Suggestive Measures / Observations**
@@ -1875,9 +1247,6 @@ After covering all the above heads, add:
 - Negatives stay negative.
 - No Recommendations section.
 - ${unitWordCap}-wise YoY table must include ALL ${totalStores} ${unitWordPl} with no truncation.
-- INTEREST EXPENSE & DEPRECIATION EXPENSE: these heads NEVER have a benchmark. If you see them
-  in the "⚠ NO BENCHMARK" list in the data block, write "No benchmark available" and do NOT
-  use the portfolio average as a benchmark surrogate.
 ${isBrand ? "- This is a BRAND report: use the word 'brand/brands' everywhere, NOT 'store/stores'." : ""}`;
 
   if (showEbitdaRank && kpiScope.includes("EBITDA") && !isSpecific) {
@@ -1888,15 +1257,15 @@ ${isBrand ? "- This is a BRAND report: use the word 'brand/brands' everywhere, N
 }
 
 async function step3_generateCommentary(computedResults, userQuestion) {
-  const intent    = parseUserIntent(userQuestion, computedResults.stores || []);
-  const kpiScope  = getKPIOrderForIntent(intent);
-  const hasLY     = !!computedResults.lySheetName;
+  const intent   = parseUserIntent(userQuestion, computedResults.stores || []);
+  const kpiScope = getKPIOrderForIntent(intent);
+  const hasLY    = !!computedResults.lySheetName;
   const hasEbitda = computedResults.ebitdaRanking.length > 0;
 
   const dataBlockResult  = buildDataBlockForAI(computedResults, userQuestion, kpiScope, intent);
   const dataBlock        = dataBlockResult.text;
   const activeStoreCount = dataBlockResult.activeStoreCount;
-  console.log(`📦 Data block: ${dataBlock.length} chars | activeStores=${activeStoreCount} | Intent: kpiLimit=${intent.kpiLimit}, specificStores=${JSON.stringify(intent.specificStores)}, deep=${intent.isDeepAnalysis}`);
+  console.log(`📦 Data block: ${dataBlock.length} chars | activeStores=${activeStoreCount}`);
 
   const analysisInstructions = buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults, activeStoreCount, userQuestion);
   const MAX_TOKENS = 16000;
@@ -1923,15 +1292,10 @@ ABSOLUTE RULES — NEVER BREAK:
 12. STORE-WISE YOY TABLE: The data block contains a fully pre-built markdown table labelled 'STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)'. Copy it exactly — every row, every value. Do NOT regenerate it, do NOT skip rows, do NOT add '...'.
 13. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |).
 14. COST STRUCTURE ANALYSIS: For each expense head, cover (a) benchmark comparison (b) inter-store comparison (c) observation. Follow the exact order specified.
-15. BENCHMARK — INTEREST EXPENSE & DEPRECIATION EXPENSE: These heads are EXPLICITLY listed under "⚠ NO BENCHMARK" in the data block. For these heads you MUST write "No benchmark available in the report for this head." NEVER use the portfolio average as a benchmark for them. NEVER state or imply a benchmark exists for Interest Expense or Depreciation Expense.
-16. BENCHMARK SOURCE: The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section shows the benchmark % exactly as stored in the file. Use ONLY that % value for heads that ARE listed there. For heads in the "⚠ NO BENCHMARK" list, say so and use the portfolio simple average instead.
-17. COST STRUCTURE HIGHEST/LOWEST: Always use the store explicitly labelled '← HIGHEST' and '← LOWEST (excl. 0%)' in the data block. NEVER pick a 0% store as the lowest.
-18. INTEREST EXPENSE AVERAGE: The portfolio average for Interest Expense excludes stores with 0% interest. The data block labels this "Portfolio simple avg (excl. stores with 0% interest)". Report it with that context.${compact ? "\n19. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
+15. BENCHMARK SOURCE: The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section shows the benchmark % exactly as stored in the file. Use ONLY that % value — never compute or mention pp variances, never mention raw amounts. If a head has no benchmark (marked '⚠ NO BENCHMARK'), say so and use the portfolio simple average instead. NEVER use the portfolio average as if it were the benchmark.
+16. COST STRUCTURE HIGHEST/LOWEST: Always use the store explicitly labelled '← HIGHEST' and '← LOWEST (excl. 0%)' in the data block. NEVER pick a 0% store as the lowest.${compact ? "\n17. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
     },
-    {
-      role: "user",
-      content: `${dataBlock}\n\n${analysisInstructions}`
-    }
+    { role: "user", content: `${dataBlock}\n\n${analysisInstructions}` }
   ];
 
   const callModel = async (compact = false) => {
@@ -1939,13 +1303,7 @@ ABSOLUTE RULES — NEVER BREAK:
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: buildMessages(compact),
-        temperature: 0,
-        max_tokens: MAX_TOKENS,
-        frequency_penalty: 0.05
-      })
+      body: JSON.stringify({ model: "gpt-4o-mini", messages: buildMessages(compact), temperature: 0, max_tokens: MAX_TOKENS, frequency_penalty: 0.05 })
     });
     const data = await r.json();
     if (data.error) return { reply: null, error: data.error.message, finishReason: null };
@@ -1960,19 +1318,12 @@ ABSOLUTE RULES — NEVER BREAK:
   if (result.finishReason === "length" && result.reply) {
     console.warn("⚠️ Response was truncated. Retrying in compact mode...");
     const retryResult = await callModel(true);
-    if (retryResult.reply && retryResult.finishReason !== "length") {
-      console.log("✅ Compact retry succeeded.");
-      return retryResult;
-    }
+    if (retryResult.reply && retryResult.finishReason !== "length") { console.log("✅ Compact retry succeeded."); return retryResult; }
     console.warn("⚠️ Compact retry also truncated — returning best available response.");
     result.reply = result.reply + "\n\n> ⚠️ **Note:** The response was very long and may be incomplete. Try narrowing your query (e.g. fewer KPIs, specific stores, or ask for a summary).";
   }
   return result;
 }
-
-// ─────────────────────────────────────────────
-//  TEXT-BASED ANALYSIS (PDF / DOCX / TXT)
-// ─────────────────────────────────────────────
 
 function truncateText(text, maxChars = 60000) {
   if (!text || text.length <= maxChars) return text || "";
@@ -1981,14 +1332,8 @@ function truncateText(text, maxChars = 60000) {
 
 async function callModelWithText({ extracted, question }) {
   const messages = [
-    {
-      role: "system",
-      content: `You are a careful accounting copilot. Use only facts from the document. Never estimate missing figures. Negative numbers stay negative. US number format. No Recommendations section.`
-    },
-    {
-      role: "user",
-      content: `Question: ${question || "Analyze this document."}\n\nDocument (${extracted.type}):\n\n${truncateText(extracted.textContent || "")}`
-    }
+    { role: "system", content: `You are a careful accounting copilot. Use only facts from the document. Never estimate missing figures. Negative numbers stay negative. US number format. No Recommendations section.` },
+    { role: "user", content: `Question: ${question || "Analyze this document."}\n\nDocument (${extracted.type}):\n\n${truncateText(extracted.textContent || "")}` }
   ];
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -2003,15 +1348,9 @@ async function callModelWithText({ extracted, question }) {
   return { reply, finishReason: data?.choices?.[0]?.finish_reason, tokenUsage: data?.usage };
 }
 
-// ─────────────────────────────────────────────
-//  WORD DOCUMENT GENERATOR
-// ─────────────────────────────────────────────
-
 function parseInlineBold(text) {
   return text.split(/(\*\*[^*]+\*\*)/).filter(Boolean).map(p =>
-    (p.startsWith("**") && p.endsWith("**"))
-      ? new TextRun({ text: p.replace(/\*\*/g,""), bold: true })
-      : new TextRun({ text: p })
+    (p.startsWith("**") && p.endsWith("**")) ? new TextRun({ text: p.replace(/\*\*/g,""), bold: true }) : new TextRun({ text: p })
   );
 }
 
@@ -2019,23 +1358,13 @@ function buildWordTable(tableData) {
   return new Table({
     rows: tableData.map((rowData, ri) => new TableRow({
       children: rowData.map(cellText => new TableCell({
-        children: [new Paragraph({
-          children: [new TextRun({ text: cellText, bold: ri===0, color: ri===0?"FFFFFF":"000000", size: 20 })],
-          alignment: AlignmentType.LEFT
-        })],
+        children: [new Paragraph({ children: [new TextRun({ text: cellText, bold: ri===0, color: ri===0?"FFFFFF":"000000", size: 20 })], alignment: AlignmentType.LEFT })],
         shading: { fill: ri===0?"4472C4": ri%2===0?"F2F2F2":"FFFFFF" },
         margins: { top:80, bottom:80, left:120, right:120 }
       }))
     })),
     width: { size:100, type: WidthType.PERCENTAGE },
-    borders: {
-      top:             { style: BorderStyle.SINGLE, size:1, color:"AAAAAA" },
-      bottom:          { style: BorderStyle.SINGLE, size:1, color:"AAAAAA" },
-      left:            { style: BorderStyle.SINGLE, size:1, color:"AAAAAA" },
-      right:           { style: BorderStyle.SINGLE, size:1, color:"AAAAAA" },
-      insideHorizontal:{ style: BorderStyle.SINGLE, size:1, color:"CCCCCC" },
-      insideVertical:  { style: BorderStyle.SINGLE, size:1, color:"CCCCCC" }
-    }
+    borders: { top:{style:BorderStyle.SINGLE,size:1,color:"AAAAAA"}, bottom:{style:BorderStyle.SINGLE,size:1,color:"AAAAAA"}, left:{style:BorderStyle.SINGLE,size:1,color:"AAAAAA"}, right:{style:BorderStyle.SINGLE,size:1,color:"AAAAAA"}, insideHorizontal:{style:BorderStyle.SINGLE,size:1,color:"CCCCCC"}, insideVertical:{style:BorderStyle.SINGLE,size:1,color:"CCCCCC"} }
   });
 }
 
@@ -2043,23 +1372,14 @@ async function markdownToWord(markdownText) {
   const sections = [];
   const lines = markdownText.split("\n");
   let tableData = [], inTable = false;
-
-  const flushTable = () => {
-    if (tableData.length) { sections.push(buildWordTable(tableData)); sections.push(new Paragraph({ text:"" })); }
-    tableData = []; inTable = false;
-  };
-
+  const flushTable = () => { if (tableData.length) { sections.push(buildWordTable(tableData)); sections.push(new Paragraph({ text:"" })); } tableData = []; inTable = false; };
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) { if (inTable) flushTable(); else sections.push(new Paragraph({ text:"" })); continue; }
     if (line.startsWith("#")) {
       if (inTable) flushTable();
       const level = (line.match(/^#+/)||[""])[0].length;
-      sections.push(new Paragraph({
-        text: line.replace(/^#+\s*/,"").replace(/\*\*/g,"").replace(/\*/g,""),
-        heading: level<=2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
-        spacing: { before:240, after:120 }
-      }));
+      sections.push(new Paragraph({ text: line.replace(/^#+\s*/,"").replace(/\*\*/g,"").replace(/\*/g,""), heading: level<=2 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2, spacing: { before:240, after:120 } }));
       continue;
     }
     if (line.includes("|")) {
@@ -2069,39 +1389,27 @@ async function markdownToWord(markdownText) {
       continue;
     }
     if (inTable) flushTable();
-    if (line.startsWith("- ")||line.startsWith("* ")) {
-      sections.push(new Paragraph({ children: parseInlineBold(line.replace(/^[-*]\s+/,"")), bullet:{ level:0 }, spacing:{ before:60, after:60 } }));
-      continue;
-    }
-    sections.push(new Paragraph({ children: parseInlineBold(line), spacing:{ before:60, after:60 } }));
+    if (line.startsWith("- ")||line.startsWith("* ")) { sections.push(new Paragraph({ children: parseInlineBold(line.replace(/^[-*]\s+/,"")), bullet:{level:0}, spacing:{before:60,after:60} })); continue; }
+    sections.push(new Paragraph({ children: parseInlineBold(line), spacing:{before:60,after:60} }));
   }
   if (inTable) flushTable();
-
   const doc = new Document({ sections:[{ properties:{}, children: sections }] });
   return (await Packer.toBuffer(doc)).toString("base64");
 }
-
-// ─────────────────────────────────────────────
-//  MAIN HANDLER
-// ─────────────────────────────────────────────
 
 export default async function handler(req, res) {
   cors(res);
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-
   try {
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
-
     const body = await parseJsonBody(req);
     const { fileUrl, question = "" } = body || {};
     if (!fileUrl) return res.status(400).json({ error: "fileUrl is required" });
-
     console.log("📥 Downloading...");
     const { buffer, contentType } = await downloadFileToBuffer(fileUrl);
     const detectedType = detectFileType(fileUrl, contentType, buffer);
     console.log(`📄 Type: ${detectedType}`);
-
     let extracted = { type: detectedType };
     if      (detectedType === "pdf")  extracted = await extractPdf(buffer);
     else if (detectedType === "docx") extracted = await extractDocx(buffer);
@@ -2120,41 +1428,25 @@ export default async function handler(req, res) {
     } else extracted = extractTextLike(buffer, detectedType);
 
     if (extracted.error) return res.status(200).json({ ok:false, type:extracted.type, reply:`Failed to parse file: ${extracted.error}` });
-    if (extracted.ocrNeeded || extracted.requiresManualProcessing)
-      return res.status(200).json({ ok:true, type:extracted.type, reply:extracted.textContent||"File requires special processing." });
+    if (extracted.ocrNeeded || extracted.requiresManualProcessing) return res.status(200).json({ ok:true, type:extracted.type, reply:extracted.textContent||"File requires special processing." });
 
     const hasSheets = Array.isArray(extracted.sheets) && extracted.sheets.length > 0;
     let modelResult, computedResults = null;
 
     if (hasSheets) {
-      const preInlineSheet = extracted.sheets.find(s => detectInlineYearLayout(s.rawArray || []).isInline);
+      const preInlineSheet   = extracted.sheets.find(s => detectInlineYearLayout(s.rawArray || []).isInline);
       const preSeparateSheet = extracted.sheets.find(s => detectSeparateSheetLayout(s.rawArray || []).isSeparateSheet);
       const preInline   = !!preInlineSheet;
       const preSeparate = !!preSeparateSheet;
       console.log(`🔭 Pre-flight: inline=${preInline}, separate=${preSeparate}`);
-
       let querySchema = null;
       try { querySchema = await step1_understandQueryAndStructure(extracted.sheets, question); }
       catch (e) { console.warn("⚠️ Step 1 failed:", e.message); }
-
-      if (querySchema?.layout_type === "SEPARATE_SHEETS" && preInline) {
-        console.warn("⚠️ Override: Step 1=SEPARATE but code found INLINE — using INLINE");
-        querySchema.layout_type = "INLINE_YEAR_COLUMNS";
-        querySchema.cy_sheet = preInlineSheet.name;
-      }
-      if (querySchema?.layout_type === "INLINE_YEAR_COLUMNS" && !preInline && preSeparate) {
-        console.warn("⚠️ Override: Step 1=INLINE but code found SEPARATE — using SEPARATE");
-        querySchema.layout_type = "SEPARATE_SHEETS";
-      }
-
+      if (querySchema?.layout_type === "SEPARATE_SHEETS" && preInline) { console.warn("⚠️ Override: Step 1=SEPARATE but code found INLINE — using INLINE"); querySchema.layout_type = "INLINE_YEAR_COLUMNS"; querySchema.cy_sheet = preInlineSheet.name; }
+      if (querySchema?.layout_type === "INLINE_YEAR_COLUMNS" && !preInline && preSeparate) { console.warn("⚠️ Override: Step 1=INLINE but code found SEPARATE — using SEPARATE"); querySchema.layout_type = "SEPARATE_SHEETS"; }
       const canUseSchema = querySchema && (querySchema.store_columns?.length > 0 || querySchema.layout_type === "INLINE_YEAR_COLUMNS");
       computedResults = canUseSchema ? step2_extractAndCompute(extracted.sheets, querySchema) : null;
-
-      if (!computedResults || computedResults.storeCount === 0) {
-        console.warn("⚠️ Using fallback...");
-        computedResults = step2_fallback(extracted.sheets);
-      }
-
+      if (!computedResults || computedResults.storeCount === 0) { console.warn("⚠️ Using fallback..."); computedResults = step2_fallback(extracted.sheets); }
       if (!computedResults || computedResults.storeCount === 0) {
         const rawText = extracted.sheets.map(s => `Sheet: ${s.name}\n`+(s.rawArray||[]).map(r=>(r||[]).join("\t")).join("\n")).join("\n\n");
         modelResult = await callModelWithText({ extracted:{ type:"xlsx", textContent:rawText }, question });
@@ -2167,41 +1459,25 @@ export default async function handler(req, res) {
 
     const { reply, httpStatus, finishReason, tokenUsage, error } = modelResult;
     if (!reply) return res.status(200).json({ ok:false, type:extracted.type, reply:error||"(No reply)", debug:{ httpStatus, error } });
-
     let wordBase64 = null;
-    try { wordBase64 = await markdownToWord(reply); }
-    catch (e) { console.error("❌ Word error:", e.message); }
+    try { wordBase64 = await markdownToWord(reply); } catch (e) { console.error("❌ Word error:", e.message); }
 
     return res.status(200).json({
-      ok: true,
-      type: extracted.type,
+      ok: true, type: extracted.type,
       documentType: computedResults ? "PROFIT_LOSS" : "GENERAL",
       category: computedResults ? "profit_loss" : "general",
-      reply,
-      wordDownload: wordBase64,
+      reply, wordDownload: wordBase64,
       downloadUrl: wordBase64 ? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${wordBase64}` : null,
       structuredData: computedResults ? {
-        layout:        computedResults.layoutType,
-        storeCount:    computedResults.storeCount,
-        stores:        computedResults.stores,
-        kpisFound:     Object.keys(computedResults.kpiMapping),
-        cySheet:       computedResults.cySheetName,
-        lySheet:       computedResults.lySheetName,
-        totals:        computedResults.totals,
+        layout: computedResults.layoutType, storeCount: computedResults.storeCount,
+        stores: computedResults.stores, kpisFound: Object.keys(computedResults.kpiMapping),
+        cySheet: computedResults.cySheetName, lySheet: computedResults.lySheetName,
+        totals: computedResults.totals,
         ebitdaTop5:    computedResults.ebitdaRanking.slice(0,5).map(x=>({ store:x.store, ebitda:x.ebitda, margin:x.ebitdaMargin })),
         ebitdaBottom5: [...computedResults.ebitdaRanking].reverse().slice(0,5).map(x=>({ store:x.store, ebitda:x.ebitda, margin:x.ebitdaMargin }))
       } : null,
-      debug: {
-        pipeline:    hasSheets ? "3-step-spreadsheet" : "text-analysis",
-        layout:      computedResults?.layoutType,
-        storeCount:  computedResults?.storeCount || 0,
-        kpisFound:   Object.keys(computedResults?.kpiMapping || {}),
-        ebitdaRanked:computedResults?.ebitdaRanking?.length || 0,
-        hasLY:       !!computedResults?.lySheetName,
-        finishReason, tokenUsage
-      }
+      debug: { pipeline: hasSheets ? "3-step-spreadsheet" : "text-analysis", layout: computedResults?.layoutType, storeCount: computedResults?.storeCount || 0, kpisFound: Object.keys(computedResults?.kpiMapping || {}), ebitdaRanked: computedResults?.ebitdaRanking?.length || 0, hasLY: !!computedResults?.lySheetName, finishReason, tokenUsage }
     });
-
   } catch (err) {
     console.error("❌ Handler error:", err);
     return res.status(500).json({ error: String(err?.message || err) });
