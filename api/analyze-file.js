@@ -590,8 +590,12 @@ function detectSeparateSheetLayout(rawArray) {
 function parseInlineYearSheet(sheet, inlineInfo) {
   const rawArray = sheet.rawArray || [];
   const { yearRowIdx, cyYear, lyYear } = inlineInfo;
-  let storeRowIdx = 0;
-  for (let r = 0; r <= yearRowIdx; r++) {
+
+  // ── Find storeRow: must be STRICTLY BEFORE yearRow ──
+  // Scan rows 0..(yearRowIdx-1) for the last row with multiple non-numeric,
+  // non-year text cells — that is the store name row.
+  let storeRowIdx = -1;
+  for (let r = 0; r < yearRowIdx; r++) {
     const row = rawArray[r] || [];
     const meaningful = row.filter((c, i) => {
       if (i === 0) return false;
@@ -601,33 +605,56 @@ function parseInlineYearSheet(sheet, inlineInfo) {
       if (/^[\d.,\s\-\(\)$%]+$/.test(s)) return false;
       return true;
     });
-    if (meaningful.length >= 1) storeRowIdx = r;
+    if (meaningful.length >= 2) storeRowIdx = r;
   }
+  // Fallback: if no dedicated store row found above year row, use yearRowIdx-1
+  if (storeRowIdx === -1) storeRowIdx = Math.max(0, yearRowIdx - 1);
   console.log(`📋 storeRow=${storeRowIdx}, yearRow=${yearRowIdx}`);
+
   const storeRow = rawArray[storeRowIdx] || [];
   const yearRow  = rawArray[yearRowIdx]  || [];
+
+  // ── Build storeByCol: forward-fill store names across empty cells ──
+  // Each store group spans N columns. We forward-fill from the column where
+  // the store name appears to all following empty columns in that group.
   const storeByCol = {};
   let lastStore = null;
   storeRow.forEach((cell, colIdx) => {
     if (colIdx === 0) return;
     const s = String(cell ?? "").trim();
-    if (s) {
-      if (!isConsolidatedColumn(s) && !/^(20\d{2}|FY\d{2,4}|\d+\.?\d*)$/i.test(s)) {
-        lastStore = s;
-      } else {
-        lastStore = null;
-      }
+    if (s && !isConsolidatedColumn(s) && !/^(20\d{2}|FY\d{2,4}|\d+\.?\d*)$/i.test(s)) {
+      lastStore = s;
+    } else if (s && (isConsolidatedColumn(s) || /^(20\d{2}|FY\d{2,4})$/i.test(s))) {
+      // A year or consolidated label resets the store context
+      lastStore = null;
     }
+    // forward-fill: assign current lastStore to every column including blanks
     if (lastStore) storeByCol[colIdx] = lastStore;
   });
+
+  // ── Build yearByCol: forward-fill years across each store group ──
+  // Each year (2026, 2025) appears once per store group; fill across the group's columns.
+  // We reset the year fill whenever a new store group starts (detected from storeByCol).
   const yearByCol = {};
   let lastYear = null;
+  let lastStoreSeen = null;
   yearRow.forEach((cell, colIdx) => {
     if (colIdx === 0) return;
     const s = String(cell ?? "").trim();
+    const currentStore = storeByCol[colIdx];
+
+    // When we cross into a new store group, reset the year fill
+    if (currentStore && currentStore !== lastStoreSeen) {
+      lastYear = null;
+      lastStoreSeen = currentStore;
+    }
+
     if (/^(20\d{2}|FY\s*\d{2,4})$/i.test(s)) lastYear = s;
-    if (lastYear && storeByCol[colIdx]) yearByCol[colIdx] = lastYear;
+
+    if (lastYear && currentStore) yearByCol[colIdx] = lastYear;
   });
+
+  // ── Find amtRow: row after yearRow that contains "Amount" / "%" headers ──
   let amtRowIdx = yearRowIdx + 1;
   for (let r = yearRowIdx + 1; r < Math.min(yearRowIdx + 5, rawArray.length); r++) {
     const row = rawArray[r] || [];
