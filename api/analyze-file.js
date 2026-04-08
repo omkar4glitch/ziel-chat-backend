@@ -1315,15 +1315,15 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   //  for its Key Observations rather than deriving its own rankings.
   // ─────────────────────────────────────────────
   b += `\n▶ BEST / WORST PERFORMERS BY METRIC (USE THESE VERBATIM IN KEY OBSERVATIONS)\n`;
-  b += `   NOTE: All % figures are % of Gross Revenue.\n`;
+  b += `   NOTE: All % figures are % of Gross Revenue. When citing any %, ALWAYS write it as "(X.X% of Gross Revenue)" — never just "(X.X%)". Exception: Gross Revenue and Net Revenue lines show only the absolute CY amount — no % label for these.\n`;
   b += `${"─".repeat(58)}\n`;
 
   const rankMetrics = [
-    { key: "REVENUE",      label: "Net Revenue",                   rankList: revenueRanking,     valField: "revenue", pctField: null },
-    { key: "GROSS_REVENUE",label: "Gross Revenue",                 rankList: grossRevenueRanking, valField: "val",    pctField: null },
-    { key: "GROSS_PROFIT", label: "Gross Profit (% of Gross Rev)", rankList: grossProfitRanking,  valField: "val",    pctField: "pct" },
-    { key: "EBITDA",       label: "EBITDA (% of Gross Rev)",       rankList: ebitdaRanking,       valField: "ebitda", pctField: "ebitdaMargin" },
-    { key: "NET_PROFIT",   label: "Net Income (% of Gross Rev)",   rankList: netProfitRanking,    valField: "val",    pctField: "pct" },
+    { key: "GROSS_REVENUE",label: "Gross Revenue — ranked by CY absolute amount (NO % shown — do NOT show a % for Gross Revenue)",        rankList: grossRevenueRanking, valField: "val",     pctField: null },
+    { key: "REVENUE",      label: "Net Revenue — ranked by CY absolute amount ONLY (do NOT rank by YoY % — NO % shown for this metric)", rankList: revenueRanking,      valField: "revenue", pctField: null },
+    { key: "GROSS_PROFIT", label: "Gross Profit (% of Gross Revenue)", rankList: grossProfitRanking, valField: "val",    pctField: "pct" },
+    { key: "EBITDA",       label: "EBITDA (% of Gross Revenue)",       rankList: ebitdaRanking,      valField: "ebitda", pctField: "ebitdaMargin" },
+    { key: "NET_PROFIT",   label: "Net Income (% of Gross Revenue)",   rankList: netProfitRanking,   valField: "val",    pctField: "pct" },
   ];
 
   // Also add cost-line rankings (% of gross revenue) for major cost heads
@@ -1685,10 +1685,12 @@ CRITICAL RULE FOR BEST/WORST PERFORMERS:
 - For EVERY observation that refers to a "best" or "worst" or "highest" or "lowest" performing ${unitWord} on any metric,
   you MUST use the ★ BEST and ▼ WORST entries from that section — VERBATIM.
 - DO NOT pick best/worst performers from any other part of the data. The ranked lists there are authoritative.
-- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Gross Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.1%)". Never write an amount without its %.
+- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Gross Revenue — all three are mandatory. `Format: "Store Name — 25,606 (10.1% of Gross Revenue)". Never write an amount without its % of Gross Revenue.
+- EXCEPTION for revenue lines: For Gross Revenue and Net Revenue, show ONLY the absolute CY amount — no % in parentheses.
+- CRITICAL — Net Revenue lowest performer: The ▼ WORST entry in "Net Revenue — ranked by CY absolute amount" is the store with the LOWEST CY Net Revenue absolute amount. Do NOT pick the store with the worst YoY % change.`
 
 For each observation:
-- Reference the exact ${unitWord} name(s) and ALWAYS include BOTH the absolute amount AND the % of Gross Revenue together — never cite an amount alone. Format: "25,606 (10.1%)" — amount first, then % in parentheses.
+- Reference the exact ${unitWord} name(s) and ALWAYS include BOTH the absolute amount AND the % of Gross Revenue together — never cite an amount alone. Format: "25,606 (10.1% of Gross Revenue)" — amount first, then % of Gross Revenue in parentheses.
 - Highlight meaningful YoY changes (positive or negative) using data from the YoY comparison table
 - Call out the best and worst performers on Net Revenue, Gross Profit, and EBITDA — use the ranked lists
 - Identify ${unitWordPl} with notable cost changes (Food and Supplies, Operational Payroll, Rent, Controllable Expenses) using the cost % rankings
@@ -1802,6 +1804,8 @@ async function step3_generateCommentary(computedResults, userQuestion) {
   12. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |). The FIRST data row MUST be "Gross Revenue".
   13. KEY OBSERVATIONS — BEST/WORST PERFORMERS: ALWAYS use the ★ BEST and ▼ WORST entries from the "BEST / WORST PERFORMERS BY METRIC" section in the data block. NEVER pick best/worst performers from your own analysis or from any other section.
   14. KEY OBSERVATIONS FORMAT: Write 8-12 bullet points. Bold the KPI name at the start of each bullet. Use exact store names and exact figures from the data block.
+  14b. PERCENTAGE LABEL: Whenever you write a percentage in Key Observations, ALWAYS label it as "X.X% of Gross Revenue" — never just "X.X%". EXCEPTION: Gross Revenue and Net Revenue rows show only absolute CY amounts — no % label.
+  14c. NET REVENUE LOWEST: The lowest Net Revenue performer is the store with the LOWEST CY Net Revenue absolute amount, from the ▼ WORST line of "Net Revenue — ranked by CY absolute amount". NEVER identify the lowest based on YoY % decline.if absolutely needed provide the point in different line.
   15. P&L LINE ITEM NAMES: Use the exact display names from the report — "Gross Revenue", "Total Discounts, Coupons & Refunds", "Net Revenue", "Food and Supplies", "Operational Payroll Expenses", "Total COGS", "Gross Profit", "Controllable Expenses", "Delivery Commission", "Advertising/Marketing", "TOTAL Financial Expenses", "Chargebacks", "TOTAL Repairs and Maintenance", "TOTAL Utilities", "TOTAL Insurance", "Licenses and Permits", "Professional Fees", "TOTAL Rent", "Taxes", "Management Fees", "TOTAL OPERATING EXPENSES", "TOTAL OPERATING PROFIT / EBITDA", "Interest Expense", "Other Income", "TOTAL Other Expenses", "Net Income".${compactRule16}${compactRule17}`
         },
         {
