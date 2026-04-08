@@ -1774,36 +1774,42 @@ async function step3_generateCommentary(computedResults, userQuestion) {
   const analysisInstructions = buildAnalysisInstructions(intent, kpiScope, hasLY, hasEbitda, computedResults, activeStoreCount, userQuestion);
   const MAX_TOKENS = 16000;
 
-  const buildMessages = (compact = false) => [
-    {
-      role: "system",
-      content: `You are an expert P&L financial analyst writing detailed MIS commentary for senior management.
-
-FIRST AND MOST IMPORTANT: Read the USER'S ACTUAL QUESTION at the top of the instructions carefully. Your response must directly and explicitly answer what the user asked.
-
-ABSOLUTE RULES — NEVER BREAK:
-1. Use ONLY numbers from the pre-computed data block. Every figure must appear exactly in the data block.
-2. NEVER calculate, estimate, or derive any number yourself.
-3. Negative numbers MUST remain negative. Write them with a minus sign: -1,234.
-4. NUMBER FORMAT — amounts: whole numbers with US commas, NO decimal places (1,234,567).
-5. PERCENTAGE FORMAT — always 1 decimal place. All percentages in the data block are % of Gross Revenue. Use them as-is — do NOT re-round or change the base.
-6. DO NOT write a Recommendations section.
-7. DO NOT use benchmark comparisons — there is no benchmark in this report.
-8. FOLLOW THE USER QUESTION SCOPE: if asked for analysis only up to a certain KPI, DO NOT include deeper KPIs.
-9. Be specific — always name the store and exact figure together.
-10. COMPLETE ALL TABLES FULLY — never use "..." or truncate. Every store must appear with actual values.
-11. STORE-WISE YOY TABLE: The data block contains a fully pre-built markdown table labelled 'STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)'. Copy it exactly — every row, every value. Do NOT regenerate it, do NOT skip rows, do NOT add '...'.
-12. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |). The FIRST data row MUST be "Gross Revenue".
-13. KEY OBSERVATIONS — BEST/WORST PERFORMERS: ALWAYS use the ★ BEST and ▼ WORST entries from the "BEST / WORST PERFORMERS BY METRIC" section in the data block. NEVER pick best/worst performers from your own analysis or from any other section.
-14. KEY OBSERVATIONS FORMAT: Write 8-12 bullet points. Bold the KPI name at the start of each bullet. Use exact store names and exact figures from the data block.
-15. P&L LINE ITEM NAMES: Use the exact display names from the report — "Gross Revenue", "Total Discounts, Coupons & Refunds", "Net Revenue", "Food and Supplies", "Operational Payroll Expenses", "Total COGS", "Gross Profit", "Controllable Expenses", "Delivery Commission", "Advertising/Marketing", "TOTAL Financial Expenses", "Chargebacks", "TOTAL Repairs and Maintenance", "TOTAL Utilities", "TOTAL Insurance", "Licenses and Permits", "Professional Fees", "TOTAL Rent", "Taxes", "Management Fees", "TOTAL OPERATING EXPENSES", "TOTAL OPERATING PROFIT / EBITDA", "Interest Expense", "Other Income", "TOTAL Other Expenses", "Net Income".${compact ? "\n16. COST LINE OBSERVATIONS: When mentioning any cost line amount in Key Observations, ALWAYS follow it immediately with its % of Gross Revenue in parentheses. NEVER write an amount alone. Correct: "25,606 (10.1%)". Wrong: "25,606".${compact ? "\n17. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
-    },
-    {
-      role: "user",
-      content: `${dataBlock}\n\n${analysisInstructions}`
-    }
-  ];
-
+  const buildMessages = (compact = false) => {
+      const compactRule16 = compact
+        ? "\n16. COST LINE OBSERVATIONS: When mentioning any cost line amount in Key Observations, ALWAYS follow it immediately with its % of Gross Revenue in parentheses. NEVER write an amount alone. Correct: \"25,606 (10.1%)\". Wrong: \"25,606\"."
+        : "";
+      const compactRule17 = compact
+        ? "\n17. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length."
+        : "";
+  
+      return [
+        {
+          role: "system",
+          content: `You are an expert P&L financial analyst writing detailed MIS commentary for senior management.
+  
+  ABSOLUTE RULES — NEVER BREAK:
+  1. Use ONLY numbers from the pre-computed data block. Every figure must appear exactly in the data block.
+  2. NEVER calculate, estimate, or derive any number yourself.
+  3. Negative numbers MUST remain negative. Write them with a minus sign: -1,234.
+  4. NUMBER FORMAT — amounts: whole numbers with US commas, NO decimal places (1,234,567).
+  5. PERCENTAGE FORMAT — always 1 decimal place. All percentages in the data block are % of Gross Revenue. Use them as-is — do NOT re-round or change the base.
+  6. DO NOT write a Recommendations section.
+  7. DO NOT use benchmark comparisons — there is no benchmark in this report.
+  8. FOLLOW THE USER QUESTION SCOPE: if asked for analysis only up to a certain KPI, DO NOT include deeper KPIs.
+  9. Be specific — always name the store and exact figure together.
+  10. COMPLETE ALL TABLES FULLY — never use "..." or truncate. Every store must appear with actual values.
+  11. STORE-WISE YOY TABLE: The data block contains a fully pre-built markdown table labelled 'STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)'. Copy it exactly — every row, every value. Do NOT regenerate it, do NOT skip rows, do NOT add '...'.
+  12. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |). The FIRST data row MUST be "Gross Revenue".
+  13. KEY OBSERVATIONS — BEST/WORST PERFORMERS: ALWAYS use the ★ BEST and ▼ WORST entries from the "BEST / WORST PERFORMERS BY METRIC" section in the data block. NEVER pick best/worst performers from your own analysis or from any other section.
+  14. KEY OBSERVATIONS FORMAT: Write 8-12 bullet points. Bold the KPI name at the start of each bullet. Use exact store names and exact figures from the data block.
+  15. P&L LINE ITEM NAMES: Use the exact display names from the report — "Gross Revenue", "Total Discounts, Coupons & Refunds", "Net Revenue", "Food and Supplies", "Operational Payroll Expenses", "Total COGS", "Gross Profit", "Controllable Expenses", "Delivery Commission", "Advertising/Marketing", "TOTAL Financial Expenses", "Chargebacks", "TOTAL Repairs and Maintenance", "TOTAL Utilities", "TOTAL Insurance", "Licenses and Permits", "Professional Fees", "TOTAL Rent", "Taxes", "Management Fees", "TOTAL OPERATING EXPENSES", "TOTAL OPERATING PROFIT / EBITDA", "Interest Expense", "Other Income", "TOTAL Other Expenses", "Net Income".${compactRule16}${compactRule17}`
+        },
+        {
+          role: "user",
+          content: `${dataBlock}\n\n${analysisInstructions}`
+        }
+      ];
+    };
   const callModel = async (compact = false) => {
     console.log(`✍️  Step 3: Generating commentary... (compact=${compact})`);
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
