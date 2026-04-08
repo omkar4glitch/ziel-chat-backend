@@ -1685,10 +1685,10 @@ CRITICAL RULE FOR BEST/WORST PERFORMERS:
 - For EVERY observation that refers to a "best" or "worst" or "highest" or "lowest" performing ${unitWord} on any metric,
   you MUST use the ★ BEST and ▼ WORST entries from that section — VERBATIM.
 - DO NOT pick best/worst performers from any other part of the data. The ranked lists there are authoritative.
-- When you cite best/worst, always include BOTH the store name AND the exact figure (amount and % where available).
+- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Gross Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.1%)". Never write an amount without its %.
 
 For each observation:
-- Reference the exact ${unitWord} name(s) and exact figures (amounts and/or %)
+- Reference the exact ${unitWord} name(s) and ALWAYS include BOTH the absolute amount AND the % of Gross Revenue together — never cite an amount alone. Format: "25,606 (10.1%)" — amount first, then % in parentheses.
 - Highlight meaningful YoY changes (positive or negative) using data from the YoY comparison table
 - Call out the best and worst performers on Net Revenue, Gross Profit, and EBITDA — use the ranked lists
 - Identify ${unitWordPl} with notable cost changes (Food and Supplies, Operational Payroll, Rent, Controllable Expenses) using the cost % rankings
@@ -1796,7 +1796,7 @@ ABSOLUTE RULES — NEVER BREAK:
 12. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |). The FIRST data row MUST be "Gross Revenue".
 13. KEY OBSERVATIONS — BEST/WORST PERFORMERS: ALWAYS use the ★ BEST and ▼ WORST entries from the "BEST / WORST PERFORMERS BY METRIC" section in the data block. NEVER pick best/worst performers from your own analysis or from any other section.
 14. KEY OBSERVATIONS FORMAT: Write 8-12 bullet points. Bold the KPI name at the start of each bullet. Use exact store names and exact figures from the data block.
-15. P&L LINE ITEM NAMES: Use the exact display names from the report — "Gross Revenue", "Total Discounts, Coupons & Refunds", "Net Revenue", "Food and Supplies", "Operational Payroll Expenses", "Total COGS", "Gross Profit", "Controllable Expenses", "Delivery Commission", "Advertising/Marketing", "TOTAL Financial Expenses", "Chargebacks", "TOTAL Repairs and Maintenance", "TOTAL Utilities", "TOTAL Insurance", "Licenses and Permits", "Professional Fees", "TOTAL Rent", "Taxes", "Management Fees", "TOTAL OPERATING EXPENSES", "TOTAL OPERATING PROFIT / EBITDA", "Interest Expense", "Other Income", "TOTAL Other Expenses", "Net Income".${compact ? "\n16. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
+15. P&L LINE ITEM NAMES: Use the exact display names from the report — "Gross Revenue", "Total Discounts, Coupons & Refunds", "Net Revenue", "Food and Supplies", "Operational Payroll Expenses", "Total COGS", "Gross Profit", "Controllable Expenses", "Delivery Commission", "Advertising/Marketing", "TOTAL Financial Expenses", "Chargebacks", "TOTAL Repairs and Maintenance", "TOTAL Utilities", "TOTAL Insurance", "Licenses and Permits", "Professional Fees", "TOTAL Rent", "Taxes", "Management Fees", "TOTAL OPERATING EXPENSES", "TOTAL OPERATING PROFIT / EBITDA", "Interest Expense", "Other Income", "TOTAL Other Expenses", "Net Income".${compact ? "\n16. COST LINE OBSERVATIONS: When mentioning any cost line amount in Key Observations, ALWAYS follow it immediately with its % of Gross Revenue in parentheses. NEVER write an amount alone. Correct: "25,606 (10.1%)". Wrong: "25,606".${compact ? "\n17. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
     },
     {
       role: "user",
