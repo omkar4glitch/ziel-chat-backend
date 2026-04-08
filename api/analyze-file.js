@@ -1685,7 +1685,7 @@ CRITICAL RULE FOR BEST/WORST PERFORMERS:
 - For EVERY observation that refers to a "best" or "worst" or "highest" or "lowest" performing ${unitWord} on any metric,
   you MUST use the ★ BEST and ▼ WORST entries from that section — VERBATIM.
 - DO NOT pick best/worst performers from any other part of the data. The ranked lists there are authoritative.
-- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Gross Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.8% of Gross Revenue)". Never write an amount without its %.
+- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Gross Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.1%)". Never write an amount without its %.
 
 For each observation:
 - Reference the exact ${unitWord} name(s) and ALWAYS include BOTH the absolute amount AND the % of Gross Revenue together — never cite an amount alone. Format: "25,606 (10.1%)" — amount first, then % in parentheses.
