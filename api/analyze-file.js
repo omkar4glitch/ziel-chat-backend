@@ -1352,26 +1352,40 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   });
 
   costRankKPIs.forEach(({ kpi, pct: pctKey, label }) => {
-    const entries = activeStores
-      .map(store => ({ store, val: storeMetrics[store]?.[kpi], pct: storeMetrics[store]?.[pctKey] }))
-      .filter(e => e.val !== null && e.val !== undefined && isFinite(e.val))
-      .sort((a, b) => {
-        const pa = a.pct ?? -Infinity;
-        const pb = b.pct ?? -Infinity;
-        return pb - pa;  // highest % first = worst cost efficiency
+      const entries = activeStores
+        .map(store => ({ store, val: storeMetrics[store]?.[kpi], pct: storeMetrics[store]?.[pctKey] }))
+        .filter(e => e.val !== null && e.val !== undefined && isFinite(e.val))
+        .sort((a, b) => {
+          const pa = a.pct ?? -Infinity;
+          const pb = b.pct ?? -Infinity;
+          return pb - pa;  // highest % first = worst cost efficiency
+        });
+      if (!entries.length) return;
+      b += `\n  [${label}] — ranked highest % (worst) to lowest % (best):\n`;
+      entries.forEach((e, i) => {
+        b += `    #${String(i+1).padStart(2)}  ${e.store.padEnd(36)}: ${formatNum(e.val).padStart(12)}  (${e.pct !== null && e.pct !== undefined ? formatPct(e.pct) : "N/A"})\n`;
       });
-    if (!entries.length) return;
-    b += `\n  [${label}] — ranked highest % (worst) to lowest % (best):\n`;
-    entries.forEach((e, i) => {
-      b += `    #${String(i+1).padStart(2)}  ${e.store.padEnd(36)}: ${formatNum(e.val).padStart(12)}  (${e.pct !== null && e.pct !== undefined ? formatPct(e.pct) : "N/A"})\n`;
-    });
-    const highest = entries[0];
-    const nonZero = entries.filter(e => e.pct !== null && e.pct !== undefined && isFinite(e.pct) && e.pct > 0);
-    const lowest  = nonZero.length ? nonZero[nonZero.length - 1] : null;
-    b += `    ★ HIGHEST % (worst efficiency): ${highest.store} — ${highest.pct !== null ? formatPct(highest.pct) : "N/A"}\n`;
-    if (lowest) b += `    ▼ LOWEST % (best efficiency): ${lowest.store} — ${formatPct(lowest.pct)}\n`;
+      const highest = entries[0];
+      const nonZero = entries.filter(e => e.pct !== null && e.pct !== undefined && isFinite(e.pct) && e.pct > 0);
+      const lowest  = nonZero.length ? nonZero[nonZero.length - 1] : null;
+      b += `    ★ HIGHEST % (worst efficiency): ${highest.store} — ${highest.pct !== null ? formatPct(highest.pct) : "N/A"}\n`;
+      if (lowest) b += `    ▼ LOWEST % (best efficiency): ${lowest.store} — ${formatPct(lowest.pct)}\n`;
+      // Flag any stores with negative values — these are anomalies the AI must mention
+      const negativeEntries = entries.filter(e => e.val < 0);
+      if (negativeEntries.length > 0) {
+        b += `    ⚠ ANOMALY — stores with NEGATIVE ${label} values (credits/refunds — mention explicitly):\n`;
+        negativeEntries.forEach(e => {
+          b += `      → ${e.store}: ${formatNum(e.val)} (${e.pct !== null && e.pct !== undefined ? formatPct(e.pct) : "N/A"})\n`;
+        });
+    }
+    // Flag when many stores share the same value (flat rate / fixed fee situation)
+    const valCounts = {};
+    entries.forEach(e => { const k = String(e.val); valCounts[k] = (valCounts[k] || 0) + 1; });
+    const dominantVal = Object.entries(valCounts).sort((a,b) => b[1]-a[1])[0];
+    if (dominantVal && parseInt(dominantVal[1]) >= Math.ceil(entries.length * 0.5)) {
+      b += `    ℹ NOTE: ${dominantVal[1]} of ${entries.length} stores share the same ${label} amount (${formatNum(parseFloat(dominantVal[0]))}) — likely a fixed/flat fee. The meaningful differentiator is the % of Gross Revenue, not the absolute amount.\n`;
+    }
   });
-
   // ── Per-store Cost Structure data (kept for reference) ──
   b += `\n▶ STORE-WISE COST STRUCTURE (% of Gross Revenue — reference detail)\n${"─".repeat(58)}\n`;
   const costKPIs = [
@@ -1678,6 +1692,9 @@ For each observation:
 - Highlight meaningful YoY changes (positive or negative) using data from the YoY comparison table
 - Call out the best and worst performers on Net Revenue, Gross Profit, and EBITDA — use the ranked lists
 - Identify ${unitWordPl} with notable cost changes (Food and Supplies, Operational Payroll, Rent, Controllable Expenses) using the cost % rankings
+- For cost lines where many stores share the same absolute amount (flagged as ℹ NOTE in the data block as a fixed/flat fee): the observation MUST focus on the % of Gross Revenue difference across stores, and MUST cite the ★ HIGHEST % and ▼ LOWEST % stores from the data block — do NOT comment on one arbitrary store's absolute amount.
+- For cost lines with ⚠ ANOMALY (negative values): ALWAYS mention those stores explicitly and explain they received a credit or refund for that line item.
+- ADVERTISING/MARKETING SPECIFICALLY: If the data shows most stores have the same absolute Advertising/Marketing amount, do NOT say one store "increased" spend. Instead, note which store has the highest % (worst efficiency) and which has the lowest %, and mention any store with a negative value (credit).
 - Mention any significant changes in Total Operating Expenses or TOTAL Other Expenses
 - Note any ${unitWordPl} where Net Income improved or deteriorated significantly
 
