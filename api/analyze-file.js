@@ -256,7 +256,7 @@ function safeDivide(num, den) {
 const KPI_PATTERNS = {
   // ── Gross Revenue ──
   GROSS_REVENUE: [
-    "Gross Revenue", "total gross revenue", "gross sales", "total revenue", "total sales",
+    "gross revenue", "total gross revenue", "gross sales", "total revenue", "total sales",
     "revenue dd", "revenue br", "revenue"
   ],
 
@@ -321,13 +321,20 @@ const KPI_PATTERNS = {
     "financial expense", "total finance expenses", "total finance charges"
   ],
 
-  // ── Chargebacks ──
-  CHARGEBACKS: [
-    "chargebacks", "chargeback", "total chargebacks",
-    "doordash - adjustments", "grubhub - adjustments", "ubereats - adjustments",
-    "foodja - adjustments", "ezcater - adjustments", "gift card adjustments",
+  // ── Total Third Party Fees (summed from delivery platform sub-lines in code) ──
+  THIRD_PARTY_FEES: [
+    "total third party fees", "third party fees", "total third-party fees",
     "third party adjustments"
   ],
+
+  // ── Individual third-party platform lines (used for THIRD_PARTY_FEES rollup) ──
+  _THIRD_PARTY_DD:   ["doordash - adjustments"],
+  _THIRD_PARTY_GH:   ["grubhub - adjustments"],
+  _THIRD_PARTY_UE:   ["ubereats - adjustments"],
+  _THIRD_PARTY_FJ:   ["foodja - adjustments"],
+  _THIRD_PARTY_EZ:   ["ezcater - adjustments"],
+  _THIRD_PARTY_GC:   ["gift card adjustments"],
+  _THIRD_PARTY_CB:   ["chargebacks", "chargeback", "total chargebacks", " chargebacks"],
 
   // ── TOTAL Repairs and Maintenance ──
   REPAIRS_MAINTENANCE: [
@@ -781,7 +788,14 @@ Return JSON:
     "DELIVERY_COMMISSION": "exact row label for Delivery Commission",
     "ADVERTISING_MARKETING": "exact row label for Advertising/Marketing",
     "FINANCIAL_EXPENSES": "exact row label for TOTAL Financial Expenses",
-    "CHARGEBACKS": "exact row label for Chargebacks",
+    "THIRD_PARTY_FEES": "exact row label for Total Third Party Fees (if present, else null)",
+    "_THIRD_PARTY_DD": "exact row label for DoorDash - Adjustments",
+    "_THIRD_PARTY_GH": "exact row label for GrubHub - Adjustments",
+    "_THIRD_PARTY_UE": "exact row label for UberEats - Adjustments",
+    "_THIRD_PARTY_FJ": "exact row label for Foodja - Adjustments",
+    "_THIRD_PARTY_EZ": "exact row label for Ezcater - Adjustments",
+    "_THIRD_PARTY_GC": "exact row label for Gift Card Adjustments",
+    "_THIRD_PARTY_CB": "exact row label for Chargebacks (the header row, often blank/zero)",
     "REPAIRS_MAINTENANCE": "exact row label for TOTAL Repairs and Maintenance",
     "UTILITIES": "exact row label for TOTAL Utilities",
     "INSURANCE": "exact row label for TOTAL Insurance",
@@ -851,33 +865,50 @@ function computeKPIsFromLineItems(lineItemDict, storeNames, overrideKpiNames = {
       const val = items[desc];
       m[kpi] = (val !== undefined && val !== null) ? val : null;
     });
-    // Derived % metrics (as % of Net Revenue = REVENUE)
-    const rev = m.REVENUE;
-    if (rev && rev !== 0) {
-      if (m.GROSS_PROFIT              !== null) m.GROSS_MARGIN_PCT            = safeDivide(m.GROSS_PROFIT,              rev);
-      if (m.EBITDA                    !== null) m.EBITDA_MARGIN_PCT            = safeDivide(m.EBITDA,                    rev);
-      if (m.NET_PROFIT                !== null) m.NET_MARGIN_PCT               = safeDivide(m.NET_PROFIT,                rev);
-      if (m.COGS                      !== null) m.COGS_PCT                     = safeDivide(m.COGS,                      rev);
-      if (m.FOOD_SUPPLIES             !== null) m.FOOD_SUPPLIES_PCT             = safeDivide(m.FOOD_SUPPLIES,             rev);
-      if (m.STAFF_COST                !== null) m.STAFF_PCT                    = safeDivide(m.STAFF_COST,                rev);
-      if (m.DISCOUNTS_COUPONS_REFUNDS !== null) m.DISCOUNTS_PCT                = safeDivide(m.DISCOUNTS_COUPONS_REFUNDS, m.GROSS_REVENUE || rev);
-      if (m.CONTROLLABLE_EXPENSES     !== null) m.CONTROLLABLE_EXPENSES_PCT    = safeDivide(m.CONTROLLABLE_EXPENSES,     rev);
-      if (m.DELIVERY_COMMISSION       !== null) m.DELIVERY_COMMISSION_PCT      = safeDivide(m.DELIVERY_COMMISSION,       rev);
-      if (m.ADVERTISING_MARKETING     !== null) m.ADVERTISING_MARKETING_PCT    = safeDivide(m.ADVERTISING_MARKETING,     rev);
-      if (m.FINANCIAL_EXPENSES        !== null) m.FINANCIAL_EXPENSES_PCT       = safeDivide(m.FINANCIAL_EXPENSES,        rev);
-      if (m.CHARGEBACKS               !== null) m.CHARGEBACKS_PCT              = safeDivide(m.CHARGEBACKS,               rev);
-      if (m.REPAIRS_MAINTENANCE       !== null) m.REPAIRS_MAINTENANCE_PCT      = safeDivide(m.REPAIRS_MAINTENANCE,       rev);
-      if (m.UTILITIES                 !== null) m.UTILITIES_PCT                = safeDivide(m.UTILITIES,                 rev);
-      if (m.INSURANCE                 !== null) m.INSURANCE_PCT                = safeDivide(m.INSURANCE,                 rev);
-      if (m.LICENSES_PERMITS          !== null) m.LICENSES_PERMITS_PCT         = safeDivide(m.LICENSES_PERMITS,          rev);
-      if (m.PROFESSIONAL_FEES         !== null) m.PROFESSIONAL_FEES_PCT        = safeDivide(m.PROFESSIONAL_FEES,         rev);
-      if (m.RENT                      !== null) m.RENT_PCT                     = safeDivide(m.RENT,                      rev);
-      if (m.TAXES                     !== null) m.TAXES_PCT                    = safeDivide(m.TAXES,                     rev);
-      if (m.MANAGEMENT_FEE            !== null) m.MANAGEMENT_FEE_PCT           = safeDivide(m.MANAGEMENT_FEE,            rev);
-      if (m.TOTAL_OPERATING_EXPENSES  !== null) m.TOTAL_OPERATING_EXPENSES_PCT = safeDivide(m.TOTAL_OPERATING_EXPENSES,  rev);
-      if (m.INTEREST_EXPENSE          !== null) m.INTEREST_EXPENSE_PCT         = safeDivide(m.INTEREST_EXPENSE,          rev);
-      if (m.OTHER_INCOME              !== null) m.OTHER_INCOME_PCT             = safeDivide(m.OTHER_INCOME,              rev);
-      if (m.OTHER_EXPENSES            !== null) m.OTHER_EXPENSES_PCT           = safeDivide(m.OTHER_EXPENSES,            rev);
+    // ── Compute THIRD_PARTY_FEES by summing all platform sub-lines ──
+    // The file has no "Total Third Party Fees" row — sum the sub-lines ourselves.
+    const tpfSubKeys = [
+      "_THIRD_PARTY_DD","_THIRD_PARTY_GH","_THIRD_PARTY_UE",
+      "_THIRD_PARTY_FJ","_THIRD_PARTY_EZ","_THIRD_PARTY_GC","_THIRD_PARTY_CB"
+    ];
+    const tpfVals = tpfSubKeys.map(subKpi => {
+      const subDesc = kpiMapping[subKpi];
+      if (!subDesc) return null;
+      const v = items[subDesc];
+      return (v !== undefined && v !== null) ? v : null;
+    }).filter(v => v !== null && isFinite(v));
+    if (tpfVals.length > 0 && (m.THIRD_PARTY_FEES === null || m.THIRD_PARTY_FEES === undefined)) {
+      m.THIRD_PARTY_FEES = Math.round(tpfVals.reduce((a, b) => a + b, 0));
+    }
+
+    // Derived % metrics — ALL use GROSS_REVENUE as base per business requirement
+    const grossRev = m.GROSS_REVENUE;
+    if (grossRev && grossRev !== 0) {
+      if (m.DISCOUNTS_COUPONS_REFUNDS !== null) m.DISCOUNTS_PCT                = safeDivide(m.DISCOUNTS_COUPONS_REFUNDS, grossRev);
+      if (m.REVENUE                   !== null) m.NET_REVENUE_PCT              = safeDivide(m.REVENUE,                   grossRev);
+      if (m.GROSS_PROFIT              !== null) m.GROSS_MARGIN_PCT             = safeDivide(m.GROSS_PROFIT,              grossRev);
+      if (m.EBITDA                    !== null) m.EBITDA_MARGIN_PCT            = safeDivide(m.EBITDA,                    grossRev);
+      if (m.NET_PROFIT                !== null) m.NET_MARGIN_PCT               = safeDivide(m.NET_PROFIT,                grossRev);
+      if (m.COGS                      !== null) m.COGS_PCT                     = safeDivide(m.COGS,                      grossRev);
+      if (m.FOOD_SUPPLIES             !== null) m.FOOD_SUPPLIES_PCT            = safeDivide(m.FOOD_SUPPLIES,             grossRev);
+      if (m.STAFF_COST                !== null) m.STAFF_PCT                    = safeDivide(m.STAFF_COST,                grossRev);
+      if (m.CONTROLLABLE_EXPENSES     !== null) m.CONTROLLABLE_EXPENSES_PCT    = safeDivide(m.CONTROLLABLE_EXPENSES,     grossRev);
+      if (m.DELIVERY_COMMISSION       !== null) m.DELIVERY_COMMISSION_PCT      = safeDivide(m.DELIVERY_COMMISSION,       grossRev);
+      if (m.ADVERTISING_MARKETING     !== null) m.ADVERTISING_MARKETING_PCT    = safeDivide(m.ADVERTISING_MARKETING,     grossRev);
+      if (m.FINANCIAL_EXPENSES        !== null) m.FINANCIAL_EXPENSES_PCT       = safeDivide(m.FINANCIAL_EXPENSES,        grossRev);
+      if (m.THIRD_PARTY_FEES          !== null) m.THIRD_PARTY_FEES_PCT         = safeDivide(m.THIRD_PARTY_FEES,          grossRev);
+      if (m.REPAIRS_MAINTENANCE       !== null) m.REPAIRS_MAINTENANCE_PCT      = safeDivide(m.REPAIRS_MAINTENANCE,       grossRev);
+      if (m.UTILITIES                 !== null) m.UTILITIES_PCT                = safeDivide(m.UTILITIES,                 grossRev);
+      if (m.INSURANCE                 !== null) m.INSURANCE_PCT                = safeDivide(m.INSURANCE,                 grossRev);
+      if (m.LICENSES_PERMITS          !== null) m.LICENSES_PERMITS_PCT         = safeDivide(m.LICENSES_PERMITS,          grossRev);
+      if (m.PROFESSIONAL_FEES         !== null) m.PROFESSIONAL_FEES_PCT        = safeDivide(m.PROFESSIONAL_FEES,         grossRev);
+      if (m.RENT                      !== null) m.RENT_PCT                     = safeDivide(m.RENT,                      grossRev);
+      if (m.TAXES                     !== null) m.TAXES_PCT                    = safeDivide(m.TAXES,                     grossRev);
+      if (m.MANAGEMENT_FEE            !== null) m.MANAGEMENT_FEE_PCT           = safeDivide(m.MANAGEMENT_FEE,            grossRev);
+      if (m.TOTAL_OPERATING_EXPENSES  !== null) m.TOTAL_OPERATING_EXPENSES_PCT = safeDivide(m.TOTAL_OPERATING_EXPENSES,  grossRev);
+      if (m.INTEREST_EXPENSE          !== null) m.INTEREST_EXPENSE_PCT         = safeDivide(m.INTEREST_EXPENSE,          grossRev);
+      if (m.OTHER_INCOME              !== null) m.OTHER_INCOME_PCT             = safeDivide(m.OTHER_INCOME,              grossRev);
+      if (m.OTHER_EXPENSES            !== null) m.OTHER_EXPENSES_PCT           = safeDivide(m.OTHER_EXPENSES,            grossRev);
     }
     storeMetrics[store] = m;
   });
@@ -1000,7 +1031,7 @@ function step2_extractAndCompute(sheets, querySchema) {
     "GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT",
     "FOOD_SUPPLIES_PCT","STAFF_PCT","DISCOUNTS_PCT",
     "CONTROLLABLE_EXPENSES_PCT","DELIVERY_COMMISSION_PCT","ADVERTISING_MARKETING_PCT",
-    "FINANCIAL_EXPENSES_PCT","CHARGEBACKS_PCT","REPAIRS_MAINTENANCE_PCT",
+    "FINANCIAL_EXPENSES_PCT","THIRD_PARTY_FEES_PCT","REPAIRS_MAINTENANCE_PCT",
     "UTILITIES_PCT","INSURANCE_PCT","LICENSES_PERMITS_PCT","PROFESSIONAL_FEES_PCT",
     "RENT_PCT","TAXES_PCT","MANAGEMENT_FEE_PCT","TOTAL_OPERATING_EXPENSES_PCT",
     "INTEREST_EXPENSE_PCT","OTHER_INCOME_PCT","OTHER_EXPENSES_PCT"
@@ -1078,11 +1109,13 @@ function step2_extractAndCompute(sheets, querySchema) {
       const lyVals = lyStoreNames.map(s => lyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
       if (lyVals.length && totals[kpi] !== undefined) {
         const lyTotal = roundTo2(lyVals.reduce((a,b) => a+b, 0));
-        if (lyTotal && lyTotal !== 0) {
+        // Include in YoY even if lyTotal is 0, as long as we have LY data
+        // This ensures GROSS_REVENUE and other top-line items always appear
+        if (lyVals.length > 0) {
           portfolioYoY[kpi] = {
             cy: totals[kpi], ly: lyTotal,
             change: roundTo2(totals[kpi] - lyTotal),
-            changePct: safeDivide(totals[kpi] - lyTotal, Math.abs(lyTotal))
+            changePct: (lyTotal && lyTotal !== 0) ? safeDivide(totals[kpi] - lyTotal, Math.abs(lyTotal)) : null
           };
         }
       }
@@ -1161,7 +1194,7 @@ const KPI_LABELS = {
   DELIVERY_COMMISSION:        "Delivery Commission",
   ADVERTISING_MARKETING:      "Advertising/Marketing",
   FINANCIAL_EXPENSES:         "TOTAL Financial Expenses",
-  CHARGEBACKS:                "Chargebacks",
+  THIRD_PARTY_FEES:           "Total Third Party Fees",
   REPAIRS_MAINTENANCE:        "TOTAL Repairs and Maintenance",
   UTILITIES:                  "TOTAL Utilities",
   INSURANCE:                  "TOTAL Insurance",
@@ -1193,7 +1226,7 @@ const KPI_ORDER = [
   "DELIVERY_COMMISSION",
   "ADVERTISING_MARKETING",
   "FINANCIAL_EXPENSES",
-  "CHARGEBACKS",
+  "THIRD_PARTY_FEES",
   "REPAIRS_MAINTENANCE",
   "UTILITIES",
   "INSURANCE",
@@ -1249,6 +1282,12 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   let b = "";
   b += `══════════════════════════════════════════════════════\n`;
   b += `  PRE-COMPUTED FINANCIAL DATA — ALL MATH DONE IN CODE\n`;
+  b += `  DO NOT RECALCULATE. Figures are verified and final.\n`;
+  b += `  Amounts: whole numbers, US commas, no decimals (1,234,567)\n`;
+  b += `  Percentages: 1 decimal place (12.3% / -4.5%)  Δ%: +12.3% / -4.5%\n`;
+  b += `  NOTE: All % figures are calculated as % of GROSS REVENUE (not Net Revenue).\n`;
+  b += `  ROUNDING: All percentages are pre-rounded half-up to 1 decimal.\n`;
+  b += `  Use EXACTLY these figures — do not re-round or recalculate.\n`;
   b += `══════════════════════════════════════════════════════\n\n`;
   b += `CY: ${cyYear} (${cySheetName})\n`;
   b += `LY: ${lySheetName ? `${lyYear} (${lySheetName})` : "Not available"}\n`;
@@ -1279,7 +1318,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
       "GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT",
       "FOOD_SUPPLIES_PCT","STAFF_PCT","DISCOUNTS_PCT",
       "CONTROLLABLE_EXPENSES_PCT","DELIVERY_COMMISSION_PCT","ADVERTISING_MARKETING_PCT",
-      "FINANCIAL_EXPENSES_PCT","CHARGEBACKS_PCT","REPAIRS_MAINTENANCE_PCT",
+      "FINANCIAL_EXPENSES_PCT","THIRD_PARTY_FEES_PCT","REPAIRS_MAINTENANCE_PCT",
       "UTILITIES_PCT","INSURANCE_PCT","LICENSES_PERMITS_PCT","PROFESSIONAL_FEES_PCT",
       "RENT_PCT","TAXES_PCT","MANAGEMENT_FEE_PCT","TOTAL_OPERATING_EXPENSES_PCT",
       "INTEREST_EXPENSE_PCT","OTHER_INCOME_PCT","OTHER_EXPENSES_PCT"
@@ -1322,7 +1361,10 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   }
 
   // ── Per-store Cost Structure data ──
-  b += `\n▶ STORE-WISE COST STRUCTURE (% of Net Revenue — for Key Observations)\n${"─".repeat(58)}\n`;
+  b += `\n▶ STORE-WISE COST STRUCTURE (% of Gross Revenue — for Key Observations)\n${"─".repeat(58)}\n`;
+  // FIX 4: Use ALL stores from storeMetrics for ranking (not just activeStores)
+  // so highest/lowest always reflects the full portfolio.
+  const allStoresForRanking = stores.filter(s => !isConsolidatedColumn(s));
   const costKPIs = [
     { kpi: "FOOD_SUPPLIES",           pct: "FOOD_SUPPLIES_PCT",           label: "Food and Supplies" },
     { kpi: "STAFF_COST",              pct: "STAFF_PCT",                   label: "Operational Payroll Expenses" },
@@ -1330,7 +1372,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     { kpi: "DELIVERY_COMMISSION",     pct: "DELIVERY_COMMISSION_PCT",     label: "Delivery Commission" },
     { kpi: "ADVERTISING_MARKETING",   pct: "ADVERTISING_MARKETING_PCT",   label: "Advertising/Marketing" },
     { kpi: "FINANCIAL_EXPENSES",      pct: "FINANCIAL_EXPENSES_PCT",      label: "TOTAL Financial Expenses" },
-    { kpi: "CHARGEBACKS",             pct: "CHARGEBACKS_PCT",             label: "Chargebacks" },
+    { kpi: "THIRD_PARTY_FEES",        pct: "THIRD_PARTY_FEES_PCT",        label: "Total Third Party Fees" },
     { kpi: "REPAIRS_MAINTENANCE",     pct: "REPAIRS_MAINTENANCE_PCT",     label: "TOTAL Repairs and Maintenance" },
     { kpi: "UTILITIES",               pct: "UTILITIES_PCT",               label: "TOTAL Utilities" },
     { kpi: "INSURANCE",               pct: "INSURANCE_PCT",               label: "TOTAL Insurance" },
@@ -1342,7 +1384,8 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     { kpi: "OTHER_EXPENSES",          pct: "OTHER_EXPENSES_PCT",          label: "TOTAL Other Expenses" },
   ];
   costKPIs.forEach(({ kpi, pct, label }) => {
-    const storeEntries = activeStores
+    // FIX 4: Rank across ALL stores in the file for accurate highest/lowest
+    const allEntries = allStoresForRanking
       .map(store => ({
         store,
         amt: storeMetrics[store]?.[kpi],
@@ -1350,9 +1393,9 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
       }))
       .filter(e => e.amt !== null && e.amt !== undefined && isFinite(e.amt));
 
-    if (storeEntries.length === 0) return;
+    if (allEntries.length === 0) return;
 
-    const sorted = [...storeEntries].sort((a, b) => {
+    const sorted = [...allEntries].sort((a, b) => {
       const pa = (a.pctVal !== null && a.pctVal !== undefined) ? a.pctVal : -Infinity;
       const pb = (b.pctVal !== null && b.pctVal !== undefined) ? b.pctVal : -Infinity;
       return pb - pa;
@@ -1364,13 +1407,17 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     );
     const lowest = nonZeroEntries.length > 0 ? nonZeroEntries[nonZeroEntries.length - 1] : null;
 
+    // Portfolio avg is computed across all stores
+    const allPctVals = allEntries.map(e => e.pctVal).filter(v => v !== null && v !== undefined && isFinite(v));
+    const portfolioAvg = allPctVals.length ? roundTo2(allPctVals.reduce((a,b) => a+b,0) / allPctVals.length) : null;
+
     b += `\n  [${label}]\n`;
-    b += `  HIGHEST: ${highest.store} — ${formatNum(highest.amt)} (${highest.pctVal !== null ? formatPct(highest.pctVal) : "N/A"})\n`;
+    b += `  HIGHEST (all ${allEntries.length} stores): ${highest.store} — ${formatNum(highest.amt)} (${highest.pctVal !== null ? formatPct(highest.pctVal) : "N/A"})\n`;
     if (lowest) {
-      b += `  LOWEST (excl. 0%): ${lowest.store} — ${formatNum(lowest.amt)} (${formatPct(lowest.pctVal)})\n`;
+      b += `  LOWEST (excl. 0%, all stores): ${lowest.store} — ${formatNum(lowest.amt)} (${formatPct(lowest.pctVal)})\n`;
     }
-    b += `  Portfolio simple avg: ${averages[pct] !== undefined ? formatPct(averages[pct]) : "N/A"}\n`;
-    b += `  All stores (sorted high→low %):\n`;
+    b += `  Portfolio avg (${allEntries.length} stores): ${portfolioAvg !== null ? formatPct(portfolioAvg) : "N/A"}\n`;
+    b += `  All stores ranked (high→low %):\n`;
     sorted.forEach(e => {
       const flag = e === highest ? " ← HIGHEST" : (e === lowest ? " ← LOWEST (excl. 0%)" : "");
       b += `    ${e.store.padEnd(36)}: ${formatNum(e.amt).padStart(12)}  (${e.pctVal !== null && e.pctVal !== undefined ? formatPct(e.pctVal) : "N/A"})${flag}\n`;
@@ -1497,7 +1544,7 @@ function getKPIOrderForIntent(intent) {
     "DELIVERY_COMMISSION",
     "ADVERTISING_MARKETING",
     "FINANCIAL_EXPENSES",
-    "CHARGEBACKS",
+    "THIRD_PARTY_FEES",
     "REPAIRS_MAINTENANCE",
     "UTILITIES",
     "INSURANCE",
@@ -1581,7 +1628,7 @@ Present as a markdown table with columns: | KPI | CY Total | LY Total | Δ Amoun
 
 MANDATORY TABLE RULES:
 - Include EVERY KPI from the PORTFOLIO TOTALS section in data order
-- KPI column: use the exact display names from KPI_LABELS (e.g. "Gross Revenue", "Total Discounts, Coupons & Refunds", "Net Revenue", "Food and Supplies", "Operational Payroll Expenses", "Total COGS", "Gross Profit", "Controllable Expenses", "Delivery Commission", "Advertising/Marketing", "TOTAL Financial Expenses", "Chargebacks", "TOTAL Repairs and Maintenance", "TOTAL Utilities", "TOTAL Insurance", "Licenses and Permits", "Professional Fees", "TOTAL Rent", "Taxes", "Management Fees", "TOTAL OPERATING EXPENSES", "TOTAL OPERATING PROFIT", "Interest Expense", "Other Income", "TOTAL Other Expenses", "Net Income")
+- KPI column: use the exact display names from KPI_LABELS (e.g. "Gross Revenue", "Total Discounts, Coupons & Refunds", "Net Revenue", "Food and Supplies", "Operational Payroll Expenses", "Total COGS", "Gross Profit", "Controllable Expenses", "Delivery Commission", "Advertising/Marketing", "TOTAL Financial Expenses", "Chargebacks", "TOTAL Repairs and Maintenance", "TOTAL Utilities", "TOTAL Insurance", "Licenses and Permits", "Professional Fees", "TOTAL Rent", "Taxes", "Management Fees", "TOTAL OPERATING EXPENSES", "TOTAL OPERATING PROFIT / EBITDA", "Interest Expense", "Other Income", "TOTAL Other Expenses", "Net Income")
 - CY Total / LY Total: whole number, US commas, no decimals. Negatives as -1,234
 - Δ Amount: CY minus LY. Negatives stay negative.
 - Δ%: 1 decimal with sign e.g. +4.9% or -18.2%. Write "N/A" if LY absent.
@@ -1629,7 +1676,8 @@ Example format:
 - **Net Revenue:** [Store X] showed a decline of [Δ%] YoY, dropping from [LY] to [CY]...
 - **EBITDA:** Portfolio EBITDA fell by [Δ] ([Δ%]) driven primarily by...
 
-DO NOT invent figures. Use ONLY data from the pre-computed data block.
+DO NOT use benchmark comparisons. DO NOT invent figures. Use ONLY data from the pre-computed data block.
+All percentages shown are as % of Gross Revenue. When mentioning % figures, note they are "% of Gross Revenue".
 
 `;
 
@@ -1709,12 +1757,15 @@ ABSOLUTE RULES — NEVER BREAK:
 4. NUMBER FORMAT — amounts: whole numbers with US commas, NO decimal places (1,234,567).
 5. PERCENTAGE FORMAT — always 1 decimal place. Use exactly what the data block provides — do NOT re-round.
 6. DO NOT write a Recommendations section.
-7. Be specific — always name the store and exact figure together.
-8. COMPLETE ALL TABLES FULLY — never use "..." or truncate. Every store must appear with actual values.
-9. STORE-WISE YOY TABLE: The data block contains a fully pre-built markdown table labelled 'STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)'. Copy it exactly — every row, every value. Do NOT regenerate it, do NOT skip rows, do NOT add '...'.
-10. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |).
-11. KEY OBSERVATIONS: Write 8-12 bullet points drawn ONLY from the two tables (Portfolio YoY table and Store-wise YoY table). Bold the KPI name at the start of each bullet. Use exact store names and exact figures.
-12. P&L LINE ITEM NAMES: Use the exact display names from the report — "Gross Revenue", "Total Discounts, Coupons & Refunds", "Net Revenue", "Food and Supplies", "Operational Payroll Expenses", "Total COGS", "Gross Profit", "Controllable Expenses", "Delivery Commission", "Advertising/Marketing", "TOTAL Financial Expenses", "Chargebacks", "TOTAL Repairs and Maintenance", "TOTAL Utilities", "TOTAL Insurance", "Licenses and Permits", "Professional Fees", "TOTAL Rent", "Taxes", "Management Fees", "TOTAL OPERATING EXPENSES", "TOTAL OPERATING PROFIT", "Interest Expense", "Other Income", "TOTAL Other Expenses", "Net Income".${compact ? "\n15. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
+7. DO NOT use benchmark comparisons — there is no benchmark in this report.
+8. ALL PERCENTAGES are calculated as % of Gross Revenue (not Net Revenue). The data block already has the correct pre-computed percentages — use them as-is.
+8. FOLLOW THE USER QUESTION SCOPE: if asked for analysis only up to a certain KPI, DO NOT include deeper KPIs.
+9. Be specific — always name the store and exact figure together.
+10. COMPLETE ALL TABLES FULLY — never use "..." or truncate. Every store must appear with actual values.
+11. STORE-WISE YOY TABLE: The data block contains a fully pre-built markdown table labelled 'STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)'. Copy it exactly — every row, every value. Do NOT regenerate it, do NOT skip rows, do NOT add '...'.
+12. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |).
+13. KEY OBSERVATIONS: Write 8-12 bullet points drawn ONLY from the two tables (Portfolio YoY table and Store-wise YoY table). Bold the KPI name at the start of each bullet. Use exact store names and exact figures.
+14. P&L LINE ITEM NAMES: Use the exact display names from the report — "Gross Revenue", "Total Discounts, Coupons & Refunds", "Net Revenue", "Food and Supplies", "Operational Payroll Expenses", "Total COGS", "Gross Profit", "Controllable Expenses", "Delivery Commission", "Advertising/Marketing", "TOTAL Financial Expenses", "Chargebacks", "TOTAL Repairs and Maintenance", "TOTAL Utilities", "TOTAL Insurance", "Licenses and Permits", "Professional Fees", "TOTAL Rent", "Taxes", "Management Fees", "TOTAL OPERATING EXPENSES", "TOTAL OPERATING PROFIT / EBITDA", "Interest Expense", "Other Income", "TOTAL Other Expenses", "Net Income".${compact ? "\n15. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
     },
     {
       role: "user",
