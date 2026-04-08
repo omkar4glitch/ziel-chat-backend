@@ -299,8 +299,8 @@ const KPI_PATTERNS = {
     "total financial expenses", "total financial expense", "financial expenses",
     "financial expense", "total finance expenses", "total finance charges"
   ],
-  Total Third Party Fees: [
-    "Total Third Party Fees", "third party fees", "total Total Third Party Fees",
+  CHARGEBACKS: [
+    "chargebacks", "chargeback", "total chargebacks",
     "doordash - adjustments", "grubhub - adjustments", "ubereats - adjustments",
     "foodja - adjustments", "ezcater - adjustments", "gift card adjustments",
     "third party adjustments"
@@ -722,7 +722,7 @@ Return JSON:
     "DELIVERY_COMMISSION": "exact row label for Delivery Commission",
     "ADVERTISING_MARKETING": "exact row label for Advertising/Marketing",
     "FINANCIAL_EXPENSES": "exact row label for TOTAL Financial Expenses",
-    "Total Third Party Fees": "exact row label for Total Third Party Fees",
+    "CHARGEBACKS": "exact row label for Chargebacks",
     "REPAIRS_MAINTENANCE": "exact row label for TOTAL Repairs and Maintenance",
     "UTILITIES": "exact row label for TOTAL Utilities",
     "INSURANCE": "exact row label for TOTAL Insurance",
@@ -824,7 +824,7 @@ function computeKPIsFromLineItems(lineItemDict, storeNames, overrideKpiNames = {
       if (m.DELIVERY_COMMISSION       !== null) m.DELIVERY_COMMISSION_PCT      = safeDivide(m.DELIVERY_COMMISSION,       pctBase);
       if (m.ADVERTISING_MARKETING     !== null) m.ADVERTISING_MARKETING_PCT    = safeDivide(m.ADVERTISING_MARKETING,     pctBase);
       if (m.FINANCIAL_EXPENSES        !== null) m.FINANCIAL_EXPENSES_PCT       = safeDivide(m.FINANCIAL_EXPENSES,        pctBase);
-      if (m.Total Third Party Fees               !== null) m.Total Third Party Fees_PCT              = safeDivide(m.Total Third Party Fees,               pctBase);
+      if (m.CHARGEBACKS               !== null) m.CHARGEBACKS_PCT              = safeDivide(m.CHARGEBACKS,               pctBase);
       if (m.REPAIRS_MAINTENANCE       !== null) m.REPAIRS_MAINTENANCE_PCT      = safeDivide(m.REPAIRS_MAINTENANCE,       pctBase);
       if (m.UTILITIES                 !== null) m.UTILITIES_PCT                = safeDivide(m.UTILITIES,                 pctBase);
       if (m.INSURANCE                 !== null) m.INSURANCE_PCT                = safeDivide(m.INSURANCE,                 pctBase);
@@ -959,7 +959,7 @@ function step2_extractAndCompute(sheets, querySchema) {
     "GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT",
     "FOOD_SUPPLIES_PCT","STAFF_PCT","DISCOUNTS_PCT",
     "CONTROLLABLE_EXPENSES_PCT","DELIVERY_COMMISSION_PCT","ADVERTISING_MARKETING_PCT",
-    "FINANCIAL_EXPENSES_PCT","Total Third Party Fees_PCT","REPAIRS_MAINTENANCE_PCT",
+    "FINANCIAL_EXPENSES_PCT","CHARGEBACKS_PCT","REPAIRS_MAINTENANCE_PCT",
     "UTILITIES_PCT","INSURANCE_PCT","LICENSES_PERMITS_PCT","PROFESSIONAL_FEES_PCT",
     "RENT_PCT","TAXES_PCT","MANAGEMENT_FEE_PCT","TOTAL_OPERATING_EXPENSES_PCT",
     "INTEREST_EXPENSE_PCT","OTHER_INCOME_PCT","OTHER_EXPENSES_PCT"
@@ -1139,7 +1139,7 @@ const KPI_LABELS = {
   DELIVERY_COMMISSION:        "Delivery Commission",
   ADVERTISING_MARKETING:      "Advertising/Marketing",
   FINANCIAL_EXPENSES:         "TOTAL Financial Expenses",
-  Total Third Party Fees:                "Total Third Party Fees",
+  CHARGEBACKS:                "Chargebacks",
   REPAIRS_MAINTENANCE:        "TOTAL Repairs and Maintenance",
   UTILITIES:                  "TOTAL Utilities",
   INSURANCE:                  "TOTAL Insurance",
@@ -1171,7 +1171,7 @@ const KPI_ORDER = [
   "DELIVERY_COMMISSION",
   "ADVERTISING_MARKETING",
   "FINANCIAL_EXPENSES",
-  "Total Third Party Fees",
+  "CHARGEBACKS",
   "REPAIRS_MAINTENANCE",
   "UTILITIES",
   "INSURANCE",
@@ -1264,7 +1264,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
       "GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT",
       "FOOD_SUPPLIES_PCT","STAFF_PCT","DISCOUNTS_PCT",
       "CONTROLLABLE_EXPENSES_PCT","DELIVERY_COMMISSION_PCT","ADVERTISING_MARKETING_PCT",
-      "FINANCIAL_EXPENSES_PCT","Total Third Party Fees_PCT","REPAIRS_MAINTENANCE_PCT",
+      "FINANCIAL_EXPENSES_PCT","CHARGEBACKS_PCT","REPAIRS_MAINTENANCE_PCT",
       "UTILITIES_PCT","INSURANCE_PCT","LICENSES_PERMITS_PCT","PROFESSIONAL_FEES_PCT",
       "RENT_PCT","TAXES_PCT","MANAGEMENT_FEE_PCT","TOTAL_OPERATING_EXPENSES_PCT",
       "INTEREST_EXPENSE_PCT","OTHER_INCOME_PCT","OTHER_EXPENSES_PCT"
@@ -1395,7 +1395,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     { kpi: "DELIVERY_COMMISSION",     pct: "DELIVERY_COMMISSION_PCT",     label: "Delivery Commission" },
     { kpi: "ADVERTISING_MARKETING",   pct: "ADVERTISING_MARKETING_PCT",   label: "Advertising/Marketing" },
     { kpi: "FINANCIAL_EXPENSES",      pct: "FINANCIAL_EXPENSES_PCT",      label: "TOTAL Financial Expenses" },
-    { kpi: "Total Third Party Fees",             pct: "Total Third Party Fees_PCT",             label: "Total Third Party Fees" },
+    { kpi: "CHARGEBACKS",             pct: "CHARGEBACKS_PCT",             label: "Chargebacks" },
     { kpi: "REPAIRS_MAINTENANCE",     pct: "REPAIRS_MAINTENANCE_PCT",     label: "TOTAL Repairs and Maintenance" },
     { kpi: "UTILITIES",               pct: "UTILITIES_PCT",               label: "TOTAL Utilities" },
     { kpi: "INSURANCE",               pct: "INSURANCE_PCT",               label: "TOTAL Insurance" },
@@ -1562,7 +1562,7 @@ function getKPIOrderForIntent(intent) {
     "DELIVERY_COMMISSION",
     "ADVERTISING_MARKETING",
     "FINANCIAL_EXPENSES",
-    "Total Third Party Fees",
+    "CHARGEBACKS",
     "REPAIRS_MAINTENANCE",
     "UTILITIES",
     "INSURANCE",
@@ -1646,7 +1646,7 @@ Present as a markdown table with columns: | KPI | CY Total | LY Total | Δ Amoun
 
 MANDATORY TABLE RULES:
 - The FIRST row after the header MUST be "Gross Revenue" — always include it even if there is also a "Net Revenue" row.
-- Include EVERY KPI from the PORTFOLIO TOTALS section in data order: Gross Revenue → Total Discounts, Coupons & Refunds → Net Revenue → Food and Supplies → Operational Payroll Expenses → Total COGS → Gross Profit → Controllable Expenses → Delivery Commission → Advertising/Marketing → TOTAL Financial Expenses → Total Third Party Fees → TOTAL Repairs and Maintenance → TOTAL Utilities → TOTAL Insurance → Licenses and Permits → Professional Fees → TOTAL Rent → Taxes → Management Fees → TOTAL OPERATING EXPENSES → TOTAL OPERATING PROFIT / EBITDA → Interest Expense → Other Income → TOTAL Other Expenses → Net Income
+- Include EVERY KPI from the PORTFOLIO TOTALS section in data order: Gross Revenue → Total Discounts, Coupons & Refunds → Net Revenue → Food and Supplies → Operational Payroll Expenses → Total COGS → Gross Profit → Controllable Expenses → Delivery Commission → Advertising/Marketing → TOTAL Financial Expenses → Chargebacks → TOTAL Repairs and Maintenance → TOTAL Utilities → TOTAL Insurance → Licenses and Permits → Professional Fees → TOTAL Rent → Taxes → Management Fees → TOTAL OPERATING EXPENSES → TOTAL OPERATING PROFIT / EBITDA → Interest Expense → Other Income → TOTAL Other Expenses → Net Income
 - KPI column: use the exact display names listed above.
 - CY Total / LY Total: whole number, US commas, no decimals. Negatives as -1,234
 - Δ Amount: CY minus LY. Negatives stay negative.
@@ -1685,7 +1685,7 @@ CRITICAL RULE FOR BEST/WORST PERFORMERS:
 - For EVERY observation that refers to a "best" or "worst" or "highest" or "lowest" performing ${unitWord} on any metric,
   you MUST use the ★ BEST and ▼ WORST entries from that section — VERBATIM.
 - DO NOT pick best/worst performers from any other part of the data. The ranked lists there are authoritative.
-- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Gross Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.1%)". Never write an amount without its %.
+- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Gross Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.8% of Gross Revenue)". Never write an amount without its %.
 
 For each observation:
 - Reference the exact ${unitWord} name(s) and ALWAYS include BOTH the absolute amount AND the % of Gross Revenue together — never cite an amount alone. Format: "25,606 (10.1%)" — amount first, then % in parentheses.
@@ -1802,7 +1802,7 @@ async function step3_generateCommentary(computedResults, userQuestion) {
   12. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |). The FIRST data row MUST be "Gross Revenue".
   13. KEY OBSERVATIONS — BEST/WORST PERFORMERS: ALWAYS use the ★ BEST and ▼ WORST entries from the "BEST / WORST PERFORMERS BY METRIC" section in the data block. NEVER pick best/worst performers from your own analysis or from any other section.
   14. KEY OBSERVATIONS FORMAT: Write 8-12 bullet points. Bold the KPI name at the start of each bullet. Use exact store names and exact figures from the data block.
-  15. P&L LINE ITEM NAMES: Use the exact display names from the report — "Gross Revenue", "Total Discounts, Coupons & Refunds", "Net Revenue", "Food and Supplies", "Operational Payroll Expenses", "Total COGS", "Gross Profit", "Controllable Expenses", "Delivery Commission", "Advertising/Marketing", "TOTAL Financial Expenses", "Total Third Party Fees", "TOTAL Repairs and Maintenance", "TOTAL Utilities", "TOTAL Insurance", "Licenses and Permits", "Professional Fees", "TOTAL Rent", "Taxes", "Management Fees", "TOTAL OPERATING EXPENSES", "TOTAL OPERATING PROFIT / EBITDA", "Interest Expense", "Other Income", "TOTAL Other Expenses", "Net Income".${compactRule16}${compactRule17}`
+  15. P&L LINE ITEM NAMES: Use the exact display names from the report — "Gross Revenue", "Total Discounts, Coupons & Refunds", "Net Revenue", "Food and Supplies", "Operational Payroll Expenses", "Total COGS", "Gross Profit", "Controllable Expenses", "Delivery Commission", "Advertising/Marketing", "TOTAL Financial Expenses", "Chargebacks", "TOTAL Repairs and Maintenance", "TOTAL Utilities", "TOTAL Insurance", "Licenses and Permits", "Professional Fees", "TOTAL Rent", "Taxes", "Management Fees", "TOTAL OPERATING EXPENSES", "TOTAL OPERATING PROFIT / EBITDA", "Interest Expense", "Other Income", "TOTAL Other Expenses", "Net Income".${compactRule16}${compactRule17}`
         },
         {
           role: "user",
