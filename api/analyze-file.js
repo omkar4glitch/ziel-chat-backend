@@ -1718,7 +1718,9 @@ NOTE ON PERCENTAGES: All % figures in the data block are calculated as % of Gros
 
 FORMAT: Use bullet points. Each bullet must start with the metric/KPI name in bold, followed by the observation.
 
-
+Example format:
+- **Net Revenue:** [Store X] showed a decline of [Δ%] YoY, dropping from [LY] to [CY]...
+- **EBITDA:** Best performer was [Store] at [amount] ([%] of gross revenue) per the EBITDA ranking; worst was [Store] at [amount] ([%] of gross revenue)...
 
 DO NOT use benchmark comparisons. DO NOT invent figures. Use ONLY data from the pre-computed data block.
 
