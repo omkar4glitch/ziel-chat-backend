@@ -305,6 +305,11 @@ const KPI_PATTERNS = {
     "foodja - adjustments", "ezcater - adjustments", "gift card adjustments",
     "third party adjustments"
   ],
+  TOTAL_THIRD_PARTY_FEES: [
+    "total third party fees", "total third-party fees", "third party fees",
+    "third-party fees", "total 3rd party fees", "3rd party fees",
+    "total third party fee", "third party platform fees", "total platform fees"
+  ],
   REPAIRS_MAINTENANCE: [
     "total repairs and maintenance", "total repairs & maintenance",
     "repairs and maintenance", "repairs & maintenance", "total r&m"
@@ -722,7 +727,8 @@ Return JSON:
     "DELIVERY_COMMISSION": "exact row label for Delivery Commission",
     "ADVERTISING_MARKETING": "exact row label for Advertising/Marketing",
     "FINANCIAL_EXPENSES": "exact row label for TOTAL Financial Expenses",
-    "CHARGEBACKS": "exact row label for Chargebacks",
+    "CHARGEBACKS": "exact row label for Chargebacks (if present)",
+    "TOTAL_THIRD_PARTY_FEES": "exact row label for Total Third Party Fees",
     "REPAIRS_MAINTENANCE": "exact row label for TOTAL Repairs and Maintenance",
     "UTILITIES": "exact row label for TOTAL Utilities",
     "INSURANCE": "exact row label for TOTAL Insurance",
@@ -825,6 +831,7 @@ function computeKPIsFromLineItems(lineItemDict, storeNames, overrideKpiNames = {
       if (m.ADVERTISING_MARKETING     !== null) m.ADVERTISING_MARKETING_PCT    = safeDivide(m.ADVERTISING_MARKETING,     pctBase);
       if (m.FINANCIAL_EXPENSES        !== null) m.FINANCIAL_EXPENSES_PCT       = safeDivide(m.FINANCIAL_EXPENSES,        pctBase);
       if (m.CHARGEBACKS               !== null) m.CHARGEBACKS_PCT              = safeDivide(m.CHARGEBACKS,               pctBase);
+      if (m.TOTAL_THIRD_PARTY_FEES    !== null) m.TOTAL_THIRD_PARTY_FEES_PCT   = safeDivide(m.TOTAL_THIRD_PARTY_FEES,    pctBase);
       if (m.REPAIRS_MAINTENANCE       !== null) m.REPAIRS_MAINTENANCE_PCT      = safeDivide(m.REPAIRS_MAINTENANCE,       pctBase);
       if (m.UTILITIES                 !== null) m.UTILITIES_PCT                = safeDivide(m.UTILITIES,                 pctBase);
       if (m.INSURANCE                 !== null) m.INSURANCE_PCT                = safeDivide(m.INSURANCE,                 pctBase);
@@ -1140,6 +1147,7 @@ const KPI_LABELS = {
   ADVERTISING_MARKETING:      "Advertising/Marketing",
   FINANCIAL_EXPENSES:         "TOTAL Financial Expenses",
   CHARGEBACKS:                "Chargebacks",
+  TOTAL_THIRD_PARTY_FEES:    "Total Third Party Fees",
   REPAIRS_MAINTENANCE:        "TOTAL Repairs and Maintenance",
   UTILITIES:                  "TOTAL Utilities",
   INSURANCE:                  "TOTAL Insurance",
@@ -1171,7 +1179,7 @@ const KPI_ORDER = [
   "DELIVERY_COMMISSION",
   "ADVERTISING_MARKETING",
   "FINANCIAL_EXPENSES",
-  "CHARGEBACKS",
+  "TOTAL_THIRD_PARTY_FEES",
   "REPAIRS_MAINTENANCE",
   "UTILITIES",
   "INSURANCE",
@@ -1264,7 +1272,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
       "GROSS_MARGIN_PCT","EBITDA_MARGIN_PCT","NET_MARGIN_PCT","COGS_PCT",
       "FOOD_SUPPLIES_PCT","STAFF_PCT","DISCOUNTS_PCT",
       "CONTROLLABLE_EXPENSES_PCT","DELIVERY_COMMISSION_PCT","ADVERTISING_MARKETING_PCT",
-      "FINANCIAL_EXPENSES_PCT","CHARGEBACKS_PCT","REPAIRS_MAINTENANCE_PCT",
+      "FINANCIAL_EXPENSES_PCT","CHARGEBACKS_PCT","TOTAL_THIRD_PARTY_FEES_PCT","REPAIRS_MAINTENANCE_PCT",
       "UTILITIES_PCT","INSURANCE_PCT","LICENSES_PERMITS_PCT","PROFESSIONAL_FEES_PCT",
       "RENT_PCT","TAXES_PCT","MANAGEMENT_FEE_PCT","TOTAL_OPERATING_EXPENSES_PCT",
       "INTEREST_EXPENSE_PCT","OTHER_INCOME_PCT","OTHER_EXPENSES_PCT"
@@ -1280,13 +1288,16 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
 
   // ── Pre-build Store-wise YoY comparison table ──
   {
-    const cols = ["Sr.No", "Store", "Rev CY", "Rev LY", "Rev Δ%", "Gross Profit CY", "GP LY", "EBITDA CY", "EBITDA LY", "EBITDA Δ%"];
+    const cols = ["Sr.No", "Store", "Gross Rev CY", "Gross Rev LY", "Gross Rev Δ%", "Net Rev CY", "Net Rev LY", "Net Rev Δ%", "Gross Profit CY", "GP LY", "EBITDA CY", "EBITDA LY", "EBITDA Δ%"];
     const rows = activeStores.map((store, idx) => {
       const m   = storeMetrics[store];
       const yoy = yoyComparisons[store];
       return [
         String(idx + 1),
         store,
+        formatNum(m?.GROSS_REVENUE ?? null),
+        formatNum(yoy?.GROSS_REVENUE?.ly ?? null),
+        yoy?.GROSS_REVENUE?.changePct != null ? formatDeltaPct(yoy.GROSS_REVENUE.changePct) : "N/A",
         formatNum(m?.REVENUE ?? null),
         formatNum(yoy?.REVENUE?.ly ?? null),
         yoy?.REVENUE?.changePct != null ? formatDeltaPct(yoy.REVENUE.changePct) : "N/A",
@@ -1301,6 +1312,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     const header = cols.join(" | ");
     const body = rows.map(r => r.join(" | ")).join("\n");
     b += `\n▶ STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)\n`;
+    b += `IMPORTANT: "Gross Rev" columns = Gross Revenue. "Net Rev" columns = Net Revenue (after discounts). These are DIFFERENT figures — do NOT mix them up.\n`;
     b += `${"─".repeat(58)}\n`;
     b += `${header}\n${sep}\n${body}\n`;
     b += `(${activeStores.length} stores total — all rows above are complete)\n`;
@@ -1396,6 +1408,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     { kpi: "ADVERTISING_MARKETING",   pct: "ADVERTISING_MARKETING_PCT",   label: "Advertising/Marketing" },
     { kpi: "FINANCIAL_EXPENSES",      pct: "FINANCIAL_EXPENSES_PCT",      label: "TOTAL Financial Expenses" },
     { kpi: "CHARGEBACKS",             pct: "CHARGEBACKS_PCT",             label: "Chargebacks" },
+    { kpi: "TOTAL_THIRD_PARTY_FEES",  pct: "TOTAL_THIRD_PARTY_FEES_PCT",  label: "Total Third Party Fees" },
     { kpi: "REPAIRS_MAINTENANCE",     pct: "REPAIRS_MAINTENANCE_PCT",     label: "TOTAL Repairs and Maintenance" },
     { kpi: "UTILITIES",               pct: "UTILITIES_PCT",               label: "TOTAL Utilities" },
     { kpi: "INSURANCE",               pct: "INSURANCE_PCT",               label: "TOTAL Insurance" },
@@ -1562,7 +1575,7 @@ function getKPIOrderForIntent(intent) {
     "DELIVERY_COMMISSION",
     "ADVERTISING_MARKETING",
     "FINANCIAL_EXPENSES",
-    "CHARGEBACKS",
+    "TOTAL_THIRD_PARTY_FEES",
     "REPAIRS_MAINTENANCE",
     "UTILITIES",
     "INSURANCE",
@@ -1646,7 +1659,7 @@ Present as a markdown table with columns: | KPI | CY Total | LY Total | Δ Amoun
 
 MANDATORY TABLE RULES:
 - The FIRST row after the header MUST be "Gross Revenue" — always include it even if there is also a "Net Revenue" row.
-- Include EVERY KPI from the PORTFOLIO TOTALS section in data order: Gross Revenue → Total Discounts, Coupons & Refunds → Net Revenue → Food and Supplies → Operational Payroll Expenses → Total COGS → Gross Profit → Controllable Expenses → Delivery Commission → Advertising/Marketing → TOTAL Financial Expenses → Chargebacks → TOTAL Repairs and Maintenance → TOTAL Utilities → TOTAL Insurance → Licenses and Permits → Professional Fees → TOTAL Rent → Taxes → Management Fees → TOTAL OPERATING EXPENSES → TOTAL OPERATING PROFIT / EBITDA → Interest Expense → Other Income → TOTAL Other Expenses → Net Income
+- Include EVERY KPI from the PORTFOLIO TOTALS section in data order: Gross Revenue → Total Discounts, Coupons & Refunds → Net Revenue → Food and Supplies → Operational Payroll Expenses → Total COGS → Gross Profit → Controllable Expenses → Delivery Commission → Advertising/Marketing → TOTAL Financial Expenses → Total Third Party Fees → TOTAL Repairs and Maintenance → TOTAL Utilities → TOTAL Insurance → Licenses and Permits → Professional Fees → TOTAL Rent → Taxes → Management Fees → TOTAL OPERATING EXPENSES → TOTAL OPERATING PROFIT / EBITDA → Interest Expense → Other Income → TOTAL Other Expenses → Net Income
 - KPI column: use the exact display names listed above.
 - CY Total / LY Total: whole number, US commas, no decimals. Negatives as -1,234
 - Δ Amount: CY minus LY. Negatives stay negative.
@@ -1685,26 +1698,31 @@ CRITICAL RULE FOR BEST/WORST PERFORMERS:
 - For EVERY observation that refers to a "best" or "worst" or "highest" or "lowest" performing ${unitWord} on any metric,
   you MUST use the ★ BEST and ▼ WORST entries from that section — VERBATIM.
 - DO NOT pick best/worst performers from any other part of the data. The ranked lists there are authoritative.
-- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Gross Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.1%)". Never write an amount without its %.
+- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Gross Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.1% of gross revenue)". Never write an amount without its % of gross revenue.
+
+CRITICAL RULE FOR GROSS REVENUE vs NET REVENUE:
+- "Gross Revenue" and "Net Revenue" are SEPARATE line items with DIFFERENT values. NEVER use Net Revenue figures in the Gross Revenue observation.
+- For the **Gross Revenue** bullet: use ONLY figures from the "Gross Revenue" row or "Gross Rev CY/LY" columns in the data block.
+- For the **Net Revenue** bullet: use ONLY figures from the "Net Revenue" row or "Net Rev CY/LY" columns in the data block.
 
 For each observation:
-- Reference the exact ${unitWord} name(s) and ALWAYS include BOTH the absolute amount AND the % of Gross Revenue together — never cite an amount alone. Format: "25,606 (10.1%)" — amount first, then % in parentheses.
+- Reference the exact ${unitWord} name(s) and ALWAYS include BOTH the absolute amount AND the % of Gross Revenue together — never cite an amount alone. Format: "25,606 (10.1% of gross revenue)" — amount first, then % of gross revenue in parentheses.
 - Highlight meaningful YoY changes (positive or negative) using data from the YoY comparison table
 - Call out the best and worst performers on Net Revenue, Gross Profit, and EBITDA — use the BEST / WORST PERFORMERS BY METRIC
 - Identify ${unitWordPl} with notable cost changes (Food and Supplies, Operational Payroll, Rent, Controllable Expenses) using the cost % rankings
 - For cost lines where many stores share the same absolute amount (flagged as ℹ NOTE in the data block as a fixed/flat fee): the observation MUST focus on the % of Gross Revenue difference across stores, and MUST cite the ★ HIGHEST % and ▼ LOWEST % stores from the data block — do NOT comment on one arbitrary store's absolute amount.
 - For cost lines with ⚠ ANOMALY (negative values): ALWAYS mention those stores explicitly and explain they received a credit or refund for that line item.
-- ADVERTISING/MARKETING SPECIFICALLY: If the data shows most stores have the same absolute Advertising/Marketing amount, do NOT say one store "increased" spend. Instead, note which store has the highest % (worst efficiency) and which has the lowest %, and mention any store with a negative value (credit).
+- ADVERTISING/MARKETING SPECIFICALLY: If the data shows most stores have the same absolute Advertising/Marketing amount, do NOT say one store "increased" spend. Instead, note which store has the highest % of gross revenue (worst efficiency) and which has the lowest % of gross revenue, and mention any store with a negative value (credit).
 - Mention any significant changes in Total Operating Expenses or TOTAL Other Expenses
 - Note any ${unitWordPl} where Net Income improved or deteriorated significantly
 
-NOTE ON PERCENTAGES: All % figures in the data block are calculated as % of Gross Revenue. Use them as-is.
+NOTE ON PERCENTAGES: All % figures in the data block are calculated as % of Gross Revenue. When citing any percentage in Key Observations, always append "of gross revenue" — e.g. "10.6% of gross revenue". Use the pre-computed figures as-is.
 
 FORMAT: Use bullet points. Each bullet must start with the metric/KPI name in bold, followed by the observation.
 
 Example format:
 - **Net Revenue:** [Store X] showed a decline of [Δ%] YoY, dropping from [LY] to [CY]...
-- **EBITDA:** Best performer was [Store] at [amount] ([%]) per the EBITDA ranking; worst was [Store] at [amount] ([%])...
+- **EBITDA:** Best performer was [Store] at [amount] ([%] of gross revenue) per the EBITDA ranking; worst was [Store] at [amount] ([%] of gross revenue)...
 
 DO NOT use benchmark comparisons. DO NOT invent figures. Use ONLY data from the pre-computed data block.
 
@@ -1737,7 +1755,7 @@ DO NOT use benchmark comparisons. DO NOT invent figures. Use ONLY data from the 
     }
     instructions += `## Key Observations
 (8-12 specific bullet observations with exact figures for the specified ${unitWord}(s). Bold the KPI name at the start of each bullet.
-NOTE ON PERCENTAGES: All % figures are calculated as % of Gross Revenue — use them as-is.)
+NOTE ON PERCENTAGES: All % figures are calculated as % of Gross Revenue — always append "of gross revenue" when citing any percentage, e.g. "10.6% of gross revenue".)
 
 `;
   }
@@ -1745,7 +1763,7 @@ NOTE ON PERCENTAGES: All % figures are calculated as % of Gross Revenue — use 
   instructions += `CRITICAL REMINDERS:
 - KPIs in scope ONLY: [${kpiScopeStr}]. Do NOT add anything outside this list.
 - Every number must come EXACTLY from the data block — do not recalculate.
-- All percentages are % of Gross Revenue, pre-rounded half-up — use them as-is, do NOT re-round or change the base.
+- All percentages are % of Gross Revenue, pre-rounded half-up — in Key Observations always write them as "X.X% of gross revenue". Do NOT re-round or change the base.
 - Negatives stay negative.
 - No Recommendations section.
 - No benchmark comparisons — this report has no benchmark column.
@@ -1776,7 +1794,7 @@ async function step3_generateCommentary(computedResults, userQuestion) {
 
   const buildMessages = (compact = false) => {
       const compactRule16 = compact
-        ? "\n16. COST LINE OBSERVATIONS: When mentioning any cost line amount in Key Observations, ALWAYS follow it immediately with its % of Gross Revenue in parentheses. NEVER write an amount alone. Correct: \"25,606 (10.1%)\". Wrong: \"25,606\"."
+        ? "\n16. COST LINE OBSERVATIONS: When mentioning any cost line amount in Key Observations, ALWAYS follow it immediately with its % of Gross Revenue in parentheses including the label 'of gross revenue'. NEVER write an amount alone. Correct: \"25,606 (10.1% of gross revenue)\". Wrong: \"25,606\" or \"25,606 (10.1%)\"."
         : "";
       const compactRule17 = compact
         ? "\n17. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length."
@@ -1792,7 +1810,7 @@ async function step3_generateCommentary(computedResults, userQuestion) {
   2. NEVER calculate, estimate, or derive any number yourself.
   3. Negative numbers MUST remain negative. Write them with a minus sign: -1,234.
   4. NUMBER FORMAT — amounts: whole numbers with US commas, NO decimal places (1,234,567).
-  5. PERCENTAGE FORMAT — always 1 decimal place. All percentages in the data block are % of Gross Revenue. Use them as-is — do NOT re-round or change the base.
+  5. PERCENTAGE FORMAT — always 1 decimal place. All percentages in the data block are % of Gross Revenue. In Key Observations, always write percentages as "X.X% of gross revenue" (e.g. "10.6% of gross revenue"). Use the pre-computed figures as-is — do NOT re-round or change the base.
   6. DO NOT write a Recommendations section.
   7. DO NOT use benchmark comparisons — there is no benchmark in this report.
   8. FOLLOW THE USER QUESTION SCOPE: if asked for analysis only up to a certain KPI, DO NOT include deeper KPIs.
@@ -1802,7 +1820,8 @@ async function step3_generateCommentary(computedResults, userQuestion) {
   12. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |). The FIRST data row MUST be "Gross Revenue".
   13. KEY OBSERVATIONS — BEST/WORST PERFORMERS: ALWAYS use the ★ BEST and ▼ WORST entries from the "BEST / WORST PERFORMERS BY METRIC" section in the data block. NEVER pick best/worst performers from your own analysis or from any other section.
   14. KEY OBSERVATIONS FORMAT: Write 8-12 bullet points. Bold the KPI name at the start of each bullet. Use exact store names and exact figures from the data block.
-  15. P&L LINE ITEM NAMES: Use the exact display names from the report — "Gross Revenue", "Total Discounts, Coupons & Refunds", "Net Revenue", "Food and Supplies", "Operational Payroll Expenses", "Total COGS", "Gross Profit", "Controllable Expenses", "Delivery Commission", "Advertising/Marketing", "TOTAL Financial Expenses", "Chargebacks", "TOTAL Repairs and Maintenance", "TOTAL Utilities", "TOTAL Insurance", "Licenses and Permits", "Professional Fees", "TOTAL Rent", "Taxes", "Management Fees", "TOTAL OPERATING EXPENSES", "TOTAL OPERATING PROFIT / EBITDA", "Interest Expense", "Other Income", "TOTAL Other Expenses", "Net Income".${compactRule16}${compactRule17}`
+  16. GROSS REVENUE vs NET REVENUE: These are DIFFERENT line items. "Gross Revenue" observation must cite Gross Revenue figures (from "Gross Rev CY/LY" columns or GROSS_REVENUE rows). "Net Revenue" observation must cite Net Revenue figures (from "Net Rev CY/LY" columns or NET REVENUE rows). NEVER use Net Revenue figures when commenting on Gross Revenue, and vice versa.
+  15. P&L LINE ITEM NAMES: Use the exact display names from the report — "Gross Revenue", "Total Discounts, Coupons & Refunds", "Net Revenue", "Food and Supplies", "Operational Payroll Expenses", "Total COGS", "Gross Profit", "Controllable Expenses", "Delivery Commission", "Advertising/Marketing", "TOTAL Financial Expenses", "Total Third Party Fees", "TOTAL Repairs and Maintenance", "TOTAL Utilities", "TOTAL Insurance", "Licenses and Permits", "Professional Fees", "TOTAL Rent", "Taxes", "Management Fees", "TOTAL OPERATING EXPENSES", "TOTAL OPERATING PROFIT / EBITDA", "Interest Expense", "Other Income", "TOTAL Other Expenses", "Net Income".${compactRule16}${compactRule17}`
         },
         {
           role: "user",
