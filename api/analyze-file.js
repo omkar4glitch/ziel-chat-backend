@@ -1699,7 +1699,7 @@ For each observation:
 - Mention any significant changes in Total Operating Expenses or TOTAL Other Expenses
 - Note any ${unitWordPl} where Net Income improved or deteriorated significantly
 
-NOTE ON PERCENTAGES: All % figures in the data block are calculated as % of Gross Revenue. Use them as-is.
+NOTE ON PERCENTAGES: All % figures in the data block are calculated as % of Gross Revenue. Use them as-is (and wherever you mention those percentage please write % of the gross revenue eg- (0.8% of gross revenue).
 
 FORMAT: Use bullet points. Each bullet must start with the metric/KPI name in bold, followed by the observation.
 
