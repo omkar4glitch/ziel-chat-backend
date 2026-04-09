@@ -148,14 +148,14 @@ function extractXlsx(buffer) {
     const wb = XLSX.read(buffer, {
       type: "buffer",
       cellDates: false,
-      raw: false,
-      defval: null
+      raw: true,   // raw:true returns exact numeric values — NOT display-formatted strings
+      defval: null // e.g. 393.73 stays 393.73, not "394" (which raw:false would produce via '#,##0' format)
     });
     if (!wb.SheetNames.length) return { type: "xlsx", sheets: [] };
     const sheets = wb.SheetNames.map(name => {
       const ws = wb.Sheets[name];
-      const rawArray = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, blankrows: false, raw: false });
-      const jsonRows = XLSX.utils.sheet_to_json(ws, { defval: null, blankrows: false, raw: false });
+      const rawArray = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, blankrows: false, raw: true });
+      const jsonRows = XLSX.utils.sheet_to_json(ws, { defval: null, blankrows: false, raw: true });
       console.log(`Sheet "${name}": ${rawArray.length}r × ${rawArray[0]?.length || 0}c`);
       return { name, rows: jsonRows, rawArray, rowCount: jsonRows.length };
     });
@@ -222,7 +222,7 @@ function roundTo2(n) {
 
 function formatNum(n) {
   if (n === undefined || n === null || !isFinite(n)) return "N/A";
-  return Number(n).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  return Math.round(Number(n)).toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
 function roundHalfUp(n, decimals = 1) {
@@ -269,7 +269,7 @@ const KPI_PATTERNS = {
     "net turnover", "revenue (net)", "sales (net)"
   ],
   FOOD_SUPPLIES: [
-    "food and supplies"
+    "food and supplies", "food & supplies", "food cost", "food and supply"
   ],
   STAFF_COST: [
     "operational payroll expenses", "operational payroll", "staff cost", "employee cost",
@@ -292,7 +292,8 @@ const KPI_PATTERNS = {
     "delivery fee", "delivery fees"
   ],
   ADVERTISING_MARKETING: [
-    "advertising/marketing", "advertising / marketing", "advertising and marketing"
+    "advertising/marketing", "advertising / marketing", "advertising and marketing",
+    "marketing", "advertising", "total advertising", "total marketing"
   ],
   FINANCIAL_EXPENSES: [
     "total financial expenses", "total financial expense", "financial expenses",
@@ -315,10 +316,12 @@ const KPI_PATTERNS = {
     "total utilities", "utilities", "utility expense", "utility", "total utility"
   ],
   INSURANCE: [
-    "total insurance"
+    "total insurance", "insurance", "total insurance expense",
+    "insurance expense", "insurance cost"
   ],
   LICENSES_PERMITS: [
-    "licenses and permits", "license and permit", "licenses & permits"
+    "licenses and permits", "license and permit", "licenses & permits",
+    "permits and licenses", "license fees", "permit fees"
   ],
   PROFESSIONAL_FEES: [
     "professional fees", "professional fee", "professional services",
@@ -954,7 +957,7 @@ function step2_extractAndCompute(sheets, querySchema) {
   const totals = {};
   resolvedKpiKeys.forEach(kpi => {
     const vals = storeNames.map(s => cyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
-    if (vals.length) totals[kpi] = vals.reduce((a,b) => a+b, 0);
+    if (vals.length) totals[kpi] = Math.round(vals.reduce((a,b) => a+b, 0));
   });
 
   const pctKpis = [
@@ -1043,7 +1046,7 @@ function step2_extractAndCompute(sheets, querySchema) {
         if (cy !== null && cy !== undefined && ly !== null && ly !== undefined && isFinite(cy) && isFinite(ly)) {
           yoyComparisons[store][kpi] = {
             cy, ly,
-            change: cy - ly,
+            change: roundTo2(cy - ly),
             changePct: ly !== 0 ? safeDivide(cy - ly, Math.abs(ly)) : null
           };
         }
@@ -1056,11 +1059,11 @@ function step2_extractAndCompute(sheets, querySchema) {
     resolvedKpiKeys.forEach(kpi => {
       const lyVals = lyStoreNames.map(s => lyMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
       if (lyVals.length && totals[kpi] !== undefined) {
-        const lyTotal = lyVals.reduce((a,b) => a+b, 0);
+        const lyTotal = roundTo2(lyVals.reduce((a,b) => a+b, 0));
         if (lyTotal && lyTotal !== 0) {
           portfolioYoY[kpi] = {
             cy: totals[kpi], ly: lyTotal,
-            change: totals[kpi] - lyTotal,
+            change: roundTo2(totals[kpi] - lyTotal),
             changePct: safeDivide(totals[kpi] - lyTotal, Math.abs(lyTotal))
           };
         }
@@ -1247,7 +1250,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
   const scopedTotals = {};
   activeKPIs.forEach(kpi => {
     const vals = activeStores.map(s => storeMetrics[s]?.[kpi]).filter(v => v !== null && v !== undefined && isFinite(v));
-    if (vals.length) scopedTotals[kpi] = vals.reduce((a, b) => a + b, 0);
+    if (vals.length) scopedTotals[kpi] = Math.round(vals.reduce((a, b) => a + b, 0));
   });
 
   b += `▶ ${inp.isSpecificStore ? `TOTALS FOR SELECTED STORES` : "PORTFOLIO TOTALS"}\n${"─".repeat(58)}\n`;
@@ -1283,13 +1286,16 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
 
   // ── Pre-build Store-wise YoY comparison table ──
   {
-    const cols = ["Sr.No", "Store", "Net Rev CY", "Net Rev LY", "Net Rev Δ%", "Gross Profit CY", "GP LY", "EBITDA CY", "EBITDA LY", "EBITDA Δ%"];
+    const cols = ["Sr.No", "Store", "Gross Rev CY", "Gross Rev LY", "Gross Rev Δ%", "Net Rev CY", "Net Rev LY", "Net Rev Δ%", "Gross Profit CY", "GP LY", "EBITDA CY", "EBITDA LY", "EBITDA Δ%"];
     const rows = activeStores.map((store, idx) => {
       const m   = storeMetrics[store];
       const yoy = yoyComparisons[store];
       return [
         String(idx + 1),
         store,
+        formatNum(m?.GROSS_REVENUE ?? null),
+        formatNum(yoy?.GROSS_REVENUE?.ly ?? null),
+        yoy?.GROSS_REVENUE?.changePct != null ? formatDeltaPct(yoy.GROSS_REVENUE.changePct) : "N/A",
         formatNum(m?.REVENUE ?? null),
         formatNum(yoy?.REVENUE?.ly ?? null),
         yoy?.REVENUE?.changePct != null ? formatDeltaPct(yoy.REVENUE.changePct) : "N/A",
@@ -1304,7 +1310,7 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     const header = cols.join(" | ");
     const body = rows.map(r => r.join(" | ")).join("\n");
     b += `\n▶ STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)\n`;
-    b += `IMPORTANT: "Net Rev" columns = Net Revenue (after discounts). These are DIFFERENT from Gross Revenue figures — do NOT mix them up.\n`;
+    b += `IMPORTANT: "Gross Rev" columns = Gross Revenue. "Net Rev" columns = Net Revenue (after discounts). These are DIFFERENT figures — do NOT mix them up.\n`;
     b += `${"─".repeat(58)}\n`;
     b += `${header}\n${sep}\n${body}\n`;
     b += `(${activeStores.length} stores total — all rows above are complete)\n`;
