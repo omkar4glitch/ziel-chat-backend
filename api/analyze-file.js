@@ -1685,12 +1685,12 @@ CRITICAL RULE FOR BEST/WORST PERFORMERS:
 - For EVERY observation that refers to a "best" or "worst" or "highest" or "lowest" performing ${unitWord} on any metric,
   you MUST use the ★ BEST and ▼ WORST entries from that section — VERBATIM.
 - DO NOT pick best/worst performers from any other part of the data. The ranked lists there are authoritative.
-- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Gross Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.1%)". Never write an amount without its %.
+- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Gross Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.1% of Gross revenue)". Never write an amount without its %.
 
 For each observation:
 - Reference the exact ${unitWord} name(s) and ALWAYS include BOTH the absolute amount AND the % of Gross Revenue together — never cite an amount alone. Format: "25,606 (10.1%)" — amount first, then % in parentheses.
 - Highlight meaningful YoY changes (positive or negative) using data from the YoY comparison table
-- Call out the best and worst performers on Net Revenue, Gross Profit, and EBITDA — use the BEST / WORST PERFORMERS BY METRIC
+- Call out the best and worst performers on Gross Revenue, Net Revenue, Gross Profit, and EBITDA — use the BEST / WORST PERFORMERS BY METRIC
 - Identify ${unitWordPl} with notable cost changes (Food and Supplies, Operational Payroll, Rent, Controllable Expenses) using the cost % rankings
 - For cost lines where many stores share the same absolute amount (flagged as ℹ NOTE in the data block as a fixed/flat fee): the observation MUST focus on the % of Gross Revenue difference across stores, and MUST cite the ★ HIGHEST % and ▼ LOWEST % stores from the data block — do NOT comment on one arbitrary store's absolute amount.
 - For cost lines with ⚠ ANOMALY (negative values): ALWAYS mention those stores explicitly and explain they received a credit or refund for that line item.
