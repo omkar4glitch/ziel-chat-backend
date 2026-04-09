@@ -269,7 +269,7 @@ const KPI_PATTERNS = {
     "net turnover", "revenue (net)", "sales (net)"
   ],
   FOOD_SUPPLIES: [
-    "food and supplies", "food & supplies", "food cost", "food and supply"
+    "food and supplies"
   ],
   STAFF_COST: [
     "operational payroll expenses", "operational payroll", "staff cost", "employee cost",
@@ -292,8 +292,7 @@ const KPI_PATTERNS = {
     "delivery fee", "delivery fees"
   ],
   ADVERTISING_MARKETING: [
-    "advertising/marketing", "advertising / marketing", "advertising and marketing",
-    "marketing", "advertising", "total advertising", "total marketing"
+    "advertising/marketing", "advertising / marketing", "advertising and marketing"
   ],
   FINANCIAL_EXPENSES: [
     "total financial expenses", "total financial expense", "financial expenses",
@@ -316,12 +315,10 @@ const KPI_PATTERNS = {
     "total utilities", "utilities", "utility expense", "utility", "total utility"
   ],
   INSURANCE: [
-    "total insurance", "insurance", "total insurance expense",
-    "insurance expense", "insurance cost"
+    "total insurance"
   ],
   LICENSES_PERMITS: [
-    "licenses and permits", "license and permit", "licenses & permits",
-    "permits and licenses", "license fees", "permit fees"
+    "licenses and permits", "license and permit", "licenses & permits"
   ],
   PROFESSIONAL_FEES: [
     "professional fees", "professional fee", "professional services",
