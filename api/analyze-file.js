@@ -1688,9 +1688,10 @@ CRITICAL RULE FOR BEST/WORST PERFORMERS:
 - When you cite best/worst, always include the store name, the exact amount, AND the exact % of Gross Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.1% of the Gross revenue)". Never write an amount without its %.
 
 For each observation:
+- wherever you mention the percentage of gross revenue please mention like this format - "20,456 (10% of the gross revenue).
 - Reference the exact ${unitWord} name(s) and ALWAYS include BOTH the absolute amount AND the % of Gross Revenue together — never cite an amount alone. Format: "25,606 (10.1% of Gross revenue)" — amount first, then % in parentheses.
 - Highlight meaningful YoY changes (positive or negative) using data from the YoY comparison table
-- Call out the best and worst performers on Net Revenue,Gross revenue, Gross Profit, and EBITDA — use the BEST / WORST PERFORMERS BY METRIC
+- Call out the best and worst performers on Net Revenue,Gross revenue, Gross Profit, and EBITDA — using the BEST / WORST PERFORMERS BY METRIC
 - Identify ${unitWordPl} with notable cost changes (Food and Supplies, Operational Payroll, Rent, Controllable Expenses) using the cost % rankings
 - For cost lines where many stores share the same absolute amount (flagged as ℹ NOTE in the data block as a fixed/flat fee): the observation MUST focus on the % of Gross Revenue difference across stores, and MUST cite the ★ HIGHEST % and ▼ LOWEST % stores from the data block — do NOT comment on one arbitrary store's absolute amount.
 - For cost lines with ⚠ ANOMALY (negative values): ALWAYS mention those stores explicitly and explain they received a credit or refund for that line item.
