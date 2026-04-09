@@ -301,14 +301,12 @@ const KPI_PATTERNS = {
   ],
   CHARGEBACKS: [
     "chargebacks", "chargeback", "total chargebacks",
-    "doordash - adjustments", "grubhub - adjustments", "ubereats - adjustments",
-    "foodja - adjustments", "ezcater - adjustments", "gift card adjustments",
-    "third party adjustments"
+    "doordash - adjustments", "grubhub - adjustments", "ubereats - adjustments"
+    
   ],
   TOTAL_THIRD_PARTY_FEES: [
     "total third party fees", "total third-party fees", "third party fees",
-    "third-party fees", "total 3rd party fees", "3rd party fees",
-    "total third party fee", "third party platform fees", "total platform fees"
+    "third-party fees", "total 3rd party fees"
   ],
   REPAIRS_MAINTENANCE: [
     "total repairs and maintenance", "total repairs & maintenance",
