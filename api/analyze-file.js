@@ -1,7 +1,3 @@
-#Perfect for salz all brand and all stores
-Prompt-
-all stores-For the uploaded P&L give me detailed analysis and review for all stores.
-All brands-for the uploaded P&L give me Give me the all brands analysis
 import fetch from "node-fetch";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
