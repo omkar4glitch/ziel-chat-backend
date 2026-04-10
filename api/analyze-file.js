@@ -1711,7 +1711,7 @@ For each observation:
 - For cost lines where many stores share the same absolute amount (flagged as ℹ NOTE in the data block as a fixed/flat fee): the observation MUST focus on the % of Gross Revenue difference across stores, and MUST cite the ★ HIGHEST % and ▼ LOWEST % stores from the data block — do NOT comment on one arbitrary store's absolute amount.
 - For cost lines with ⚠ ANOMALY (negative values): ALWAYS mention those stores explicitly and explain they received a credit or refund for that line item.
 - ADVERTISING/MARKETING SPECIFICALLY: If the data shows most stores have the same absolute Advertising/Marketing amount, do NOT say one store "increased" spend. Instead, note which store has the highest % of gross revenue (worst efficiency) and which has the lowest % of gross revenue, and mention any store with a negative value (credit).
-- Mention any significant changes in Total Operating Expenses or TOTAL Other Expenses
+- Mention any significant changes in Total Operating Expenses, Total Third Party Fees and TOTAL Other Expenses
 - Note any ${unitWordPl} where Net Income improved or deteriorated significantly
 
 NOTE ON PERCENTAGES: All % figures in the data block are calculated as % of Gross Revenue. When citing any percentage in Key Observations, always append "of gross revenue" — e.g. "10.6% of gross revenue". Use the pre-computed figures as-is.
