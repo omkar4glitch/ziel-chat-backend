@@ -1822,11 +1822,9 @@ After covering all the above heads, add:
 Write 8-12 specific, data-driven observations drawn directly from the pre-computed data block.
 
 CRITICAL RULE FOR BEST/WORST PERFORMERS:
-- The data block contains a section called "BEST / WORST PERFORMERS BY METRIC".
+- Provide key observation completly base on the -Store-wise Year-on-Year Comparison table.
 - For EVERY observation that refers to a "best" or "worst" or "highest" or "lowest" performing ${unitWord} on any metric,
-  you MUST use the ★ BEST and ▼ WORST entries from that section — VERBATIM.
-- DO NOT pick best/worst performers from any other part of the data. The ranked lists there are authoritative.
-- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Net Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.1% of Net revenue)". Never write an amount without its % of gross revenue.
+- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Net Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.1% of Net revenue)". Never write an amount without its % of Net revenue.
 
 
 For each observation:
