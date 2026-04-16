@@ -1112,7 +1112,7 @@ function step2_extractAndCompute(sheets, querySchema) {
     ebitdaRanking, revenueRanking,
     yoyComparisons, portfolioYoY,
     allLineItems: cyLineItemDict,
-    benchmarkData    // NEW: benchmark column values keyed by line item description
+    benchmarkData    // kept in data pipeline for potential future use; not used in AI instructions
   };
 }
 
@@ -1318,49 +1318,6 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
     }
   }
 
-  // ── Benchmark data block ──
-  // Benchmark values from the report's Benchmark column are shown here in TWO forms:
-  // 1. Raw amount (absolute figure as stored in the file)
-  // 2. % of Benchmark Revenue (so the AI can compare cost ratios to benchmark ratios)
-  if (benchmarkData && Object.keys(benchmarkData).length > 0) {
-    b += `\n▶ BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE\n`;
-    b += `   (These are the real benchmark figures from the "Benchmark" column — NOT portfolio averages)\n`;
-    b += `${"─".repeat(58)}\n`;
-
-    // Find benchmark revenue to compute benchmark %s
-    // The benchmark column in the file stores values AS percentages already (e.g. 28.1 = 28.1%).
-    // Do NOT divide by revenue — just display the raw value directly via formatPct.
-    const benchmarkPctByKpi = {};
-    Object.entries(benchmarkData).forEach(([desc, val]) => {
-      const kpi = matchKPI(desc);
-      if (!kpi) return;
-      // val is already a percentage figure from the file (e.g. 28.1 means 28.1%)
-      benchmarkPctByKpi[kpi] = val;
-    });
-
-    // Display: one line per KPI, showing the % exactly as stored in the file
-    Object.entries(benchmarkData).forEach(([desc, val]) => {
-      const kpi = matchKPI(desc);
-      const label = kpi ? (KPI_LABELS[kpi] || kpi) : desc;
-      if (kpi && benchmarkPctByKpi[kpi] !== undefined) {
-        b += `  ${label.padEnd(36)}: ${formatPct(val)}\n`;
-      }
-    });
-
-    // Flag cost heads that have NO benchmark entry so AI falls back to portfolio avg
-    const costKpiKeys = ["FOOD_SUPPLIES","STAFF_COST","RENT","FRANCHISE_FEES","UTILITIES",
-                         "REPAIRS_MAINTENANCE","OTHER_EXPENSES","INTEREST_EXPENSE",
-                         "DEPRECIATION_EXP","AMORTIZATION_EXP"];
-    const missingBenchmark = costKpiKeys.filter(k => benchmarkPctByKpi[k] === undefined);
-    if (missingBenchmark.length > 0) {
-      b += `\n  ⚠ NO BENCHMARK for: ${missingBenchmark.map(k => KPI_LABELS[k]||k).join(", ")}\n`;
-      b += `    → For these heads, use portfolio simple average % and highest/lowest store instead.\n`;
-    }
-    b += `\n  ⚑ These % values are taken directly from the file's Benchmark column — use as-is.\n`;
-  } else {
-    b += `\n▶ BENCHMARK COLUMN: Not found in this file. Use portfolio averages for comparisons.\n`;
-  }
-
   // ── Per-store YoY data for Store-wise YoY table ──
   // ── Pre-build the complete Store-wise YoY markdown table in CODE ──
   // Injected as a ready-made table so the AI copies it verbatim — no token cost for generation,
@@ -1413,13 +1370,22 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
       .map(store => ({
         store,
         amt: storeMetrics[store]?.[kpi],
-        pctVal: storeMetrics[store]?.[pct]
+        pctVal: storeMetrics[store]?.[pct],
+        lyAmt: yoyComparisons[store]?.[kpi]?.ly ?? null,
+        lyPct: (() => {
+          const lyRev = yoyComparisons[store]?.REVENUE?.ly;
+          const lyAmt = yoyComparisons[store]?.[kpi]?.ly;
+          if (lyAmt !== null && lyAmt !== undefined && lyRev) return roundTo2((lyAmt / lyRev) * 100);
+          return null;
+        })(),
+        yoyChange: yoyComparisons[store]?.[kpi]?.change ?? null,
+        yoyChangePct: yoyComparisons[store]?.[kpi]?.changePct ?? null,
       }))
       .filter(e => e.amt !== null && e.amt !== undefined && isFinite(e.amt));
 
     if (storeEntries.length === 0) return;
 
-    // Sort by % descending to find highest/lowest reliably
+    // Sort by CY % descending to find highest/lowest reliably
     const sorted = [...storeEntries].sort((a, b) => {
       const pa = (a.pctVal !== null && a.pctVal !== undefined) ? a.pctVal : -Infinity;
       const pb = (b.pctVal !== null && b.pctVal !== undefined) ? b.pctVal : -Infinity;
@@ -1428,12 +1394,10 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
 
     const highest = sorted[0];
 
-    // Lowest: skip stores with 0% (or null %) — use 2nd lowest if lowest is 0%
-    // Filter to stores with a meaningful positive % > 0
+    // Lowest: skip stores with 0% (or null %) — use smallest positive %
     const nonZeroEntries = sorted.filter(e =>
       e.pctVal !== null && e.pctVal !== undefined && isFinite(e.pctVal) && e.pctVal > 0
     );
-    // The true lowest is the last entry in nonZeroEntries (sorted desc → last = smallest positive)
     const lowest = nonZeroEntries.length > 0 ? nonZeroEntries[nonZeroEntries.length - 1] : null;
 
     b += `\n  [${label}]\n`;
@@ -1444,10 +1408,13 @@ function buildDataBlockForAI(r, userQuestion, kpiScope, intent) {
       b += `  LOWEST: No stores with positive % found\n`;
     }
     b += `  Portfolio simple avg: ${averages[pct] !== undefined ? formatPct(averages[pct]) : "N/A"}\n`;
-    b += `  All stores (sorted high→low %):\n`;
+    b += `  All stores (sorted high→low %, with YoY):\n`;
     sorted.forEach(e => {
       const flag = e === highest ? " ← HIGHEST" : (e === lowest ? " ← LOWEST (excl. 0%)" : "");
-      b += `    ${e.store.padEnd(36)}: ${formatNum(e.amt).padStart(12)}  (${e.pctVal !== null && e.pctVal !== undefined ? formatPct(e.pctVal) : "N/A"})${flag}\n`;
+      const lyStr = (e.lyAmt !== null && e.lyAmt !== undefined)
+        ? `  LY: ${formatNum(e.lyAmt)} (${e.lyPct !== null ? formatPct(e.lyPct) : "N/A"})  YoY Δ: ${formatNum(e.yoyChange)} (${e.yoyChangePct !== null ? formatDeltaPct(e.yoyChangePct) : "N/A"})`
+        : "  LY: N/A";
+      b += `    ${e.store.padEnd(36)}: CY ${formatNum(e.amt).padStart(12)}  (${e.pctVal !== null && e.pctVal !== undefined ? formatPct(e.pctVal) : "N/A"})${lyStr}${flag}\n`;
     });
   });
 
@@ -1710,10 +1677,10 @@ ${isBrand ? `NOTE: The "Store" column header in the table should be relabelled "
 `;
     }
 
-    // ── Cost Structure Analysis (expanded, following required head order) ──
+    // ── Cost Structure Analysis ──
     if (costHeadsInOrder.length > 0) {
       if (isBrand) {
-        // ── BRAND REPORT: no benchmark — compare brands against each other ──
+        // ── BRAND REPORT: compare brands against each other using YoY data ──
         instructions += `## Cost Structure Analysis
 
 For each of the following expense heads (IN THIS ORDER), write a dedicated subsection:
@@ -1721,20 +1688,22 @@ ${costHeadsInOrder.map((h, i) => `${i+1}. ${h}`).join("\n")}
 
 For EACH expense head, your subsection MUST cover ALL TWO of the following:
 
-**a) Comparison Among All Brands**
-The data block "STORE-WISE COST STRUCTURE" section lists brands sorted HIGH → LOW % for each head,
-and explicitly labels "HIGHEST" and "LOWEST (excl. 0%)".
+**a) Year-on-Year Movement & Comparison Among All Brands**
+The data block "STORE-WISE COST STRUCTURE" section lists brands sorted HIGH → LOW CY % for each head,
+with CY amount, CY %, LY amount, LY %, and YoY Δ (absolute and %) for each brand.
 
-RULES:
-- State the HIGHEST brand and its % — use the brand labelled "← HIGHEST" in the data block.
-- State the LOWEST brand and its % — use the brand labelled "← LOWEST (excl. 0%)" in the data block.
-  NEVER pick a brand at 0% as the lowest.
-- State the portfolio simple average % (labelled "Portfolio simple avg" in the data block).
-- Mention any other brands that stand out as notably high or low (>3pp from the avg).
-- No benchmark comparison — different brands have different cost structures by nature.
+SOURCE RULES:
+- Use ONLY figures from the "STORE-WISE COST STRUCTURE" data block.
+  Cross-reference with the "Year-on-Year Analysis — Portfolio" table (portfolio-level Δ) and the
+  "Store-wise Year-on-Year Comparison" table (store-level revenue/GP/EBITDA context) where relevant.
+- State the HIGHEST brand (CY %) and its CY % — use the brand labelled "← HIGHEST".
+- State the LOWEST brand (CY %) and its CY % — use the brand labelled "← LOWEST (excl. 0%)". NEVER pick a 0% brand.
+- State the portfolio simple average % for this head.
+- For each brand where LY data is available, note whether the % has increased or decreased vs LY and by how much.
+- Mention any brands that stand out as notably high or low (>3pp from the portfolio avg).
 
 **b) Observations**
-- 1-2 sentences on what the spread across brands means and what warrants attention.
+- 1-2 sentences on what the spread across brands and the YoY movement means operationally and what warrants attention.
 
 After covering all the above heads, add:
 
@@ -1743,7 +1712,7 @@ After covering all the above heads, add:
 
 `;
       } else {
-        // ── STORE REPORT: full benchmark + inter-store comparison ──
+        // ── STORE REPORT: YoY-based Cost Structure Analysis (no benchmark) ──
         instructions += `## Cost Structure Analysis
 
 For each of the following expense heads (IN THIS ORDER), write a dedicated subsection:
@@ -1751,32 +1720,29 @@ ${costHeadsInOrder.map((h, i) => `${i+1}. ${h}`).join("\n")}
 
 For EACH expense head, your subsection MUST cover ALL THREE of the following:
 
-**a) Comparison with Industry Standards / Benchmark**
-The data block has a "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE" section. Each line shows the benchmark % exactly as it appears in the file (e.g. "Food and Supplies: 28.0%").
+**a) Year-on-Year Movement — Portfolio Level**
+Use the "Year-on-Year Analysis — Portfolio" table from the data block.
+- State the portfolio-level CY total amount and LY total amount for this expense head.
+- State the Δ amount and Δ% (YoY change).
+- Describe whether this head has increased or decreased vs last year and the magnitude.
+- Do NOT mention any benchmark figures. Do NOT reference any benchmark column.
 
-RULES:
-- If the benchmark % for this expense head IS listed in the data block:
-  → State the benchmark % using the exact figure from the data block (1 decimal, e.g. 28.0%).
-  → Compare the portfolio simple average % to that benchmark %.
-  → Do NOT compute or mention pp variances. Do NOT mention raw dollar amounts.
-- If the data block says "⚠ NO BENCHMARK for: [this head]" OR the head is not listed:
-  → State: "No benchmark available in the report for this head."
-  → Then provide the portfolio simple average % (from "Portfolio simple avg" in the data block).
-  → Do NOT invent a benchmark or use an industry guess.
+**b) Comparison Among All Stores — CY vs LY**
+The data block "STORE-WISE COST STRUCTURE" section lists stores sorted HIGH → LOW CY % for each head,
+with CY amount, CY %, LY amount, LY %, and YoY Δ (absolute and %) for each store.
 
-**b) Comparison Among All Stores**
-The data block "STORE-WISE COST STRUCTURE" section lists stores sorted HIGH → LOW % for each head,
-and explicitly labels "HIGHEST" and "LOWEST (excl. 0%)".
+SOURCE RULES:
+- Use ONLY figures from the "STORE-WISE COST STRUCTURE" data block.
+  Cross-reference with the "Store-wise Year-on-Year Comparison" table for revenue/GP/EBITDA context where relevant.
+- State the HIGHEST store (CY %) and its CY % — use the store labelled "← HIGHEST" in the data block.
+- State the LOWEST store (CY %) and its CY % — use the store labelled "← LOWEST (excl. 0%)". NEVER pick a 0% store.
+- State the portfolio simple average % for this head.
+- For each store where LY data is available, note whether the % has increased or decreased vs LY.
+- Mention any stores that stand out as notably high or low (>3pp from the portfolio avg).
+- Do NOT mention any benchmark figures. Do NOT reference any benchmark column.
 
-RULES:
-- State the HIGHEST store and its % — use the store labelled "← HIGHEST" in the data block.
-- State the LOWEST store and its % — use the store labelled "← LOWEST (excl. 0%)" in the data block.
-  NEVER pick a store at 0% as the lowest. The data block already excludes 0% entries for you.
-- State the portfolio simple average % (labelled "Portfolio simple avg" in the data block).
-- Mention any other stores that stand out as notably high or low (>3pp from the avg).
-
-**c) Suggestive Measures / Observations**
-- 1-2 sentences on what the above means operationally and what warrants attention.
+**c) Observations**
+- 1-2 sentences on what the YoY movement and inter-store spread means operationally and what warrants attention.
 
 After covering all the above heads, add:
 
@@ -1827,6 +1793,7 @@ After covering all the above heads, add:
 - Negatives stay negative.
 - No Recommendations section.
 - ${unitWordCap}-wise YoY table must include ALL ${totalStores} ${unitWordPl} with no truncation.
+- COST STRUCTURE ANALYSIS: Base ALL analysis on the "Year-on-Year Analysis — Portfolio" table and the "Store-wise Year-on-Year Comparison" table. Do NOT mention or reference any benchmark figures anywhere in this section.
 ${isBrand ? "- This is a BRAND report: use the word 'brand/brands' everywhere, NOT 'store/stores'." : ""}`;
 
   if (showEbitdaRank && kpiScope.includes("EBITDA") && !isSpecific) {
@@ -1871,9 +1838,9 @@ ABSOLUTE RULES — NEVER BREAK:
 11. COMPLETE ALL TABLES FULLY — never use "..." or truncate. Every store must appear with actual values.
 12. STORE-WISE YOY TABLE: The data block contains a fully pre-built markdown table labelled 'STORE-WISE YEAR-ON-YEAR COMPARISON TABLE (COMPLETE — COPY VERBATIM)'. Copy it exactly — every row, every value. Do NOT regenerate it, do NOT skip rows, do NOT add '...'.
 13. YoY TABLE FORMAT — Year-on-Year Analysis Portfolio MUST be a markdown table (| KPI | CY Total | LY Total | Δ Amount | Δ% |).
-14. COST STRUCTURE ANALYSIS: For each expense head, cover (a) benchmark comparison (b) inter-store comparison (c) observation. Follow the exact order specified.
-15. BENCHMARK SOURCE: The 'BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE' section shows the benchmark % exactly as stored in the file. Use ONLY that % value — never compute or mention pp variances, never mention raw amounts. If a head has no benchmark (marked '⚠ NO BENCHMARK'), say so and use the portfolio simple average instead.
-16. COST STRUCTURE HIGHEST/LOWEST: Always use the store explicitly labelled '← HIGHEST' and '← LOWEST (excl. 0%)' in the data block. NEVER pick a 0% store as the lowest.${compact ? "\n15. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
+14. COST STRUCTURE ANALYSIS: Base ALL analysis ONLY on the "Year-on-Year Analysis — Portfolio" table and the "Store-wise Year-on-Year Comparison" table from the data block. NEVER mention or reference any benchmark figures, benchmark column, or industry standards anywhere in the Cost Structure Analysis section.
+15. COST STRUCTURE — PORTFOLIO YoY: For section (a) of each expense head, always state the portfolio CY total, LY total, Δ amount, and Δ% exactly as they appear in the Portfolio YoY table.
+16. COST STRUCTURE — STORE COMPARISON: For section (b), always use the store labelled '← HIGHEST' and '← LOWEST (excl. 0%)' in the data block. State CY %, LY % (where available), and direction of change. NEVER pick a 0% store as the lowest.${compact ? "\n17. COMPACT MODE: Keep narrative sections brief (2-3 sentences each). Prioritise table completeness over prose length." : ""}`
     },
     {
       role: "user",
