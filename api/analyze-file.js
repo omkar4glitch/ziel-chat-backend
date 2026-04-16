@@ -1749,40 +1749,37 @@ After covering all the above heads, add:
 For each of the following expense heads (IN THIS ORDER), write a dedicated subsection:
 ${costHeadsInOrder.map((h, i) => `${i+1}. ${h}`).join("\n")}
 
-For EACH expense head, your subsection MUST cover ALL THREE of the following:
+Write 8-12 specific, data-driven observations drawn directly from the pre-computed data block.
 
-**a) Comparison with Industry Standards / Benchmark**
-The data block has a "BENCHMARK COLUMN — ACTUAL VALUES FROM REPORT FILE" section. Each line shows the benchmark % exactly as it appears in the file (e.g. "Food and Supplies: 28.0%").
+CRITICAL RULE FOR BEST/WORST PERFORMERS:
+- Write analysis based on the Year-on-Year Analysis — Portfolio & Store-wise Year-on-Year Comparison.
+- Highlight meaningful YoY changes (positive or negative) using data from the YoY comparison table
+- Give proper accurate figures and analysis,
+- DO NOT pick best/worst performers from any other part of the data.Use the Year-on-Year Analysis — Portfolio & Store-wise Year-on-Year Comparison Tables.
+- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Net Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.1% of Net revenue)". Never write an amount without its % of gross revenue.
+- Mention any significant changes in Total Operating Expenses or TOTAL Other Expenses
+- Identify notable cost changes (Food and Supplies, Operational Payroll, Rent, Total Other Expenses)
 
-RULES:
-- If the benchmark % for this expense head IS listed in the data block:
-  → State the benchmark % using the exact figure from the data block (1 decimal, e.g. 28.0%).
-  → Compare the portfolio simple average % to that benchmark %.
-  → Do NOT compute or mention pp variances. Do NOT mention raw dollar amounts.
-- If the data block says "⚠ NO BENCHMARK for: [this head]" OR the head is not listed:
-  → State: "No benchmark available in the report for this head."
-  → Then provide the portfolio simple average % (from "Portfolio simple avg" in the data block).
-  → Do NOT invent a benchmark or use an industry guess.
 
-**b) Comparison Among All Stores**
-The data block "STORE-WISE COST STRUCTURE" section lists stores sorted HIGH → LOW % for each head,
-and explicitly labels "HIGHEST" and "LOWEST (excl. 0%)".
+For each observation:
+- Reference the exact ${unitWord} name(s) and ALWAYS include BOTH the absolute amount AND the % of Net Revenue together — never cite an amount alone. Format: "25,606 (10.1% of Net revenue)" — amount first, then % of gross revenue in parentheses.
+- Highlight meaningful YoY changes (positive or negative) using data from the YoY comparison table
+- Call out the best and worst performers on Net Revenue, Gross Profit, and EBITDA — use the BEST / WORST PERFORMERS BY METRIC
+- Identify ${unitWordPl} with notable cost changes (Food and Supplies, Operational Payroll, Rent, Total Other Expenses) using the cost % rankings
+- For cost lines where many stores share the same absolute amount (flagged as ℹ NOTE in the data block as a fixed/flat fee): the observation MUST focus on the % of Net Revenue difference across stores, and MUST cite the ★ HIGHEST % and ▼ LOWEST % stores from the data block — do NOT comment on one arbitrary store's absolute amount.
+- For cost lines with ⚠ ANOMALY (negative values): ALWAYS mention those stores explicitly and explain they received a credit or refund for that line item.
+- Mention any significant changes in Total Operating Expenses or TOTAL Other Expenses
+- Note any ${unitWordPl} where Net Income improved or deteriorated significantly
 
-RULES:
-- State the HIGHEST store and its % — use the store labelled "← HIGHEST" in the data block.
-- State the LOWEST store and its % — use the store labelled "← LOWEST (excl. 0%)" in the data block.
-  NEVER pick a store at 0% as the lowest. The data block already excludes 0% entries for you.
-- State the portfolio simple average % (labelled "Portfolio simple avg" in the data block).
-- Mention any other stores that stand out as notably high or low (>3pp from the avg).
+NOTE ON PERCENTAGES: All % figures in the data block are calculated as % of Net Revenue. When citing any percentage in Key Observations, always append "of Net revenue" — e.g. "10.6% of Net revenue". Use the pre-computed figures as-is.
 
-**c) Suggestive Measures / Observations**
-- 1-2 sentences on what the above means operationally and what warrants attention.
+FORMAT: Use bullet points. Each bullet must start with the metric/KPI name in bold, followed by the observation.
 
-After covering all the above heads, add:
+Example format:
+- **Net Revenue:** [Store X] showed a decline of [Δ%] YoY, dropping from [LY] to [CY]...
+- **EBITDA:** Best performer was [Store] at [amount] ([%] of Net revenue) per the EBITDA ranking; worst was [Store] at [amount] ([%] of Net revenue)...
 
-## Other Anomalies
-(If any other financial anomaly — not covered above — is noticed in the data, mention it here with specific store names and figures. If none, write "No additional anomalies noted.")
-
+DO NOT use benchmark comparisons. DO NOT invent figures. Use ONLY data from the pre-computed data block.
 `;
       }
     }
