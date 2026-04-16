@@ -1749,37 +1749,8 @@ After covering all the above heads, add:
 For each of the following expense heads (IN THIS ORDER), write a dedicated subsection:
 ${costHeadsInOrder.map((h, i) => `${i+1}. ${h}`).join("\n")}
 
-Write 8-12 specific, data-driven observations drawn directly from the pre-computed data block.
+NO cost structure analysis (dont give cost struture analysis) give only key observations)
 
-CRITICAL RULE FOR BEST/WORST PERFORMERS:
-- Write analysis based on the Year-on-Year Analysis — Portfolio & Store-wise Year-on-Year Comparison.
-- Highlight meaningful YoY changes (positive or negative) using data from the YoY comparison table
-- Give proper accurate figures and analysis,
-- DO NOT pick best/worst performers from any other part of the data.Use the Year-on-Year Analysis — Portfolio & Store-wise Year-on-Year Comparison Tables.
-- When you cite best/worst, always include the store name, the exact amount, AND the exact % of Net Revenue — all three are mandatory. Format: "Store Name — 25,606 (10.1% of Net revenue)". Never write an amount without its % of gross revenue.
-- Mention any significant changes in Total Operating Expenses or TOTAL Other Expenses
-- Identify notable cost changes (Food and Supplies, Operational Payroll, Rent, Total Other Expenses)
-
-
-For each observation:
-- Reference the exact ${unitWord} name(s) and ALWAYS include BOTH the absolute amount AND the % of Net Revenue together — never cite an amount alone. Format: "25,606 (10.1% of Net revenue)" — amount first, then % of gross revenue in parentheses.
-- Highlight meaningful YoY changes (positive or negative) using data from the YoY comparison table
-- Call out the best and worst performers on Net Revenue, Gross Profit, and EBITDA — use the BEST / WORST PERFORMERS BY METRIC
-- Identify ${unitWordPl} with notable cost changes (Food and Supplies, Operational Payroll, Rent, Total Other Expenses) using the cost % rankings
-- For cost lines where many stores share the same absolute amount (flagged as ℹ NOTE in the data block as a fixed/flat fee): the observation MUST focus on the % of Net Revenue difference across stores, and MUST cite the ★ HIGHEST % and ▼ LOWEST % stores from the data block — do NOT comment on one arbitrary store's absolute amount.
-- For cost lines with ⚠ ANOMALY (negative values): ALWAYS mention those stores explicitly and explain they received a credit or refund for that line item.
-- Mention any significant changes in Total Operating Expenses or TOTAL Other Expenses
-- Note any ${unitWordPl} where Net Income improved or deteriorated significantly
-
-NOTE ON PERCENTAGES: All % figures in the data block are calculated as % of Net Revenue. When citing any percentage in Key Observations, always append "of Net revenue" — e.g. "10.6% of Net revenue". Use the pre-computed figures as-is.
-
-FORMAT: Use bullet points. Each bullet must start with the metric/KPI name in bold, followed by the observation.
-
-Example format:
-- **Net Revenue:** [Store X] showed a decline of [Δ%] YoY, dropping from [LY] to [CY]...
-- **EBITDA:** Best performer was [Store] at [amount] ([%] of Net revenue) per the EBITDA ranking; worst was [Store] at [amount] ([%] of Net revenue)...
-
-DO NOT use benchmark comparisons. DO NOT invent figures. Use ONLY data from the pre-computed data block.
 `;
       }
     }
@@ -1830,7 +1801,7 @@ For each observation:
 - Reference the exact ${unitWord} name(s) and ALWAYS include BOTH the absolute amount AND the % of Net Revenue together — never cite an amount alone. Format: "25,606 (10.1% of Net revenue)" — amount first, then % of gross revenue in parentheses.
 - Highlight meaningful YoY changes (positive or negative) using data from the YoY comparison table
 - Call out the best and worst performers on Net Revenue, Gross Profit, and EBITDA — use the BEST / WORST PERFORMERS BY METRIC
-- Identify ${unitWordPl} with notable cost changes (Food and Supplies, Operational Payroll, Rent, Total Other Expenses) using the cost % rankings
+- Identify ${unitWordPl} with notable cost changes (Food and Supplies, Operational Payroll, Rent, Controllable Expenses) using the cost % rankings
 - For cost lines where many stores share the same absolute amount (flagged as ℹ NOTE in the data block as a fixed/flat fee): the observation MUST focus on the % of Net Revenue difference across stores, and MUST cite the ★ HIGHEST % and ▼ LOWEST % stores from the data block — do NOT comment on one arbitrary store's absolute amount.
 - For cost lines with ⚠ ANOMALY (negative values): ALWAYS mention those stores explicitly and explain they received a credit or refund for that line item.
 - Mention any significant changes in Total Operating Expenses or TOTAL Other Expenses
