@@ -191,8 +191,7 @@ ABSOLUTE RULES — NEVER BREAK:
 6. Do NOT add a Recommendations section unless the user specifically asks for one.
 7. Be specific — always pair a store/entity name with its exact figure.
 8. Complete all tables fully — never use "..." or truncate rows.
-9. Write in clear, professional British/US business English.
-10. If data is missing or unclear, say so explicitly — never fill gaps with assumptions.`;
+9. If data is missing or unclear, say so explicitly — never fill gaps with assumptions.`;
 
 // Build the prompt that instructs the AI how to structure its analysis
 function buildAnalysisPrompt(question) {
