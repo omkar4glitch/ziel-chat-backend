@@ -217,6 +217,7 @@ Present as a markdown table of the Detailed Financial data from the File
 
 ## Key Insights 
 List of ALL important financial insights, observations, and detailed analysis points
+Minimum 9-10 Points
 
 
 ## Review
