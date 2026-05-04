@@ -211,42 +211,22 @@ adapting each section to what the document actually contains:
 (3–5 sentences. What type of document is this? What period does it cover? What is the headline financial story?)
 
 ## Key Financial Metrics
-Present as a markdown table with columns: | Metric | Current Period | Prior Period | Change | Change % |
-Include every significant top-line figure you can find (Revenue, Gross Profit, EBITDA, Net Profit, etc.).
-If prior period data is not available, leave those columns as "N/A".
-All figures: whole numbers, US commas. Change %: 1 decimal with sign (e.g. +4.9% or -3.2%).
-
-## Year-on-Year Analysis
-(If the document contains data for more than one period, write a paragraph comparing each major line item.
-If only one period is available, skip this section.)
+Present a markdown table with Key Financial Metrics from the file
 
 ## Detailed Financial Data
-Present as a markdown table with columns: | Category / Line Item | Amount | % of Revenue | Notes |
-Include ALL material line items found in the document, in their natural P&L order.
-"% of Revenue" column: calculate only if Revenue is present; otherwise write "N/A".
-"Notes" column: brief contextual observation for each line (e.g. "Largest cost head", "Above average", etc.)
+Present as a markdown table of the Detailed Financial data from the File
 
 ## Key Insights & Observations
-Write 5–8 numbered points. Each point must:
-- Name the specific line item or metric
-- Quote the exact figure from the document
-- State what it means operationally or financially
+
 
 ## Cost Structure Analysis
-(Only if cost / expense data is present.)
-For each major cost head, write one paragraph covering:
-- What the cost is as a % of revenue
-- Whether it is high, low, or within normal range relative to the rest of the document
-- Any notable store-to-store or period-to-period variation
+
 
 ## Performance Highlights & Concerns
-Two short sub-sections:
-**Highlights:** (bullet list — 3–5 positive findings with exact figures)
-**Concerns:** (bullet list — 3–5 areas needing attention with exact figures)
+
 
 ## Business Review
-(1 paragraph. Overall assessment of the financial health shown in this document.
-Summarise the most important takeaways for a senior manager reading this for the first time.)
+
 
 IMPORTANT REMINDERS:
 - Every single number you write must come directly from the document. No estimates.
