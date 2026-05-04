@@ -201,14 +201,13 @@ function buildAnalysisPrompt(question) {
 "${userQ}"
 
 TASK:
-Analyse the financial document provided and write a detailed, structured MIS commentary. 
-Read the user's question carefully and make sure your response directly addresses what they asked.
-
+ You are a professional senior accountant and financial analyst. 
+ Analyze the provided accounting/financial data based on the user's request:
 Write your response as clean markdown with the following sections, IN THIS ORDER,
 adapting each section to what the document actually contains:
 
 ## Executive Summary
-(3–5 sentences. What type of document is this? What period does it cover? What is the headline financial story?)
+Breif Analysis of Key Financial Metrics table.
 
 ## Key Financial Metrics
 Present a markdown table with Key Financial Metrics from the file
@@ -216,16 +215,12 @@ Present a markdown table with Key Financial Metrics from the file
 ## Detailed Financial Data
 Present as a markdown table of the Detailed Financial data from the File
 
-## Key Insights & Observations
+## Key Insights 
+List of ALL important financial insights, observations, and detailed analysis points
 
 
-## Cost Structure Analysis
-
-
-## Performance Highlights & Concerns
-
-
-## Business Review
+## Review
+Key observation of the uploaded File or any anomalies/recommendations
 
 
 IMPORTANT REMINDERS:
