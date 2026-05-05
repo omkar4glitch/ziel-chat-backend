@@ -214,10 +214,21 @@ Present a markdown table with Key Financial Metrics from the file
 ## Detailed Financial Data
 Present as a markdown table of the Detailed Financial data from the File
 
-## Key Insights 
-List of ALL important financial insights, observations, and detailed analysis points
-Minimum 9-10 Points
+## Key Insights
+Provide a detailed and analytical list of financial insights.
 
+IMPORTANT INSTRUCTIONS:
+- Include a MINIMUM of 10–12 insights.
+- Each insight MUST be 3–5 sentences long.
+- Do NOT write short or generic bullet points.
+- Each point should include:
+  - What the observation is
+  - Why it is happening (if inferable)
+  - Its financial impact
+  - Any risks or opportunities associated
+- Focus on trends, ratios, profitability, liquidity, efficiency, and comparisons where possible.
+- Highlight both positive and negative signals.
+- Use professional financial reasoning and avoid vague statements.
 
 ## Review
 Key observation of the uploaded File or any anomalies/recommendations
